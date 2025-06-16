@@ -14,12 +14,12 @@ struct varptr
         }
 
         varptr( A* ptr ) noexcept
-          : ptr_( 0x01 + ( reinterpret_cast< std::intptr_t >( ptr ) << 1 ) )
+          : ptr_( ptr ? 0x01 + reinterpret_cast< std::intptr_t >( ptr ) : 0x00 )
         {
         }
 
         varptr( B* ptr ) noexcept
-          : ptr_( 0x00 + ( reinterpret_cast< std::intptr_t >( ptr ) << 1 ) )
+          : ptr_( 0x00 + reinterpret_cast< std::intptr_t >( ptr ) )
         {
         }
 
@@ -39,8 +39,10 @@ struct varptr
                 return ptr_ == other.ptr_;
         }
 
-        std::intptr_t get() const noexcept
+        std::intptr_t get_raw() const noexcept
         {
+                static_assert( alignof( A ) > 2 );
+                static_assert( alignof( B ) > 2 );
                 return ptr_;
         }
 
@@ -52,12 +54,14 @@ template < typename U, typename A, typename B >
 U* get_if( varptr< A, B > const& ptr ) noexcept
 {
         if constexpr ( std::is_same_v< U, A > ) {
-                if ( ptr.get() & 0x01 )
-                        return reinterpret_cast< U* >( ( ptr.get() >> 1 ) );
+                static constexpr std::intptr_t kind_bit = 0x01;
+                // XXX: is this right?
+                if ( ptr.get_raw() & kind_bit )
+                        return reinterpret_cast< U* >( ( ptr.get_raw() - kind_bit ) );
         } else {
                 static_assert( std::is_same_v< U, B >, "U must be either A or B" );
-                if ( !( ptr.get() & 0x00 ) )
-                        return reinterpret_cast< U* >( ( ptr.get() >> 1 ) );
+                if ( !( ptr.get_raw() & 0x00 ) )
+                        return reinterpret_cast< U* >( ptr.get_raw() );
         }
         return nullptr;
 }
@@ -76,23 +80,24 @@ struct event_core
 {
         void link_event( event< T >& e )
         {
-                if ( auto* f = get_if< event< T > >( first ) )
-                        f->prev_ = &e;
+                if ( first )
+                        first->prev_ = &e;
                 e.next_ = first;
                 first   = &e;
         }
 
         void raise( T& value )
         {
-                auto* e = get_if< event< T > >( first );
+                auto* e = std::exchange( first, nullptr );
                 while ( e ) {
                         event< T >* next = get_if< event< T > >( e->next_ );
+                        e->unlink();
                         e->raise( value );
                         e = next;
                 }
         }
 
-        event_ptr< T > first = nullptr;
+        event< T >* first = nullptr;
 };
 
 template < typename T >
@@ -157,7 +162,7 @@ private:
                 if ( auto* pp = get_if< event< T > >( prev_ ) )
                         pp->next_ = next_;
                 else if ( auto* np = get_if< event_core< T > >( prev_ ) )
-                        np->first = next_;
+                        np->first = get_if< event< T > >( next_ );
 
                 if ( auto* pp = get_if< event< T > >( next_ ) )
                         pp->prev_ = prev_;
@@ -166,12 +171,12 @@ private:
         void raise( T& value )
         {
                 value_ = &value;
-                if ( h_ )
+                if ( h_ && !h_.done() )
                         h_.resume();
         }
 
-        ptr_t next_ = nullptr;
-        ptr_t prev_ = nullptr;
+        event_ptr< T > next_ = nullptr;
+        event_ptr< T > prev_ = nullptr;
 
         event_core< T >&              src_;
         std::coroutine_handle< void > h_;
@@ -229,7 +234,7 @@ struct task
 
         ~task()
         {
-                if ( h_ )
+                if ( h_ && !h_.done() )
                         h_.destroy();
         }
 

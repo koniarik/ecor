@@ -31,9 +31,13 @@ namespace ecor
 TEST_CASE( "base" )
 {
         event_source< int > es;
+        int                 y = -1;
 
         auto f = [&]() -> ecor::task< void > {
-                int x = co_await es.get();
+                for ( ;; ) {
+                        int x = co_await es.get();
+                        y     = x;
+                }
         };
 
         task< void > h = f();
@@ -41,6 +45,11 @@ TEST_CASE( "base" )
 
         int value = 42;
         es.raise( value );
+        CHECK( value == y );
+
+        value = 666;
+        es.raise( value );
+        CHECK( value == y );
 }
 
 };  // namespace ecor
