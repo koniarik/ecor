@@ -41,6 +41,7 @@ TEST_CASE( "base" )
         };
 
         task< void > h = f();
+        // XXX: unpleasant?
         h.resume();
 
         int value = 42;

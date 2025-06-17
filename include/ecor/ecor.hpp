@@ -130,8 +130,10 @@ struct event
         {
         }
 
-        event( event const& )            = delete;
-        event& operator=( event const& ) = delete;
+        event( event const& )                = delete;
+        event& operator=( event const& )     = delete;
+        event( event&& ) noexcept            = default;
+        event& operator=( event&& ) noexcept = default;
 
         [[nodiscard]] bool await_ready() const noexcept
         {
@@ -199,6 +201,7 @@ struct task
 
                 std::suspend_always initial_suspend() noexcept
                 {
+                        // XXX: coro should register itself to "to repeat" list somewhere
                         return {};
                 }
 
@@ -210,6 +213,22 @@ struct task
                 void unhandled_exception() noexcept
                 {
                         // XXX: impl
+                }
+
+                template < typename U >
+                auto await_transform( event< U > e ) noexcept
+                {
+                        return std::move( e );
+                }
+                auto await_transform( std::suspend_always e ) noexcept
+                {
+                        // XXX: coro should register itself to "to repeat" list somewhere
+                        return std::move( e );
+                }
+
+                auto await_transform( std::suspend_never e ) noexcept
+                {
+                        return std::move( e );
                 }
         };
 
