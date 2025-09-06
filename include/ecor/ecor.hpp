@@ -1,139 +1,121 @@
 #pragma once
 
+#include <concepts>
 #include <coroutine>
+#include <cstddef>
+#include <iterator>
 #include <optional>
+#include <zll.hpp>
 
 namespace ecor
 {
 
-template < typename A, typename B >
-struct varptr
-{
-        varptr( std::nullptr_t ) noexcept
-        {
-        }
-
-        varptr( A* ptr ) noexcept
-          : ptr_( ptr ? 0x01 + reinterpret_cast< std::intptr_t >( ptr ) : 0x00 )
-        {
-        }
-
-        varptr( B* ptr ) noexcept
-          : ptr_( 0x00 + reinterpret_cast< std::intptr_t >( ptr ) )
-        {
-        }
-
-        varptr( varptr const& other ) noexcept            = default;
-        varptr& operator=( varptr const& other ) noexcept = default;
-        varptr( varptr&& other ) noexcept                 = default;
-        varptr& operator=( varptr&& other ) noexcept      = default;
-        ~varptr() noexcept                                = default;
-
-        operator bool() const noexcept
-        {
-                return ptr_ != 0x00;
-        }
-
-        bool operator==( varptr const& other ) const noexcept
-        {
-                return ptr_ == other.ptr_;
-        }
-
-        std::intptr_t get_raw() const noexcept
-        {
-                static_assert( alignof( A ) > 2 );
-                static_assert( alignof( B ) > 2 );
-                return ptr_;
-        }
-
-private:
-        std::intptr_t ptr_ = 0x00;
+template < typename T >
+concept memory_resource = requires( T a, std::size_t bytes, std::size_t align, void* p ) {
+        { allocate( a, bytes, align ) } -> std::same_as< void* >;
+        { deallocate( a, p, bytes, align ) } -> std::same_as< void >;
 };
 
-template < typename U, typename A, typename B >
-U* get_if( varptr< A, B > const& ptr ) noexcept
+template < typename T >
+void* allocate( T& mem, std::size_t bytes, std::size_t align )
 {
-        if constexpr ( std::is_same_v< U, A > ) {
-                static constexpr std::intptr_t kind_bit = 0x01;
-                // XXX: is this right?
-                if ( ptr.get_raw() & kind_bit )
-                        return reinterpret_cast< U* >( ( ptr.get_raw() - kind_bit ) );
-        } else {
-                static_assert( std::is_same_v< U, B >, "U must be either A or B" );
-                if ( !( ptr.get_raw() & 0x00 ) )
-                        return reinterpret_cast< U* >( ptr.get_raw() );
-        }
-        return nullptr;
+        return mem.allocate( bytes, align );
 }
 
 template < typename T >
-struct event;
+void deallocate( T& mem, void* p, std::size_t bytes, std::size_t align )
+{
+        return mem.deallocate( p, bytes, align );
+}
 
-template < typename T >
+template < typename T, typename E >
+struct event : zll::ll_base< event< T, E > >
+{
+        virtual void set_value( T value ) = 0;
+        virtual void set_error( E error ) = 0;
+        virtual void set_stopped()        = 0;
+};
+
+template < typename T, typename E >
 struct event_core;
 
-template < typename T >
-using event_ptr = varptr< event< T >, event_core< T > >;
-
-template < typename T >
+template < typename T, typename E >
 struct event_core
 {
-        void link_event( event< T >& e )
+        void set_value( T value )
         {
-                if ( first )
-                        first->prev_ = &e;
-                e.next_ = first;
-                first   = &e;
-        }
-
-        void raise( T& value )
-        {
-                auto* e = std::exchange( first, nullptr );
-                while ( e ) {
-                        event< T >* next = get_if< event< T > >( e->next_ );
-                        e->unlink();
-                        e->raise( value );
-                        e = next;
+                auto iter = list.begin();
+                auto e    = list.end();
+                while ( iter != e ) {
+                        auto n = iter++;
+                        n->set_value( std::move( value ) );
                 }
         }
 
-        event< T >* first = nullptr;
+        void set_error( E err )
+        {
+                auto iter = list.begin();
+                auto e    = list.end();
+                while ( iter != e ) {
+                        auto n = iter++;
+                        n->set_error( std::move( err ) );
+                }
+        }
+
+        void set_stopped()
+        {
+                auto iter = list.begin();
+                auto e    = list.end();
+                while ( iter != e ) {
+                        auto n = iter++;
+                        n->set_stopped();
+                }
+        }
+
+        zll::ll_list< event< T, E > > list;
 };
 
-template < typename T >
+template < typename T, typename E >
+struct event_sender;
+
+template < typename T, typename E >
 struct event_source
 {
         using value_type = T;
 
-        event< T > get()
+        event_sender< T, E > schedule()
         {
-                return event< T >( core_ );
+                return ( core_ );
         }
 
-        void raise( T& value )
+        void set_value( T value )
         {
-                core_.raise( value );
+                core_.set_value( std::move( value ) );
+        }
+
+        void set_error( E err )
+        {
+                core_.set_error( std::move( err ) );
+        }
+
+        void set_stopped()
+        {
+                core_.set_stopped();
         }
 
 private:
-        event_core< T > core_;
+        event_core< T, E > core_;
 };
 
-template < typename T >
-struct event
+template < typename T, typename E >
+struct event_awaitable : event< T, E >
 {
-        using ptr_t      = varptr< event< T >, event_core< T > >;
-        using value_type = T;
-
-        event( event_core< T >& src )
-          : src_( src )
+        event_awaitable( event_core< T, E >& core )
+          : core_( core )
+          , res_()
+          , h_( nullptr )
         {
         }
-
-        event( event const& )                = delete;
-        event& operator=( event const& )     = delete;
-        event( event&& ) noexcept            = default;
-        event& operator=( event&& ) noexcept = default;
 
         [[nodiscard]] bool await_ready() const noexcept
         {
@@ -142,47 +124,139 @@ struct event
 
         void await_suspend( std::coroutine_handle<> h ) noexcept
         {
+                core_.list.link_back( *this );
                 h_ = h;
-                src_.link_event( *this );
         }
 
-        T& await_resume() const
+        std::variant< T, E > await_resume() const
         {
-                return *value_;
+                return std::move( res_ );
         }
 
-        ~event()
+        event_core< T, E >&     core_;
+        std::variant< T, E >    res_;
+        std::coroutine_handle<> h_;
+
+
+        void set_value( T value ) override
         {
-                unlink();
+                res_ = std::move( value );
+                h_.resume();
         }
+
+        void set_error( E error ) override
+        {
+                res_ = std::move( error );
+                h_.resume();
+        }
+
+        void set_stopped() override
+        {
+                // XXX: is this wise?
+                h_.destroy();
+        }
+};
+
+template < typename T, typename E, typename R >
+struct event_op
+{
+        event_op( R receiver, event_core< T, E >& core )
+          : impl_( std::move( receiver ) )
+          , core_( core )
+        {
+        }
+
+        void start()
+        {
+                core_.list.link_back( &impl_ );
+        }
+
+        struct _event_op : event< T, E >
+        {
+                R receiver_;
+
+                _event_op( R receiver )
+                  : receiver_( std::move( receiver ) )
+                {
+                }
+
+                void set_value( T value ) override
+                {
+                        receiver_.set_value( std::move( value ) );
+                }
+
+                void set_error( E err ) override
+                {
+                        receiver_.set_error( std::move( err ) );
+                }
+
+                void set_stopped() override
+                {
+                        receiver_.set_stopped();
+                }
+        };
 
 private:
-        friend struct event_core< T >;
+        _event_op           impl_;
+        event_core< T, E >& core_;
+};
 
-        void unlink() noexcept
+template < typename T, typename E >
+struct event_sender
+{
+        event_sender( event_core< T, E >& core )
+          : core_( core )
         {
-                if ( auto* pp = get_if< event< T > >( prev_ ) )
-                        pp->next_ = next_;
-                else if ( auto* np = get_if< event_core< T > >( prev_ ) )
-                        np->first = get_if< event< T > >( next_ );
-
-                if ( auto* pp = get_if< event< T > >( next_ ) )
-                        pp->prev_ = prev_;
         }
 
-        void raise( T& value )
+        template < typename R >
+        event_op< T, E, R > connect( R receiver )
         {
-                value_ = &value;
-                if ( h_ && !h_.done() )
-                        h_.resume();
+                return { std::move( receiver ), core_ };
         }
 
-        event_ptr< T > next_ = nullptr;
-        event_ptr< T > prev_ = nullptr;
+        event_core< T, E >& core_;
+};
 
-        event_core< T >&              src_;
-        std::coroutine_handle< void > h_;
-        T*                            value_ = nullptr;
+struct _mem_res_promise
+{
+
+        static void* operator new( std::size_t const sz, memory_resource auto& mem, auto&&... )
+        {
+                return alloc( sz, mem );
+        }
+
+        static constexpr std::size_t align = alignof( std::max_align_t );
+        struct vtable
+        {
+                void ( *dealloc )( void*, void*, std::size_t const ) = nullptr;
+                void* mem                                            = nullptr;
+        };
+        static constexpr std::size_t spacing = align > sizeof( vtable ) ? align : sizeof( vtable );
+
+        template < memory_resource M >
+        static void* alloc( std::size_t sz, M& mem )
+        {
+                sz += spacing;
+                void* const vp = allocate( mem, sz, align );
+                vtable      vt{
+                         .dealloc =
+                        +[]( void* mem, void* p, std::size_t const sz ) {
+                                deallocate( *( (M*) mem ), p, sz, align );
+                        },
+                         .mem = &mem,
+                };
+                std::memcpy( vp, (void const*) &vt, sizeof( vtable ) );
+                return ( (char*) vp ) + spacing;
+        }
+
+        static void operator delete( void* const ptr, std::size_t const sz )
+        {
+                void*  beg = ( (char*) ptr ) - spacing;
+                vtable vt;
+                std::memcpy( (void*) &vt, beg, sizeof( vtable ) );
+                vt.dealloc( vt.mem, beg, sz + spacing );
+        }
 };
 
 template < typename T >
@@ -190,8 +264,9 @@ struct task
 {
         using value_type = T;
 
-        struct promise_type
+        struct promise_type : _mem_res_promise
         {
+
                 using value_type = T;
 
                 task get_return_object()
@@ -201,7 +276,6 @@ struct task
 
                 std::suspend_always initial_suspend() noexcept
                 {
-                        // XXX: coro should register itself to "to repeat" list somewhere
                         return {};
                 }
 
@@ -212,25 +286,17 @@ struct task
 
                 void unhandled_exception() noexcept
                 {
-                        // XXX: impl
                 }
 
-                template < typename U >
-                auto await_transform( event< U > e ) noexcept
+                template < typename U, typename E >
+                auto await_transform( event_sender< U, E > sender ) noexcept
                 {
-                        return std::move( e );
-                }
-                auto await_transform( std::suspend_always e ) noexcept
-                {
-                        // XXX: coro should register itself to "to repeat" list somewhere
-                        return std::move( e );
-                }
-
-                auto await_transform( std::suspend_never e ) noexcept
-                {
-                        return std::move( e );
+                        return event_awaitable< U, E >( sender.core_ );
                 }
         };
+        static_assert(
+            alignof( promise_type ) <= alignof( std::max_align_t ),
+            "Unsupported alignment" );
 
         task( std::coroutine_handle< promise_type > handle )
           : h_( handle )

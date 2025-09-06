@@ -25,31 +25,49 @@
 #include "doctest.h"
 #include "ecor/ecor.hpp"
 
+#include <iostream>
+
 namespace ecor
 {
 
+struct nd_mem
+{
+        void* allocate( std::size_t bytes, std::size_t align )
+        {
+                std::cout << "alloc " << bytes << " align " << align << " this: " << this << "\n";
+                return ::operator new( bytes, std::align_val_t( align ) );
+        }
+
+        void deallocate( void* p, std::size_t bytes, std::size_t align )
+        {
+                std::cout << "dealloc " << bytes << " align " << align << " this: " << this << "\n";
+                ::operator delete( p, std::align_val_t( align ) );
+        }
+};
+
 TEST_CASE( "base" )
 {
-        event_source< int > es;
-        int                 y = -1;
+        nd_mem                     mem;
+        event_source< int, float > es;
+        int                        y = -1;
 
-        auto f = [&]() -> ecor::task< void > {
+        auto f = [&]( memory_resource auto& ) -> ecor::task< void > {
                 for ( ;; ) {
-                        int x = co_await es.get();
+                        int x = std::get< 0 >( co_await es.schedule() );
                         y     = x;
                 }
         };
 
-        task< void > h = f();
+        task< void > h = f( mem );
         // XXX: unpleasant?
         h.resume();
 
         int value = 42;
-        es.raise( value );
+        es.set_value( value );
         CHECK( value == y );
 
         value = 666;
-        es.raise( value );
+        es.set_value( value );
         CHECK( value == y );
 }
 
