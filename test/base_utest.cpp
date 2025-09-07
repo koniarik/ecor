@@ -45,30 +45,141 @@ struct nd_mem
         }
 };
 
-TEST_CASE( "base" )
+struct err
 {
-        nd_mem                     mem;
-        event_source< int, float > es;
-        int                        y = -1;
+};
 
-        auto f = [&]( memory_resource auto& ) -> ecor::task< void > {
+static void test_simple_event_source( auto& es, auto& val )
+{
+        int value = 42;
+        es.set_value( value );
+        CHECK( value == val );
+
+        value = 666;
+        es.set_value( value );
+        CHECK( value == val );
+}
+
+TEST_CASE( "dyn_memory_base" )
+{
+        nd_mem                   mem;
+        task_allocator           ctx{ mem };
+        event_source< int, err > es;
+        int                      y = -1;
+
+        auto f = [&]( task_allocator& ) -> ecor::task< void > {
                 for ( ;; ) {
                         int x = std::get< 0 >( co_await es.schedule() );
                         y     = x;
                 }
         };
 
-        task< void > h = f( mem );
-        // XXX: unpleasant?
-        h.resume();
+        auto h = f( ctx );
 
-        int value = 42;
-        es.set_value( value );
-        CHECK( value == y );
+        test_simple_event_source( es, y );
+}
 
-        value = 666;
-        es.set_value( value );
-        CHECK( value == y );
+TEST_CASE( "void error" )
+{
+        nd_mem                    mem;
+        task_allocator            ctx{ mem };
+        event_source< int, void > es;
+        int                       y = -1;
+
+        auto f = [&]( task_allocator& ) -> ecor::task< void > {
+                for ( ;; ) {
+                        int x = co_await es.schedule();
+                        y     = x;
+                }
+        };
+
+        auto h = f( ctx );
+
+        test_simple_event_source( es, y );
+}
+
+TEST_CASE( "op" )
+{
+        event_source< int, void > es;
+        int                       y = -1;
+
+        struct
+        {
+                int& y;
+                void set_value( int v )
+                {
+                        y = v;
+                }
+        } receiver{ .y = y };
+
+        auto s  = es.schedule();
+        auto op = s.connect( receiver );
+        op.start();
+
+        test_simple_event_source( es, y );
+}
+
+TEST_CASE( "notify" )
+{
+        nd_mem                     mem;
+        task_allocator             ctx{ mem };
+        notify_source< int, void > es;
+        int                        y = 0;
+
+        auto f = [&]( task_allocator& ) -> ecor::task< void > {
+                for ( ;; ) {
+                        co_await es.schedule();
+                        y++;
+                }
+        };
+
+        auto h = f( ctx );
+
+        es.set_value();
+        CHECK( y == 1 );
+        es.set_value();
+        CHECK( y == 2 );
+}
+
+TEST_CASE( "recursive" )
+{
+        nd_mem                    mem;
+        task_allocator            ctx{ mem };
+        event_source< int, void > es;
+        int                       y = -1;
+
+        std::function< ecor::task< void >( task_allocator& ) > f =
+            [&]( task_allocator& ) -> ecor::task< void > {
+                int x  = co_await es.schedule();
+                y      = x;
+                auto h = f( ctx );
+                co_await std::move( h );  // XXX: is the move a bright idea?
+        };
+
+        auto h = f( ctx );
+        test_simple_event_source( es, y );
+}
+
+TEST_CASE( "transitive noop" )
+{
+        nd_mem                    mem;
+        task_allocator            ctx{ mem };
+        event_source< int, void > es;
+        int                       y = -1;
+
+        auto g = [&]( task_allocator& ) -> ecor::task< void > {
+                co_return;
+        };
+        auto f = [&]( task_allocator& ) -> ecor::task< void > {
+                for ( ;; ) {
+                        int x = co_await es.schedule();
+                        y     = x;
+                        co_await g( ctx );
+                }
+        };
+
+        auto h = f( ctx );
+        test_simple_event_source( es, y );
 }
 
 };  // namespace ecor
