@@ -34,13 +34,15 @@ struct nd_mem
 {
         void* allocate( std::size_t bytes, std::size_t align )
         {
-                std::cout << "alloc " << bytes << " align " << align << " this: " << this << "\n";
+                //      std::cout << "alloc " << bytes << " align " << align << " this: " << this <<
+                //      "\n";
                 return ::operator new( bytes, std::align_val_t( align ) );
         }
 
         void deallocate( void* p, std::size_t bytes, std::size_t align )
         {
-                std::cout << "dealloc " << bytes << " align " << align << " this: " << this << "\n";
+                //   std::cout << "dealloc " << bytes << " align " << align << " this: " << this <<
+                //   "\n";
                 ::operator delete( p, std::align_val_t( align ) );
         }
 };
@@ -49,25 +51,28 @@ struct err
 {
 };
 
-static void test_simple_event_source( auto& es, auto& val )
+static void test_simple_event_source( task_ctx& ctx, auto& es, auto& val )
 {
+        ctx.core.run_once();
         int value = 42;
         es.set_value( value );
         CHECK( value == val );
 
+        ctx.core.run_once();
         value = 666;
         es.set_value( value );
         CHECK( value == val );
+        ctx.core.run_once();
 }
 
 TEST_CASE( "dyn_memory_base" )
 {
         nd_mem                   mem;
-        task_allocator           ctx{ mem };
+        task_ctx                 ctx{ mem };
         event_source< int, err > es;
         int                      y = -1;
 
-        auto f = [&]( task_allocator& ) -> ecor::task< void > {
+        auto f = [&]( task_ctx& ) -> ecor::task< void > {
                 for ( ;; ) {
                         int x = std::get< 0 >( co_await es.schedule() );
                         y     = x;
@@ -76,17 +81,17 @@ TEST_CASE( "dyn_memory_base" )
 
         auto h = f( ctx );
 
-        test_simple_event_source( es, y );
+        test_simple_event_source( ctx, es, y );
 }
 
 TEST_CASE( "void error" )
 {
         nd_mem                    mem;
-        task_allocator            ctx{ mem };
+        task_ctx                  ctx{ mem };
         event_source< int, void > es;
         int                       y = -1;
 
-        auto f = [&]( task_allocator& ) -> ecor::task< void > {
+        auto f = [&]( task_ctx& ) -> ecor::task< void > {
                 for ( ;; ) {
                         int x = co_await es.schedule();
                         y     = x;
@@ -95,11 +100,13 @@ TEST_CASE( "void error" )
 
         auto h = f( ctx );
 
-        test_simple_event_source( es, y );
+        test_simple_event_source( ctx, es, y );
 }
 
 TEST_CASE( "op" )
 {
+        nd_mem                    mem;
+        task_ctx                  ctx{ mem };
         event_source< int, void > es;
         int                       y = -1;
 
@@ -116,17 +123,17 @@ TEST_CASE( "op" )
         auto op = s.connect( receiver );
         op.start();
 
-        test_simple_event_source( es, y );
+        test_simple_event_source( ctx, es, y );
 }
 
 TEST_CASE( "notify" )
 {
         nd_mem                     mem;
-        task_allocator             ctx{ mem };
+        task_ctx                   ctx{ mem };
         notify_source< int, void > es;
         int                        y = 0;
 
-        auto f = [&]( task_allocator& ) -> ecor::task< void > {
+        auto f = [&]( task_ctx& ) -> ecor::task< void > {
                 for ( ;; ) {
                         co_await es.schedule();
                         y++;
@@ -144,12 +151,12 @@ TEST_CASE( "notify" )
 TEST_CASE( "recursive" )
 {
         nd_mem                    mem;
-        task_allocator            ctx{ mem };
+        task_ctx                  ctx{ mem };
         event_source< int, void > es;
         int                       y = -1;
 
-        std::function< ecor::task< void >( task_allocator& ) > f =
-            [&]( task_allocator& ) -> ecor::task< void > {
+        std::function< ecor::task< void >( task_ctx& ) > f =
+            [&]( task_ctx& ) -> ecor::task< void > {
                 int x  = co_await es.schedule();
                 y      = x;
                 auto h = f( ctx );
@@ -157,29 +164,30 @@ TEST_CASE( "recursive" )
         };
 
         auto h = f( ctx );
-        test_simple_event_source( es, y );
+        test_simple_event_source( ctx, es, y );
 }
 
 TEST_CASE( "transitive noop" )
 {
         nd_mem                    mem;
-        task_allocator            ctx{ mem };
+        task_ctx                  ctx{ mem };
         event_source< int, void > es;
         int                       y = -1;
 
-        auto g = [&]( task_allocator& ) -> ecor::task< void > {
+        auto g = [&]( task_ctx& ) -> ecor::task< void > {
                 co_return;
         };
-        auto f = [&]( task_allocator& ) -> ecor::task< void > {
+        auto f = [&]( task_ctx& ctx ) -> ecor::task< void > {
                 for ( ;; ) {
-                        int x = co_await es.schedule();
-                        y     = x;
-                        co_await g( ctx );
+                        int x  = co_await es.schedule();
+                        y      = x;
+                        auto h = g( ctx );
+                        co_await std::move( h );
                 }
         };
 
         auto h = f( ctx );
-        test_simple_event_source( es, y );
+        test_simple_event_source( ctx, es, y );
 }
 
 };  // namespace ecor

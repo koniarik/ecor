@@ -107,84 +107,6 @@ private:
         event_core< T, E > core_;
 };
 
-template < typename C >
-struct _awaitable_base : C::unit_type
-{
-        _awaitable_base( C& core )
-          : core_( core )
-        {
-        }
-
-        [[nodiscard]] bool await_ready() const noexcept
-        {
-                return false;
-        }
-
-        void await_suspend( std::coroutine_handle<> h ) noexcept
-        {
-                core_.list.link_back( *this );
-                h_ = h;
-        }
-
-        C&                      core_;
-        std::coroutine_handle<> h_ = nullptr;
-};
-
-template < typename T, typename E >
-struct event_awaitable : _awaitable_base< event_core< T, E > >
-{
-        using base = _awaitable_base< event_core< T, E > >;
-
-        event_awaitable( event_core< T, E >& core )
-          : base( core )
-        {
-        }
-
-        std::variant< T, E > await_resume() const
-        {
-                return std::move( res_ );
-        }
-
-        void set_value( T value ) override
-        {
-                res_ = std::move( value );
-                base::h_.resume();
-        }
-
-        void set_error( E error ) override
-        {
-                res_ = std::move( error );
-                base::h_.resume();
-        }
-
-private:
-        std::variant< T, E > res_;
-};
-
-template < typename T >
-struct event_awaitable< T, void > : _awaitable_base< event_core< T, void > >
-{
-        using base = _awaitable_base< event_core< T, void > >;
-
-        event_awaitable( event_core< T, void >& core )
-          : base( core )
-        {
-        }
-
-        T await_resume() const
-        {
-                return std::move( res_ );
-        }
-
-        void set_value( T value ) override
-        {
-                res_ = std::move( value );
-                base::h_.resume();
-        }
-
-private:
-        T res_;
-};
 
 template < typename T, typename E, typename R >
 struct _event_op_impl : event< T, E >
@@ -251,6 +173,9 @@ private:
 template < typename T, typename E >
 struct event_sender
 {
+        using value_type = T;
+        using error_type = E;
+
         event_sender( event_core< T, E >& core )
           : core_( core )
         {
@@ -327,59 +252,161 @@ private:
         notify_core< E > core_;
 };
 
-template < typename Tag, typename E >
-struct notify_awaitable : _awaitable_base< notify_core< E > >
+
+template < typename S, typename R >
+using connect_type = decltype( std::declval< S >().connect( std::declval< R >() ) );
+
+enum class _awaitable_state_e : uint8_t
 {
-        using base = _awaitable_base< notify_core< E > >;
-
-        notify_awaitable( notify_core< E >& core )
-          : base( core )
-        {
-        }
-
-        std::optional< E > await_resume() const
-        {
-                return std::move( res_ );
-        }
-
-        void set_value() override
-        {
-                base::h_.resume();
-        }
-
-        void set_error( E error ) override
-        {
-                res_ = std::move( error );
-                base::h_.resume();
-        }
-
-private:
-        std::optional< E > res_;
+        empty,
+        value,
+        error
 };
 
-template < typename Tag >
-struct notify_awaitable< Tag, void > : _awaitable_base< notify_core< void > >
+template < typename T, typename E >
+struct _awaitable_expected
 {
-        using base = _awaitable_base< notify_core< void > >;
+        _awaitable_state_e state = _awaitable_state_e::empty;
+        union
+        {
+                T val;
+                E err;
+        };
 
-        notify_awaitable( notify_core< void >& core )
-          : base( core )
+        void set_value( T v ) noexcept
+        {
+                new ( (void*) &val ) T( std::move( v ) );
+                state = _awaitable_state_e::value;
+        }
+
+        void set_error( E v ) noexcept
+        {
+                new ( (void*) &err ) E( std::move( v ) );
+                state = _awaitable_state_e::error;
+        }
+};
+
+template < typename E >
+struct _awaitable_expected< void, E >
+{
+        _awaitable_state_e state = _awaitable_state_e::empty;
+        union
+        {
+                E err;
+        };
+
+        void set_value() noexcept
+        {
+                state = _awaitable_state_e::value;
+        }
+
+        void set_error( E v ) noexcept
+        {
+                new ( (void*) &err ) E( std::move( v ) );
+                state = _awaitable_state_e::error;
+        }
+};
+
+template < typename T >
+struct _awaitable_expected< T, void >
+{
+        _awaitable_state_e state = _awaitable_state_e::empty;
+        union
+        {
+                T val;
+        };
+
+        void set_value( T v ) noexcept
+        {
+                new ( (void*) &val ) T( std::move( v ) );
+                state = _awaitable_state_e::value;
+        }
+};
+
+template <>
+struct _awaitable_expected< void, void >
+{
+        _awaitable_state_e state = _awaitable_state_e::empty;
+
+        void set_value() noexcept
+        {
+                state = _awaitable_state_e::value;
+        }
+};
+
+
+template < typename S >
+struct _awaitable
+{
+        _awaitable( S sender, std::coroutine_handle<> h )
+          : op_( std::move( sender ).connect( _receiver{ .exp_ = &exp_, .cont_ = h } ) )
         {
         }
 
-        void await_resume() const
+        [[nodiscard]] bool await_ready() const noexcept
         {
+                return false;
         }
 
-        void set_value() override
+        void await_suspend( std::coroutine_handle<> ) noexcept
         {
-                base::h_.resume();
+                op_.start();
         }
+
+        using value_type = typename S::value_type;
+        using error_type = typename S::error_type;
+
+        auto await_resume() const noexcept
+        {
+                if constexpr ( std::same_as< error_type, void > ) {
+                        if constexpr ( std::same_as< value_type, void > )
+                                return;
+                        else
+                                // if ( exp_.state == _awaitable_state_e::value )
+                                return std::move( exp_.val );
+                } else {
+                        using R = std::variant< value_type, error_type >;
+                        if ( exp_.state == _awaitable_state_e::value )
+                                return R{ std::move( exp_.val ) };
+                        else {
+                                //       if ( exp_.state == _awaitable_state_e::error )
+                                return R{ std::move( exp_.err ) };
+                        }
+                }
+                // Should not happen
+        }
+
+        using _aw_tp = _awaitable_expected< typename S::value_type, typename S::error_type >;
+
+        struct _receiver
+        {
+                _aw_tp*                 exp_;
+                std::coroutine_handle<> cont_;
+
+                template < typename... Ts >
+                void set_value( Ts&&... vals ) noexcept
+                {
+                        exp_->set_value( (Ts&&) vals... );
+                        cont_.resume();
+                }
+
+                template < typename... Es >
+                void set_error( Es&&... errs ) noexcept
+                {
+                        exp_->set_error( (Es&&) errs... );
+                        cont_.resume();
+                }
+        };
+
+        _aw_tp                       exp_;
+        connect_type< S, _receiver > op_;
 };
 
 template < typename R, typename E >
 struct _notif_op_impl : notif< E >
 {
+        using core_type = notify_core< E >;
+
         R receiver_;
 
         _notif_op_impl( R receiver )
@@ -401,6 +428,7 @@ struct _notif_op_impl : notif< E >
 template < typename R >
 struct _notif_op_impl< R, void > : notif< void >
 {
+        using core_type = notify_core< void >;
         R receiver_;
 
         _notif_op_impl( R receiver )
@@ -417,13 +445,16 @@ struct _notif_op_impl< R, void > : notif< void >
 template < typename Tag, typename E >
 struct notify_sender
 {
+        using value_type = void;
+        using error_type = E;
+
         notify_sender( notify_core< E >& core )
           : core_( core )
         {
         }
 
         template < typename R >
-        _op< _notif_op_impl< Tag, E > > connect( R receiver )
+        _op< _notif_op_impl< R, E > > connect( R receiver )
         {
                 return { core_, std::move( receiver ) };
         }
@@ -450,11 +481,6 @@ struct task_allocator
         void* mem                                                               = nullptr;
 };
 
-inline task_allocator& task_alloc( task_allocator& t )
-{
-        return t;
-}
-
 inline void* allocate( task_allocator& t, std::size_t const sz, std::size_t const align )
 {
         return t.alloc( t.mem, sz, align );
@@ -465,11 +491,79 @@ inline void deallocate( task_allocator& t, void* p, std::size_t const sz, std::s
         return t.dealloc( t.mem, p, sz, align );
 }
 
+
+struct _task_token : zll::ll_base< _task_token >
+{
+
+        _task_token( std::coroutine_handle<> h = nullptr )
+          : handle( h )
+        {
+        }
+
+        void resume()
+        {
+                if ( handle )
+                        handle.resume();
+        }
+
+        std::coroutine_handle<> handle = nullptr;
+};
+
+struct task_core
+{
+        zll::ll_list< _task_token > sleepy_tasks;
+
+        void run_once()
+        {
+                if ( sleepy_tasks.empty() )
+                        return;
+                auto t = sleepy_tasks.front();
+                t.resume();
+                sleepy_tasks.detach_front();
+        }
+};
+
+struct task_ctx
+{
+        task_allocator alloc;
+        task_core      core;
+
+        task_ctx( auto& mem )
+          : alloc( mem )
+        {
+        }
+};
+
+inline task_core& get_task_core( task_ctx& t )
+{
+        return t.core;
+}
+
+inline task_allocator& get_task_alloc( task_ctx& t )
+{
+        return t.alloc;
+}
+
 template < typename T >
 struct task;
 
 template < typename T >
 struct _task_awaiter;
+
+struct _task_resumer : _task_token
+{
+        _task_resumer( task_core& core )
+          : _core( core )
+        {
+        }
+
+        task_core& _core;
+
+        void reschedule()
+        {
+                _core.sleepy_tasks.link_back( *this );
+        }
+};
 
 struct _promise_base
 {
@@ -496,9 +590,9 @@ struct _promise_base
                 deallocate( *vt.mem, beg, sz + spacing, align );
         }
 
-        static void* operator new( std::size_t const sz, auto& mem, auto&&... )
+        static void* operator new( std::size_t const sz, auto& ctx, auto&&... )
         {
-                task_allocator& a = task_alloc( mem );
+                task_allocator& a = get_task_alloc( ctx );
                 vtable          vt{
                              .mem = &a,
                 };
@@ -510,6 +604,11 @@ struct _promise_base
                 dealloc( ptr, sz );
         }
 
+        _promise_base( auto& ctx, auto&&... )
+          : core( get_task_core( ctx ) )
+        {
+        }
+
         std::suspend_never initial_suspend() noexcept
         {
                 return {};
@@ -517,79 +616,59 @@ struct _promise_base
 
         std::suspend_always final_suspend() noexcept
         {
-                if ( next_ )
-                        next_.resume();
-                // XXX is this bright idea? what about stack size?
+                if ( resum )
+                        resum->reschedule();
                 return {};
         }
 
-        std::coroutine_handle<> next_ = nullptr;
+        task_core&     core;
+        _task_resumer* resum = nullptr;
 
         void unhandled_exception() noexcept
         {
         }
-
-        template < typename U, typename E >
-        auto await_transform( event_sender< U, E > sender ) noexcept
-        {
-                return event_awaitable< U, E >( sender.core_ );
-        }
-
-        template < typename U, typename E >
-        auto await_transform( notify_sender< U, E > sender ) noexcept
-        {
-                return notify_awaitable< U, E >( sender.core_ );
-        }
-
-        template < typename U >
-        auto await_transform( task< U >&& other ) noexcept
-        {
-                return _task_awaiter< U >{ std::move( other ) };
-        }
 };
 
 template < typename T >
-struct _task_awaiter_base
+struct _task_awaiter
 {
-        _task_awaiter_base( task< T >&& t )
-          : task_( std::move( t ) )
+        _task_awaiter( task< T >&& t, task_core& c )
+          : resum_( c )
+          , task_( std::move( t ) )
         {
+        }
+
+        auto await_resume() const
+        {
+                if constexpr ( std::same_as< T, void > )
+                        return;
+                else {
+                        auto* p = task_.result();
+                        assert( p );  // TODO: re-think
+                        return std::move( *p );
+                }
         }
 
         bool await_ready() const noexcept
         {
-                return false;
+                auto r = task_.done();
+                return r;
         }
 
         bool await_suspend( std::coroutine_handle<> h ) noexcept
         {
-                if ( task_.done() )
-                        return false;
-
-                task_.promise().next_ = h;
-
+                resum_.handle = h;
+                if ( !task_.done() )
+                        task_.promise().resum = &resum_;
+                else
+                        resum_.reschedule();
                 return true;
         }
 
-protected:
-        task< T > task_;
+private:
+        _task_resumer resum_;
+        task< T >     task_;
 };
-
-template < typename T >
-struct _task_awaiter : _task_awaiter_base< T >
-{
-        using base = _task_awaiter_base< T >;
-
-        T await_resume() const
-        {
-                auto* p = base::task_.result();
-                assert( p );  // TODO: re-think
-                return std::move( *p );
-        }
-};
-
-template <>
-struct _task_awaiter< void >;
 
 
 template < typename T >
@@ -620,6 +699,28 @@ struct _promise_type : _promise_base, _promise_type_value< T >
         {
                 return { std::coroutine_handle< _promise_type >::from_promise( *this ) };
         }
+
+        template < typename U, typename E >
+        auto await_transform( event_sender< U, E > sender ) noexcept
+        {
+                return _awaitable{
+                    std::move( sender ),
+                    std::coroutine_handle< _promise_type >::from_promise( *this ) };
+        }
+
+        template < typename U, typename E >
+        auto await_transform( notify_sender< U, E > sender ) noexcept
+        {
+                return _awaitable{
+                    std::move( sender ),
+                    std::coroutine_handle< _promise_type >::from_promise( *this ) };
+        }
+
+        template < typename U >
+        auto await_transform( task< U >&& other ) noexcept
+        {
+                return _task_awaiter< U >{ std::move( other ), this->core };
+        }
 };
 
 template < typename T >
@@ -645,9 +746,8 @@ struct task
         task& operator=( task&& other ) noexcept
         {
                 if ( this != &other ) {
-                        if ( h_ && !h_.done() )
-                                h_.destroy();
-                        h_ = std::exchange( other.h_, nullptr );
+                        task tmp = std::move( other );
+                        std::swap( h_, tmp.h_ );
                 }
                 return *this;
         }
@@ -680,14 +780,6 @@ struct task
 
 private:
         std::coroutine_handle< promise_type > h_;
-};
-
-template <>
-struct _task_awaiter< void > : _task_awaiter_base< void >
-{
-        void await_resume() const
-        {
-        }
 };
 
 }  // namespace ecor
