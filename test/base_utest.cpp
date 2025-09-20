@@ -26,6 +26,8 @@
 #include "ecor/ecor.hpp"
 
 #include <iostream>
+#include <map>
+#include <vector>
 
 namespace ecor
 {
@@ -126,27 +128,6 @@ TEST_CASE( "op" )
         test_simple_event_source( ctx, es, y );
 }
 
-TEST_CASE( "notify" )
-{
-        nd_mem                     mem;
-        task_ctx                   ctx{ mem };
-        notify_source< int, void > es;
-        int                        y = 0;
-
-        auto f = [&]( task_ctx& ) -> ecor::task< void > {
-                for ( ;; ) {
-                        co_await es.schedule();
-                        y++;
-                }
-        };
-
-        auto h = f( ctx );
-
-        es.set_value();
-        CHECK( y == 1 );
-        es.set_value();
-        CHECK( y == 2 );
-}
 
 TEST_CASE( "recursive" )
 {
@@ -189,5 +170,127 @@ TEST_CASE( "transitive noop" )
         auto h = f( ctx );
         test_simple_event_source( ctx, es, y );
 }
+
+struct timer
+{
+
+        using time_point = uint32_t;
+
+        auto wait_until( time_point tp ) noexcept
+        {
+                return _es.schedule( tp );
+        }
+
+        void tick( time_point now )
+        {
+                while ( !_es.empty() && _es.front().key <= now )
+                        _es.set_value( std::move( _es.front().key ) );
+        }
+
+private:
+        seq_source< time_point, time_point, void > _es;
+};
+
+TEST_CASE( "timer" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        timer    tm;
+        uint32_t cnt = 0;
+
+        auto f = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                uint32_t i = 0;
+                for ( ;; ) {
+                        co_await tm.wait_until( i++ );
+                        ++cnt;
+                }
+        };
+
+        auto h = f( ctx );
+
+        ctx.core.run_once();
+        tm.tick( 41 );
+        CHECK( cnt == 42 );
+}
+
+TEST_CASE( "timer_complex_heap" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        timer    tm;
+
+        std::vector< std::pair< uint32_t, uint32_t > > execution_log;
+        uint32_t                                       total_executions = 0;
+
+        auto lambda1 = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                std::vector< uint32_t > times = { 10, 30, 50, 70, 90 };
+                for ( auto time : times ) {
+                        co_await tm.wait_until( time );
+                        execution_log.emplace_back( 1, time );
+                        ++total_executions;
+                }
+        };
+
+        auto lambda2 = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                std::vector< uint32_t > times = { 5, 25, 45, 65, 85 };
+                for ( auto time : times ) {
+                        co_await tm.wait_until( time );
+                        execution_log.emplace_back( 2, time );
+                        ++total_executions;
+                }
+        };
+
+        auto lambda3 = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                std::vector< uint32_t > times = { 15, 35, 55, 75, 95 };
+                for ( auto time : times ) {
+                        co_await tm.wait_until( time );
+                        execution_log.emplace_back( 3, time );
+                        ++total_executions;
+                }
+        };
+
+        auto lambda4 = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                std::vector< uint32_t > times = { 12, 18, 22, 28, 32, 38, 42, 48, 52, 58 };
+                for ( auto time : times ) {
+                        co_await tm.wait_until( time );
+                        execution_log.emplace_back( 4, time );
+                        ++total_executions;
+                }
+        };
+
+        auto h1 = lambda1( ctx );
+        auto h2 = lambda2( ctx );
+        auto h3 = lambda3( ctx );
+        auto h4 = lambda4( ctx );
+
+        for ( uint32_t current_time = 0; current_time <= 100; ++current_time ) {
+                tm.tick( current_time );
+
+                ctx.core.run_once();
+        }
+
+        CHECK( total_executions == 25 );
+
+        // Verify execution happened in correct time order
+        for ( size_t i = 1; i < execution_log.size(); ++i )
+                CHECK( execution_log[i].second >= execution_log[i - 1].second );
+
+        // Verify specific execution order for some key times
+        std::map< uint32_t, std::vector< uint32_t > > executions_by_time;
+        for ( auto& [coroutine_id, time] : execution_log )
+                executions_by_time[time].push_back( coroutine_id );
+
+        // Check some specific timing constraints
+        CHECK( executions_by_time[5] == std::vector< uint32_t >{ 2 } );
+        CHECK( executions_by_time[10] == std::vector< uint32_t >{ 1 } );
+        CHECK( executions_by_time[12] == std::vector< uint32_t >{ 4 } );
+        CHECK( executions_by_time[15] == std::vector< uint32_t >{ 3 } );
+
+        // Verify overlapping times are handled correctly
+        CHECK( executions_by_time[25] == std::vector< uint32_t >{ 2 } );
+        CHECK( executions_by_time[28] == std::vector< uint32_t >{ 4 } );
+        CHECK( executions_by_time[30] == std::vector< uint32_t >{ 1 } );
+}
+
 
 };  // namespace ecor

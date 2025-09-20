@@ -34,5 +34,6 @@ install(
   DESTINATION lib/cmake/ecor/)
 
 if(ECOR_TESTS_ENABLED)
+  enable_testing()
   add_subdirectory(test)
 endif()
