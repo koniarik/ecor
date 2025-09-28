@@ -20,13 +20,16 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 /// SOFTWARE.
+#include <functional>
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 
 #include "doctest.h"
 #include "ecor/ecor.hpp"
 
+#include <deque>
 #include <iostream>
 #include <map>
+#include <variant>
 #include <vector>
 
 namespace ecor
@@ -128,6 +131,15 @@ TEST_CASE( "op" )
         test_simple_event_source( ctx, es, y );
 }
 
+ecor::task< void > rec_task( task_ctx& ctx, event_source< int, void >& es, int& y )
+{
+        for ( ;; ) {
+                int x  = co_await es.schedule();
+                y      = x;
+                auto h = rec_task( ctx, es, y );
+                co_await std::move( h );  // XXX: is the move a bright idea?
+        }
+}
 
 TEST_CASE( "recursive" )
 {
@@ -136,15 +148,7 @@ TEST_CASE( "recursive" )
         event_source< int, void > es;
         int                       y = -1;
 
-        std::function< ecor::task< void >( task_ctx& ) > f =
-            [&]( task_ctx& ) -> ecor::task< void > {
-                int x  = co_await es.schedule();
-                y      = x;
-                auto h = f( ctx );
-                co_await std::move( h );  // XXX: is the move a bright idea?
-        };
-
-        auto h = f( ctx );
+        auto h = rec_task( ctx, es, y );
         test_simple_event_source( ctx, es, y );
 }
 
@@ -292,5 +296,113 @@ TEST_CASE( "timer_complex_heap" )
         CHECK( executions_by_time[30] == std::vector< uint32_t >{ 1 } );
 }
 
+TEST_CASE( "operator||" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
 
-};  // namespace ecor
+        {
+                event_source< int, void > es1;
+                event_source< int, void > es2;
+                int                       result    = -1;
+                bool                      completed = false;
+
+                auto test_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                        result    = co_await ( es1.schedule() || es2.schedule() );
+                        completed = true;
+                };
+
+                auto h = test_or( ctx );
+                ctx.core.run_once();  // Initialize coroutine
+
+                CHECK( !completed );
+
+                es1.set_value( 42 );
+                ctx.core.run_once();
+
+                CHECK( completed );
+                CHECK( result == 42 );
+
+                completed = false;
+                es2.set_value( 99 );
+                ctx.core.run_once();
+
+                CHECK( !completed );
+        }
+
+        {
+                event_source< int, void > es1;
+                event_source< int, void > es2;
+                int                       result    = -1;
+                bool                      completed = false;
+
+                auto test_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                        result    = co_await ( es1.schedule() || es2.schedule() );
+                        completed = true;
+                };
+
+                auto h = test_or( ctx );
+                ctx.core.run_once();  // Initialize coroutine
+
+                CHECK( !completed );
+
+                // Second event source fires first
+                es2.set_value( 123 );
+                ctx.core.run_once();
+
+                CHECK( completed );
+                CHECK( result == 123 );
+        }
+
+        {
+                event_source< int, void >         es_int;
+                event_source< std::string, void > es_string;
+                std::variant< int, std::string >  result;
+                bool                              completed = false;
+
+                auto test_mixed_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                        result    = co_await ( es_int.schedule() || es_string.schedule() );
+                        completed = true;
+                };
+
+                auto h = test_mixed_or( ctx );
+                ctx.core.run_once();  // Initialize coroutine
+
+                CHECK( !completed );
+
+                // String event fires first
+                es_string.set_value( std::string( "hello" ) );
+                ctx.core.run_once();
+
+                CHECK( completed );
+                CHECK( std::holds_alternative< std::string >( result ) );
+                CHECK( std::get< std::string >( result ) == "hello" );
+        }
+
+        {
+                seq_source< uint32_t, uint32_t, void > seq1;
+                seq_source< uint32_t, uint32_t, void > seq2;
+                uint32_t                               result    = 0;
+                bool                                   completed = false;
+
+                auto test_seq_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                        result    = co_await ( seq1.schedule( 10 ) || seq2.schedule( 5 ) );
+                        completed = true;
+                };
+
+                auto h = test_seq_or( ctx );
+                ctx.core.run_once();  // Initialize coroutine
+
+                CHECK( !completed );
+
+                // Process time 5 - seq2 should win
+                while ( !seq2.empty() && seq2.front().key <= 5 )
+                        seq2.set_value( seq2.front().key );
+                ctx.core.run_once();
+
+                CHECK( completed );
+                CHECK( result == 5 );
+        }
+}
+
+}  // namespace ecor

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <iterator>
 #include <optional>
+#include <variant>
 #include <zll.hpp>
 
 namespace ecor
@@ -14,6 +15,23 @@ template < typename T >
 concept memory_resource = requires( T a, std::size_t bytes, std::size_t align, void* p ) {
         { allocate( a, bytes, align ) } -> std::same_as< void* >;
         { deallocate( a, p, bytes, align ) } -> std::same_as< void >;
+};
+
+struct _dummy_receiver
+{
+        template < typename... Args >
+        void set_value( Args&&... args )
+        {
+        }
+        template < typename... Args >
+        void set_error( Args&&... args )
+        {
+        }
+};
+
+template < typename T >
+concept sender = requires( T s ) {
+        { std::move( s ).connect( std::declval< _dummy_receiver >() ) };
 };
 
 template < typename T >
@@ -361,9 +379,9 @@ enum class _awaitable_state_e : uint8_t
 };
 
 template < typename T, typename E >
-struct _awaitable_expected
+struct _expected
 {
-        _awaitable_expected() noexcept
+        _expected() noexcept
         {
         }
 
@@ -385,12 +403,20 @@ struct _awaitable_expected
                 new ( (void*) &err ) E( std::move( v ) );
                 state = _awaitable_state_e::error;
         }
+
+        ~_expected() noexcept
+        {
+                if ( state == _awaitable_state_e::value )
+                        val.~T();
+                else if ( state == _awaitable_state_e::error )
+                        err.~E();
+        }
 };
 
 template < typename T >
-struct _awaitable_expected< T, void >
+struct _expected< T, void >
 {
-        _awaitable_expected() noexcept
+        _expected() noexcept
         {
         }
 
@@ -404,6 +430,11 @@ struct _awaitable_expected< T, void >
         {
                 new ( (void*) &val ) T( std::move( v ) );
                 state = _awaitable_state_e::value;
+        }
+        ~_expected() noexcept
+        {
+                if ( state == _awaitable_state_e::value )
+                        val.~T();
         }
 };
 
@@ -447,7 +478,7 @@ struct _awaitable
                 // Should not happen
         }
 
-        using _aw_tp = _awaitable_expected< typename S::value_type, typename S::error_type >;
+        using _aw_tp = _expected< typename S::value_type, typename S::error_type >;
 
         struct _receiver
         {
@@ -476,7 +507,7 @@ struct _awaitable
 
 struct task_allocator
 {
-        template < memory_resource M >
+        template < typename M >
         task_allocator( M& m )
           : mem( &m )
         {
@@ -586,7 +617,9 @@ struct _promise_base
         };
         static constexpr std::size_t spacing = align > sizeof( vtable ) ? align : sizeof( vtable );
 
-        static void* alloc( std::size_t sz, task_allocator& mem, vtable& vt )
+        // XXX: check the noexcept thing
+
+        static void* alloc( std::size_t sz, task_allocator& mem, vtable& vt ) noexcept
         {
                 sz += spacing;
                 void* const vp = allocate( mem, sz, align );
@@ -594,7 +627,7 @@ struct _promise_base
                 return ( (char*) vp ) + spacing;
         }
 
-        static void dealloc( void* const ptr, std::size_t const sz )
+        static void dealloc( void* const ptr, std::size_t const sz ) noexcept
         {
                 void*  beg = ( (char*) ptr ) - spacing;
                 vtable vt;
@@ -602,7 +635,7 @@ struct _promise_base
                 deallocate( *vt.mem, beg, sz + spacing, align );
         }
 
-        static void* operator new( std::size_t const sz, auto& ctx, auto&&... )
+        void* operator new( std::size_t const sz, auto&& ctx, auto&&... ) noexcept
         {
                 task_allocator& a = get_task_alloc( ctx );
                 vtable          vt{
@@ -611,12 +644,12 @@ struct _promise_base
                 return alloc( sz, a, vt );
         }
 
-        static void operator delete( void* const ptr, std::size_t const sz )
+        void operator delete( void* const ptr, std::size_t const sz ) noexcept
         {
                 dealloc( ptr, sz );
         }
 
-        _promise_base( auto& ctx, auto&&... )
+        _promise_base( auto&& ctx, auto&&... )
           : core( get_task_core( ctx ) )
         {
         }
@@ -706,22 +739,20 @@ template < typename T >
 struct _promise_type : _promise_base, _promise_type_value< T >
 {
         using value_type = T;
+        using _promise_base::_promise_base;
+
+        static task< T > get_return_object_on_allocation_failure()
+        {
+                return { std::coroutine_handle< _promise_type >{} };
+        }
 
         task< T > get_return_object()
         {
                 return { std::coroutine_handle< _promise_type >::from_promise( *this ) };
         }
 
-        template < typename U, typename E >
-        auto await_transform( event_sender< U, E > sender ) noexcept
-        {
-                return _awaitable{
-                    std::move( sender ),
-                    std::coroutine_handle< _promise_type >::from_promise( *this ) };
-        }
-
-        template < typename K, typename U, typename E >
-        auto await_transform( seq_sender< K, U, E > sender ) noexcept
+        template < sender S >
+        auto await_transform( S sender ) noexcept
         {
                 return _awaitable{
                     std::move( sender ),
@@ -794,5 +825,114 @@ struct task
 private:
         std::coroutine_handle< promise_type > h_;
 };
+
+template < typename S1, typename S2, typename R >
+struct _or_op
+{
+        _or_op( S1 s1, S2 s2, R r )
+          : recv_( std::move( r ) )
+          , op1_( std::move( s1 ).connect( _r{ .fired_ = fired_, .recv_ = recv_ } ) )
+          , op2_( std::move( s2 ).connect( _r{ .fired_ = fired_, .recv_ = recv_ } ) )
+        {
+        }
+
+        // XXX: cancel of the other one shall be used isntead
+        void start()
+        {
+                op1_.start();
+                op2_.start();
+        }
+
+        struct _r
+        {
+                bool& fired_;
+                R&    recv_;
+
+                template < typename T >
+                void set_value( T&& v )
+                {
+                        if ( fired_ )
+                                return;
+                        fired_ = true;
+                        recv_.set_value( (T&&) v );
+                }
+
+                template < typename T >
+                void set_error( T&& e )
+                {
+                        if ( fired_ )
+                                return;
+                        fired_ = true;
+                        recv_.set_error( (T&&) e );
+                }
+        };
+
+        R recv_;
+
+        bool fired_ = false;
+
+        connect_type< S1, _r > op1_{};
+        connect_type< S2, _r > op2_{};
+};
+
+template < typename T1, typename T2 >
+struct _variant_of
+{
+        using type = std::variant< T1, T2 >;
+};
+
+// This might be brave
+template < typename T >
+struct _variant_of< T, T >
+{
+        using type = T;
+};
+
+template < typename T1 >
+struct _variant_of< T1, void >
+{
+        using type = T1;
+};
+
+template < typename T1 >
+struct _variant_of< void, T1 >
+{
+        using type = T1;
+};
+
+template <>
+struct _variant_of< void, void >
+{
+        using type = void;
+};
+
+template < typename S1, typename S2 >
+struct _or_sender
+{
+        _or_sender( S1 s1, S2 s2 )
+          : s1_( std::move( s1 ) )
+          , s2_( std::move( s2 ) )
+        {
+        }
+
+        using value_type = _variant_of< typename S1::value_type, typename S2::value_type >::type;
+        using error_type = _variant_of< typename S1::error_type, typename S2::error_type >::type;
+
+        template < typename R >
+        _or_op< S1, S2, R > connect( R receiver )
+        {
+                return { std::move( s1_ ), std::move( s2_ ), std::move( receiver ) };
+        }
+
+private:
+        S1 s1_;
+        S2 s2_;
+};
+
+template < typename S1, typename S2 >
+_or_sender< S1, S2 > operator||( S1 s1, S2 s2 )
+{
+        return { std::move( s1 ), std::move( s2 ) };
+}
 
 }  // namespace ecor
