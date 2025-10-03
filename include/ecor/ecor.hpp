@@ -3,7 +3,9 @@
 #include <concepts>
 #include <coroutine>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <variant>
 #include <zll.hpp>
@@ -47,6 +49,152 @@ void deallocate( T& mem, void* p, std::size_t bytes, std::size_t align )
 }
 
 template < typename T >
+T _align_idx( uint8_t const* buff, T idx, std::size_t align )
+{
+        auto* p = buff + idx;
+        auto  a = ( (uintptr_t) p ) % align;
+        if ( a )
+                p += align - a;
+        return (T) ( p - buff );
+}
+
+template < std::size_t N >
+constexpr auto _pick_index_type()
+{
+        if constexpr ( N <= 0xff )
+                return uint8_t{};
+        else if constexpr ( N <= 0xffff )
+                return uint16_t{};
+        else if constexpr ( N <= 0xffffffff )
+                return uint32_t{};
+        else
+                return;
+}
+
+template < std::size_t N >
+using _index_type = decltype( _pick_index_type< N >() );
+
+template < typename T >
+struct _circular_buffer_memory_base
+{
+        using index_type = T;
+
+        static constexpr index_type npos = std::numeric_limits< index_type >::max();
+
+        struct node
+        {
+                index_type next_idx = npos;
+                index_type prev_idx = npos;
+        };
+        index_type _first = npos;
+        index_type _last  = npos;
+        index_type _next  = npos;
+
+        index_type
+        _pick_index( uint8_t* buff, std::size_t bytes, std::size_t align, std::size_t size ) const
+        {
+                auto idx = _next == npos ? sizeof( node ) : _next + sizeof( node );
+                idx      = _align_idx( buff, idx, align );
+
+                auto capacity = size - idx;
+                if ( capacity >= bytes )
+                        return idx - sizeof( node );
+
+                idx      = _align_idx( buff, sizeof( node ), align );
+                capacity = _first != npos ? idx - _first : size - idx;
+                if ( capacity >= bytes )
+                        return idx - sizeof( node );
+
+                return npos;
+        }
+
+        node _get_node( uint8_t* buff, index_type idx ) const
+        {
+                node n;
+                std::memcpy( &n, buff + idx, sizeof( node ) );
+                return n;
+        }
+
+        void _set_node( uint8_t* buff, index_type idx, node const& n )
+        {
+                std::memcpy( buff + idx, &n, sizeof( node ) );
+        }
+
+        void* _allocate( uint8_t* buff, std::size_t bytes, std::size_t align, std::size_t size )
+        {
+                auto idx = _pick_index( buff, bytes, align, size );
+                if ( idx == npos )
+                        return nullptr;
+                auto* p = buff + idx;
+                if ( _first == npos ) {
+                        _first = idx;
+                } else {
+                        auto nn     = _get_node( buff, _last );
+                        nn.next_idx = idx;
+                        _set_node( buff, _last, nn );
+                }
+                node n{
+                    .prev_idx = _last,
+                    .next_idx = npos,
+                };
+                _last = idx;
+                _next = idx + sizeof( node ) + bytes;
+                _set_node( buff, idx, n );
+                return p + sizeof( node );
+        }
+
+        void _deallocate( uint8_t* buff, void* p )
+        {
+                auto*      pp  = (uint8_t*) p - sizeof( node );
+                index_type idx = pp - buff;
+                node       n   = _get_node( buff, idx );
+
+                if ( _first == idx ) {
+                        _first = n.next_idx;
+                } else {
+                        auto pn     = _get_node( buff, n.prev_idx );
+                        pn.next_idx = n.next_idx;
+                        _set_node( buff, n.prev_idx, pn );
+                }
+
+                if ( _last == idx ) {
+                        _last = n.prev_idx;
+                        _next = npos;
+                } else {
+                        auto nn     = _get_node( buff, n.next_idx );
+                        nn.prev_idx = n.prev_idx;
+                        _set_node( buff, n.next_idx, nn );
+                }
+
+                _set_node( buff, idx, node{ .next_idx = 0, .prev_idx = 0 } );
+        }
+};
+
+template < std::size_t N >
+struct circular_buffer_memory : private _circular_buffer_memory_base< _index_type< N > >
+{
+        using base = _circular_buffer_memory_base< _index_type< N > >;
+        using base::_first;
+        using base::_last;
+        using base::_next;
+        using node = base::node;
+        using base::npos;
+        using index_type = base::index_type;
+
+        alignas( std::max_align_t ) uint8_t _buf[N];
+
+        void* allocate( std::size_t bytes, std::size_t align )
+        {
+                return base::_allocate( _buf, bytes, align, N );
+        }
+
+        void deallocate( void* p, std::size_t, std::size_t )
+        {
+                base::_deallocate( _buf, (uint8_t*) p );
+        }
+};
+
+template < typename T >
 struct _set_error
 {
         virtual void set_error( T error ) = 0;
@@ -74,7 +222,7 @@ struct event_core
         void set_value( V&& value )
         {
                 for_each( [&]( auto& n ) {
-                        n.set_value( (V&&) value );
+                        n.set_value( value );
                 } );
         }
 
@@ -82,14 +230,15 @@ struct event_core
         void set_error( E1&& err )
         {
                 for_each( [&]( auto& n ) {
-                        n.set_error( (E1&&) err );
+                        n.set_error( err );
                 } );
         }
 
         void for_each( auto f )
         {
-                auto iter = list.begin();
-                auto e    = list.end();
+                auto l    = std::move( list );
+                auto iter = l.begin();
+                auto e    = l.end();
                 while ( iter != e ) {
                         auto n = iter++;
                         f( *n );
@@ -623,6 +772,8 @@ struct _promise_base
         {
                 sz += spacing;
                 void* const vp = allocate( mem, sz, align );
+                if ( !vp )
+                        return nullptr;
                 std::memcpy( vp, (void const*) &vt, sizeof( vt ) );
                 return ( (char*) vp ) + spacing;
         }
