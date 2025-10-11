@@ -20,6 +20,7 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 /// SOFTWARE.
+#include <cstddef>
 #include <functional>
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 
@@ -494,7 +495,12 @@ TEST_CASE( "_align_idx" )
 
 TEST_CASE( "circular_buffer_memory" )
 {
-        circular_buffer_memory< 1024 > mem;
+        alignas( std::max_align_t ) uint8_t buffer_storage[1024];
+
+        std::span< uint8_t, 1024 > buffer_span{ buffer_storage };
+        using it = _index_type< 1024 >;
+        circular_buffer_memory< it, noop_base > mem{ buffer_span };
+        using node = typename decltype( mem )::node;
 
         // Test 1: Basic single allocation
         void* p1 = mem.allocate( 32, 8 );
@@ -530,7 +536,9 @@ TEST_CASE( "circular_buffer_memory" )
 
 TEST_CASE( "circular_buffer_memory_alignment" )
 {
-        circular_buffer_memory< 512 > mem;
+        std::array< uint8_t, 512 >                              buffer_storage;
+        std::span< uint8_t, 512 >                               buffer_span{ buffer_storage };
+        circular_buffer_memory< _index_type< 512 >, noop_base > mem{ buffer_span };
 
         // Test various alignment requirements
         std::vector< std::pair< void*, std::size_t > > ptrs;
@@ -551,7 +559,9 @@ TEST_CASE( "circular_buffer_memory_alignment" )
 
 TEST_CASE( "circular_buffer_memory_wraparound" )
 {
-        circular_buffer_memory< 256 > mem;
+        std::array< uint8_t, 256 >                              buffer_storage;
+        std::span< uint8_t, 256 >                               buffer_span{ buffer_storage };
+        circular_buffer_memory< _index_type< 256 >, noop_base > mem{ buffer_span };
 
         std::vector< void* > pointers;
 
@@ -581,7 +591,9 @@ TEST_CASE( "circular_buffer_memory_wraparound" )
 
 TEST_CASE( "circular_buffer_memory_fragmentation" )
 {
-        circular_buffer_memory< 512 > mem;
+        std::array< uint8_t, 512 >                              buffer_storage;
+        std::span< uint8_t, 512 >                               buffer_span{ buffer_storage };
+        circular_buffer_memory< _index_type< 512 >, noop_base > mem{ buffer_span };
 
         // Create fragmentation by allocating and deallocating alternating blocks
         std::vector< void* > keep_ptrs;
@@ -615,7 +627,9 @@ TEST_CASE( "circular_buffer_memory_fragmentation" )
 
 TEST_CASE( "circular_buffer_memory_edge_cases" )
 {
-        circular_buffer_memory< 258 > mem;
+        std::array< uint8_t, 258 >                              buffer_storage;
+        std::span< uint8_t, 258 >                               buffer_span{ buffer_storage };
+        circular_buffer_memory< _index_type< 258 >, noop_base > mem{ buffer_span };
 
         // Test 1: Zero-size allocation
         void* zero_ptr = mem.allocate( 0, 1 );
@@ -632,9 +646,11 @@ TEST_CASE( "circular_buffer_memory_edge_cases" )
         // First, use up most space
         std::vector< void* > ptrs;
         while ( true ) {
-                void* p = mem.allocate( 8, 1 );
+                auto  size = mem.used_bytes();
+                void* p    = mem.allocate( 8, 1 );
                 if ( !p )
                         break;
+                CHECK( p <= buffer_storage.data() + buffer_storage.size() );
                 ptrs.push_back( p );
         }
 
@@ -648,7 +664,9 @@ TEST_CASE( "circular_buffer_memory_edge_cases" )
 
 TEST_CASE( "circular_buffer_memory_double_deallocation" )
 {
-        circular_buffer_memory< 256 > mem;
+        std::array< uint8_t, 256 >                              buffer_storage;
+        std::span< uint8_t, 256 >                               buffer_span{ buffer_storage };
+        circular_buffer_memory< _index_type< 256 >, noop_base > mem{ buffer_span };
 
         void* p = mem.allocate( 32, 8 );
         CHECK( p != nullptr );
@@ -666,8 +684,11 @@ TEST_CASE( "circular_buffer_memory_different_sizes" )
 
         // Small buffer - should use uint8_t index
         {
-                circular_buffer_memory< 200 > small_mem;
-                static_assert( std::is_same_v< decltype( small_mem )::index_type, uint8_t > );
+                std::array< uint8_t, 200 > buffer_storage;
+                std::span< uint8_t, 200 >  buffer_span{ buffer_storage };
+                circular_buffer_memory< _index_type< 200 >, noop_base > small_mem{ buffer_span };
+                static_assert(
+                    std::is_same_v< typename decltype( small_mem )::index_type, uint8_t > );
 
                 void* p = small_mem.allocate( 32, 1 );
                 CHECK( p != nullptr );
@@ -676,8 +697,11 @@ TEST_CASE( "circular_buffer_memory_different_sizes" )
 
         // Medium buffer - should use uint16_t index
         {
-                circular_buffer_memory< 50000 > med_mem;
-                static_assert( std::is_same_v< decltype( med_mem )::index_type, uint16_t > );
+                std::array< uint8_t, 50000 > buffer_storage;
+                std::span< uint8_t, 50000 >  buffer_span{ buffer_storage };
+                circular_buffer_memory< _index_type< 50000 >, noop_base > med_mem{ buffer_span };
+                static_assert(
+                    std::is_same_v< typename decltype( med_mem )::index_type, uint16_t > );
 
                 void* p = med_mem.allocate( 1000, 1 );
                 CHECK( p != nullptr );
@@ -687,7 +711,9 @@ TEST_CASE( "circular_buffer_memory_different_sizes" )
 
 TEST_CASE( "circular_buffer_memory_allocation_pattern" )
 {
-        circular_buffer_memory< 1024 > mem;
+        std::array< uint8_t, 1024 >                              buffer_storage;
+        std::span< uint8_t, 1024 >                               buffer_span{ buffer_storage };
+        circular_buffer_memory< _index_type< 1024 >, noop_base > mem{ buffer_span };
 
         // Test allocation pattern and verify pointers are within buffer bounds
         std::vector< void* > ptrs;
@@ -696,8 +722,8 @@ TEST_CASE( "circular_buffer_memory_allocation_pattern" )
                 void* p = mem.allocate( 10, 2 );
                 if ( p ) {
                         // Verify pointer is within buffer bounds
-                        uintptr_t buf_start = (uintptr_t) &mem._buf[0];
-                        uintptr_t buf_end   = buf_start + sizeof( mem._buf );
+                        uintptr_t buf_start = (uintptr_t) mem._buff.data();
+                        uintptr_t buf_end   = buf_start + mem._buff.size();
                         uintptr_t ptr_addr  = (uintptr_t) p;
 
                         CHECK( ptr_addr >= buf_start );
@@ -716,8 +742,10 @@ TEST_CASE( "circular_buffer_memory_allocation_pattern" )
 TEST_CASE( "task_coroutine_with_circular_buffer_memory" )
 {
         // Use circular buffer memory instead of regular allocator
-        circular_buffer_memory< 2048 > mem;
-        task_ctx                       ctx{ mem };
+        std::array< uint8_t, 2048 >                              buffer_storage;
+        std::span< uint8_t, 2048 >                               buffer_span{ buffer_storage };
+        circular_buffer_memory< _index_type< 2048 >, noop_base > mem{ buffer_span };
+        task_ctx                                                 ctx{ mem };
 
         // Create event sources for inter-task communication
         event_source< int, void >         data_source;
@@ -809,8 +837,10 @@ TEST_CASE( "task_coroutine_with_circular_buffer_memory" )
 TEST_CASE( "task_coroutine_circular_buffer_memory_stress" )
 {
         // Smaller buffer to test memory management under pressure
-        circular_buffer_memory< 2048 > mem;
-        task_ctx                       ctx{ mem };
+        std::array< uint8_t, 2048 >                              buffer_storage;
+        std::span< uint8_t, 2048 >                               buffer_span{ buffer_storage };
+        circular_buffer_memory< _index_type< 2048 >, noop_base > mem{ buffer_span };
+        task_ctx                                                 ctx{ mem };
 
         event_source< int, void > trigger;
         std::vector< int >        execution_order;
@@ -861,6 +891,484 @@ TEST_CASE( "task_coroutine_circular_buffer_memory_stress" )
                 }
         }
         CHECK( found_second_execution );
+}
+
+// ============================================================================
+// Circular Buffer Memory Stress Test
+// ============================================================================
+
+// Event types for stress testing
+enum class event_type
+{
+        alloc,        // Allocation that should succeed
+        dealloc,      // Deallocation
+        failed_alloc  // Allocation that should fail (buffer full)
+};
+
+struct event
+{
+        event_type  type;
+        std::size_t size;
+        std::size_t align;
+        int         id;
+};
+
+struct allocated_block
+{
+        void*       ptr;
+        std::size_t size;
+        std::size_t align;
+        int         id;
+};
+
+static bool is_aligned( void* ptr, std::size_t alignment )
+{
+        return reinterpret_cast< std::uintptr_t >( ptr ) % alignment == 0;
+}
+
+// Check if two memory blocks overlap
+static bool blocks_overlap( void* ptr1, std::size_t size1, void* ptr2, std::size_t size2 )
+{
+        auto start1 = reinterpret_cast< std::uintptr_t >( ptr1 );
+        auto end1   = start1 + size1;
+        auto start2 = reinterpret_cast< std::uintptr_t >( ptr2 );
+        auto end2   = start2 + size2;
+
+        return !( end1 <= start2 || end2 <= start1 );
+}
+
+// Comprehensive sanity check for circular_buffer_memory
+template < typename IndexType, typename Base >
+static void sanity_check_buffer(
+    circular_buffer_memory< IndexType, Base >& buffer,
+    std::span< uint8_t >                       buff_span,
+    std::vector< allocated_block > const&      allocated_blocks,
+    std::string const&                         context )
+{
+        using index_type = IndexType;
+        auto const npos  = circular_buffer_memory< IndexType, Base >::npos;
+
+        // 1. Check that all allocated blocks are within buffer bounds
+        auto buff_start = reinterpret_cast< std::uintptr_t >( buff_span.data() );
+        auto buff_end   = buff_start + buff_span.size();
+
+        for ( auto const& block : allocated_blocks ) {
+                auto ptr_val = reinterpret_cast< std::uintptr_t >( block.ptr );
+                INFO( context << ": Block " << block.id << " ptr out of bounds" );
+                CHECK( ptr_val >= buff_start );
+                CHECK( ptr_val + block.size <= buff_end );
+
+                // Check alignment
+                INFO( context << ": Block " << block.id << " misaligned" );
+                CHECK( is_aligned( block.ptr, block.align ) );
+        }
+
+        // 2. Check that no blocks overlap
+        for ( std::size_t i = 0; i < allocated_blocks.size(); ++i ) {
+                for ( std::size_t j = i + 1; j < allocated_blocks.size(); ++j ) {
+                        INFO(
+                            context << ": Blocks " << allocated_blocks[i].id << " and "
+                                    << allocated_blocks[j].id << " overlap" );
+                        CHECK( !blocks_overlap(
+                            allocated_blocks[i].ptr,
+                            allocated_blocks[i].size,
+                            allocated_blocks[j].ptr,
+                            allocated_blocks[j].size ) );
+                }
+        }
+
+        // 3. Validate internal linked list structure
+        if ( buffer._first != npos ) {
+                std::set< index_type >    visited;
+                index_type                current = buffer._first;
+                index_type                prev    = npos;
+                std::vector< index_type > node_indices;
+
+                // Walk forward through the list
+                while ( current != npos ) {
+                        INFO(
+                            context << ": Circular reference or infinite loop detected at node "
+                                    << (int) current );
+                        CHECK( visited.find( current ) == visited.end() );
+                        visited.insert( current );
+                        node_indices.push_back( current );
+
+                        // Check node is within buffer bounds
+                        INFO( context << ": Node " << (int) current << " out of bounds" );
+                        CHECK( current < buff_span.size() );
+
+                        auto node = buffer._get_node( buff_span.data(), current );
+
+                        // Check prev link consistency
+                        INFO(
+                            context << ": Node " << (int) current << " has inconsistent prev_idx" );
+                        CHECK( node.prev_idx == prev );
+
+                        prev    = current;
+                        current = node.next_idx;
+                }
+
+                // Verify _last is correct
+                INFO( context << ": _last pointer inconsistent" );
+                CHECK( buffer._last == node_indices.back() );
+
+                // Walk backward to verify bidirectional consistency
+                current                        = buffer._last;
+                index_type                next = npos;
+                std::vector< index_type > reverse_nodes;
+
+                while ( current != npos ) {
+                        reverse_nodes.push_back( current );
+                        auto node = buffer._get_node( buff_span.data(), current );
+
+                        INFO(
+                            context << ": Node " << (int) current
+                                    << " has inconsistent next_idx in reverse walk" );
+                        CHECK( node.next_idx == next );
+
+                        next    = current;
+                        current = node.prev_idx;
+                }
+
+                // Verify forward and backward walks visit same nodes
+                std::reverse( reverse_nodes.begin(), reverse_nodes.end() );
+                INFO( context << ": Forward and backward walks don't match" );
+                CHECK( node_indices == reverse_nodes );
+        } else {
+                // If first is npos, last should also be npos
+                INFO( context << ": _first is npos but _last is not" );
+                CHECK( buffer._last == npos );
+        }
+
+        // 4. Verify each allocated block corresponds to a node in the linked list
+        // (This is implicit in the structure, but we check that the pointers we have
+        // are actually pointing into the buffer at valid locations)
+        for ( auto const& block : allocated_blocks ) {
+                // Calculate where the node header should be
+                using buffer_type = std::remove_reference_t< decltype( buffer ) >;
+                auto* node_ptr    = reinterpret_cast< uint8_t* >( block.ptr ) -
+                                 sizeof( typename buffer_type::node );
+                auto node_idx = node_ptr - buff_span.data();
+
+                INFO( context << ": Block " << block.id << " node header would be out of bounds" );
+                CHECK( node_idx >= 0 );
+                CHECK( node_idx < buff_span.size() );
+        }
+}
+
+
+TEST_CASE( "circular_buffer_memory stress test" )
+{
+
+        constexpr std::size_t              BUFFER_SIZE = 2048;
+        std::array< uint8_t, BUFFER_SIZE > buffer_storage;
+        std::span< uint8_t, BUFFER_SIZE >  buff_span{ buffer_storage };
+
+        circular_buffer_memory< uint16_t, noop_base > buffer{ buff_span };
+
+        std::vector< allocated_block > allocated_blocks;
+        std::map< int, std::size_t >   id_to_index;  // Map allocation ID to index in vector
+        int                            next_id = 0;
+
+        auto execute_event = [&]( event const& event, int event_num ) {
+                std::string context = "Event " + std::to_string( event_num );
+
+                if ( event.type == event_type::alloc ) {
+                        void* ptr = buffer.allocate( event.size, event.align );
+
+                        INFO( context << ": Allocation should succeed but got nullptr" );
+                        REQUIRE( ptr != nullptr );
+
+                        int id = event.id >= 0 ? event.id : next_id++;
+                        allocated_blocks.emplace_back( ptr, event.size, event.align, id );
+                        id_to_index[id] = allocated_blocks.size() - 1;
+
+                        // Fill with pattern for debugging
+                        std::memset( ptr, 0xAA + ( id % 16 ), event.size );
+
+                        INFO( context << ": After allocation " << id );
+                        sanity_check_buffer( buffer, buff_span, allocated_blocks, context );
+                } else if ( event.type == event_type::dealloc ) {
+                        INFO( context << ": Deallocation ID " << event.id << " not found" );
+                        REQUIRE( id_to_index.find( event.id ) != id_to_index.end() );
+
+                        std::size_t idx   = id_to_index[event.id];
+                        auto const& block = allocated_blocks[idx];
+
+                        buffer.deallocate( block.ptr, block.size, block.align );
+
+                        // Remove from tracking
+                        allocated_blocks.erase(
+                            allocated_blocks.begin() + static_cast< std::ptrdiff_t >( idx ) );
+                        id_to_index.erase( event.id );
+
+                        // Update indices in map
+                        for ( auto& [id, index] : id_to_index )
+                                if ( index > idx )
+                                        --index;
+
+                        INFO( context << ": After deallocation " << event.id );
+                        sanity_check_buffer( buffer, buff_span, allocated_blocks, context );
+                } else if ( event.type == event_type::failed_alloc ) {
+                        void* ptr = buffer.allocate( event.size, event.align );
+
+                        INFO( context << ": Allocation should fail but succeeded" );
+                        auto used = buffer.used_bytes();
+                        INFO( context << "Buffer usage: " << used << "/" << buff_span.size() );
+                        CHECK( ptr == nullptr );
+
+                        // State shouldn't change on failed allocation
+                        INFO( context << ": After failed allocation attempt" );
+                        sanity_check_buffer( buffer, buff_span, allocated_blocks, context );
+                }
+        };
+
+        SUBCASE( "Sequential allocations and deallocations" )
+        {
+                std::vector< event > events;
+
+                // Allocate several blocks
+                events.emplace_back( event_type::alloc, 64, 8, 0 );
+                events.emplace_back( event_type::alloc, 128, 8, 1 );
+                events.emplace_back( event_type::alloc, 256, 16, 2 );
+                events.emplace_back( event_type::alloc, 32, 4, 3 );
+
+                // Deallocate in different order
+                events.emplace_back( event_type::dealloc, 0, 0, 1 );  // Middle
+                events.emplace_back( event_type::dealloc, 0, 0, 0 );  // First
+                events.emplace_back( event_type::dealloc, 0, 0, 3 );  // Last
+                events.emplace_back( event_type::dealloc, 0, 0, 2 );  // Remaining
+
+                for ( int i = 0; i < (int) events.size(); ++i )
+                        execute_event( events[i], i );
+
+                CHECK( allocated_blocks.empty() );
+        }
+
+        SUBCASE( "Interleaved allocations and deallocations" )
+        {
+                std::vector< event > events;
+
+                events.emplace_back( event_type::alloc, 100, 8, 0 );
+                events.emplace_back( event_type::alloc, 100, 8, 1 );
+                events.emplace_back( event_type::dealloc, 0, 0, 0 );
+                events.emplace_back( event_type::alloc, 100, 8, 2 );
+                events.emplace_back( event_type::alloc, 100, 8, 3 );
+                events.emplace_back( event_type::dealloc, 0, 0, 1 );
+                events.emplace_back( event_type::dealloc, 0, 0, 2 );
+                events.emplace_back( event_type::alloc, 100, 8, 4 );
+                events.emplace_back( event_type::dealloc, 0, 0, 3 );
+                events.emplace_back( event_type::dealloc, 0, 0, 4 );
+
+                for ( int i = 0; i < (int) events.size(); ++i )
+                        execute_event( events[i], i );
+
+                CHECK( allocated_blocks.empty() );
+        }
+
+        SUBCASE( "Fragmentation and reuse" )
+        {
+                std::vector< event > events;
+
+                // Create fragmentation
+                for ( int i = 0; i < 10; ++i )
+                        events.emplace_back( event_type::alloc, 80, 8, i );
+
+                // Deallocate every other block
+                for ( int i = 0; i < 10; i += 2 )
+                        events.emplace_back( event_type::dealloc, 0, 0, i );
+
+                // Try to allocate into gaps
+                for ( int i = 10; i < 15; ++i )
+                        events.emplace_back( event_type::alloc, 70, 8, i );
+
+                // Cleanup
+                for ( int i = 1; i < 10; i += 2 )
+                        events.emplace_back( event_type::dealloc, 0, 0, i );
+                for ( int i = 10; i < 15; ++i )
+                        events.emplace_back( event_type::dealloc, 0, 0, i );
+
+                for ( int i = 0; i < (int) events.size(); ++i )
+                        execute_event( events[i], i );
+
+                CHECK( allocated_blocks.empty() );
+        }
+
+        SUBCASE( "Fill buffer to capacity" )
+        {
+                std::vector< event > events;
+
+                // Allocate until buffer is nearly full
+                int id = 0;
+                for ( int i = 0; i < 18; ++i )
+                        events.emplace_back( event_type::alloc, 100, 8, id++ );
+
+                // Try to allocate more (should fail)
+                events.emplace_back( event_type::failed_alloc, 200, 8 );
+
+                // Deallocate one and try again
+                events.emplace_back( event_type::dealloc, 0, 0, 0 );
+                events.emplace_back( event_type::alloc, 80, 8, id++ );
+
+                // Cleanup
+                for ( int i = 1; i < id; ++i )
+                        if ( i != 0 )
+                                events.emplace_back( event_type::dealloc, 0, 0, i );
+
+                for ( int i = 0; i < (int) events.size(); ++i )
+                        execute_event( events[i], i );
+        }
+
+        SUBCASE( "Various alignment requirements" )
+        {
+                std::vector< event > events;
+
+                events.emplace_back( event_type::alloc, 50, 1, 0 );   // 1-byte aligned
+                events.emplace_back( event_type::alloc, 50, 2, 1 );   // 2-byte aligned
+                events.emplace_back( event_type::alloc, 50, 4, 2 );   // 4-byte aligned
+                events.emplace_back( event_type::alloc, 50, 8, 3 );   // 8-byte aligned
+                events.emplace_back( event_type::alloc, 50, 16, 4 );  // 16-byte aligned
+                events.emplace_back( event_type::alloc, 50, 32, 5 );  // 32-byte aligned
+
+                for ( int i = 0; i < (int) events.size(); ++i )
+                        execute_event( events[i], i );
+
+                // Verify alignments
+                for ( auto const& block : allocated_blocks )
+                        CHECK( is_aligned( block.ptr, block.align ) );
+
+                // Cleanup
+                for ( int i = 0; i < 6; ++i )
+                        execute_event( event{ event_type::dealloc, 0, 0, i }, 100 + i );
+
+                CHECK( allocated_blocks.empty() );
+        }
+
+        SUBCASE( "Edge cases - very small allocations" )
+        {
+                std::vector< event > events;
+
+                // Many tiny allocations
+                for ( int i = 0; i < 50; ++i )
+                        events.emplace_back( event_type::alloc, 1, 1, i );
+
+                for ( int i = 0; i < (int) events.size(); ++i )
+                        execute_event( events[i], i );
+
+                // Cleanup
+                for ( int i = 0; i < 50; ++i )
+                        events.emplace_back( event_type::dealloc, 0, 0, i );
+
+                for ( int i = 50; i < (int) events.size(); ++i )
+                        execute_event( events[i], i );
+
+                CHECK( allocated_blocks.empty() );
+        }
+
+        SUBCASE( "Edge cases - large allocations" )
+        {
+                std::vector< event > events;
+
+                // One large allocation
+                events.emplace_back( event_type::alloc, 1600, 8, 0 );
+
+                // Should fail - not enough space
+                events.emplace_back( event_type::failed_alloc, 500, 8 );
+
+                // Deallocate and try smaller
+                events.emplace_back( event_type::dealloc, 0, 0, 0 );
+                events.emplace_back( event_type::alloc, 800, 8, 1 );
+                events.emplace_back( event_type::alloc, 600, 8, 2 );
+
+                for ( int i = 0; i < (int) events.size(); ++i )
+                        execute_event( events[i], i );
+
+                // Cleanup
+                execute_event( event{ event_type::dealloc, 0, 0, 1 }, 100 );
+                execute_event( event{ event_type::dealloc, 0, 0, 2 }, 101 );
+
+                CHECK( allocated_blocks.empty() );
+        }
+
+        SUBCASE( "Circular wrap-around behavior" )
+        {
+                std::vector< event > events;
+
+                // Fill buffer
+                for ( int i = 0; i < 10; ++i )
+                        events.emplace_back( event_type::alloc, 150, 8, i );
+
+                // Deallocate from beginning
+                for ( int i = 0; i < 5; ++i )
+                        events.emplace_back( event_type::dealloc, 0, 0, i );
+
+                // Allocate again - should wrap around
+                for ( int i = 10; i < 15; ++i )
+                        events.emplace_back( event_type::alloc, 130, 8, i );
+
+                for ( int i = 0; i < (int) events.size(); ++i )
+                        execute_event( events[i], i );
+
+                // Cleanup
+                for ( int i = 5; i < 10; ++i )
+                        execute_event( event{ event_type::dealloc, 0, 0, i }, 100 + i );
+                for ( int i = 10; i < 15; ++i )
+                        execute_event( event{ event_type::dealloc, 0, 0, i }, 200 + i );
+
+                CHECK( allocated_blocks.empty() );
+        }
+
+        SUBCASE( "Complex stress sequence" )
+        {
+
+                std::vector< event > events;
+                std::vector< int >   active_ids;  // IDs of currently allocated blocks
+
+                std::srand( 42 );  // Deterministic seed for reproducibility  // NOLINT
+
+                constexpr int NUM_ROUNDS         = 6;
+                constexpr int ALLOCS_PER_ROUND   = 5;
+                constexpr int DEALLOCS_PER_ROUND = 4;
+
+                for ( int round = 0; round < NUM_ROUNDS; ++round ) {
+                        int deallocs_this_round =
+                            ( round < 2 ) ? ALLOCS_PER_ROUND : DEALLOCS_PER_ROUND;
+                        for ( int i = 0; i < ALLOCS_PER_ROUND; ++i ) {
+                                int id = next_id++;
+
+                                std::size_t size =
+                                    32 +
+                                    ( static_cast< std::size_t >( std::rand() ) % 96 );  // NOLINT
+
+                                std::size_t align =
+                                    1
+                                    << ( static_cast< std::size_t >( std::rand() ) % 5 );  // NOLINT
+
+                                events.emplace_back( event_type::alloc, size, align, id );
+
+                                active_ids.push_back( id );
+                        }
+
+                        for ( int i = 0; i < deallocs_this_round && !active_ids.empty(); ++i ) {
+                                std::size_t idx = static_cast< std::size_t >( std::rand() ) %
+                                                  active_ids.size();  // NOLINT
+                                int id_to_free = active_ids[idx];
+
+                                events.emplace_back( event_type::dealloc, 0, 0, id_to_free );
+
+                                active_ids.erase(
+                                    active_ids.begin() + static_cast< std::ptrdiff_t >( idx ) );
+                        }
+                }
+
+                for ( int i = 0; i < (int) events.size(); ++i )
+                        execute_event( events[i], i );
+
+                for ( int id : active_ids )
+                        execute_event( event{ event_type::dealloc, 0, 0, id }, 1000 + id );
+
+                CHECK( allocated_blocks.empty() );
+        }
 }
 
 

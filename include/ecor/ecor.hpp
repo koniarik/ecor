@@ -7,8 +7,21 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <span>
 #include <variant>
 #include <zll.hpp>
+
+#ifdef ECOR_DEFAULT_ASSERT
+#include <cassert>
+#define ECOR_ASSERT( expr ) assert( expr )
+
+#else
+
+#ifndef ECOR_ASSERT
+#define ECOR_ASSERT( expr ) ( (void) ( ( expr ) ) )
+#endif
+
+#endif
 
 namespace ecor
 {
@@ -74,10 +87,58 @@ constexpr auto _pick_index_type()
 template < std::size_t N >
 using _index_type = decltype( _pick_index_type< N >() );
 
-template < typename T >
-struct _circular_buffer_memory_base
+struct noop_base
 {
-        using index_type = T;
+};
+
+template < typename IndexType, typename Base = noop_base >
+struct circular_buffer_memory : Base
+{
+        std::span< uint8_t > _buff;
+
+        template < std::size_t N >
+                requires( std::numeric_limits< IndexType >::max() >= N )
+        circular_buffer_memory( std::span< uint8_t, N > b )
+          : _buff( std::move( b ) )
+        {
+        }
+
+        void* allocate( std::size_t bytes, std::size_t align )
+        {
+                return _allocate( _buff, bytes, align );
+        }
+
+        template < typename T, typename... Args >
+        T* construct( Args&&... args )
+        {
+                void* p = allocate( sizeof( T ), alignof( T ) );
+                if ( !p )
+                        return nullptr;
+                return new ( p ) T( (Args&&) ( args )... );
+        }
+
+        void deallocate( void* p, std::size_t, std::size_t )
+        {
+                _deallocate( _buff.data(), (uint8_t*) p );
+        }
+
+        template < typename T >
+        void destroy( T& p )
+        {
+                p.~T();
+                deallocate( &p, sizeof( T ), alignof( T ) );
+        }
+
+        std::size_t used_bytes() const
+        {
+                if ( _first == npos )
+                        return 0;
+                if ( _first <= _last )
+                        return ( _next - _first );
+                return ( _buff.size() - _first ) + _next;
+        }
+
+        using index_type = IndexType;
 
         static constexpr index_type npos = std::numeric_limits< index_type >::max();
 
@@ -86,25 +147,49 @@ struct _circular_buffer_memory_base
                 index_type next_idx = npos;
                 index_type prev_idx = npos;
         };
+        // Index of first node in the list, npos if empty
         index_type _first = npos;
-        index_type _last  = npos;
-        index_type _next  = npos;
+        // Index of last node in the list, npos if empty
+        index_type _last = npos;
+        // Index of first free byte after _last, npos if empty
+        index_type _next = npos;
 
+        // Pick index where to allocate `bytes` with `align`, returns npos if no space
+        // is available. The returned index points to the node header, the actual data
+        // starts after sizeof(node).
         index_type
-        _pick_index( uint8_t* buff, std::size_t bytes, std::size_t align, std::size_t size ) const
+        _pick_index( std::span< uint8_t > buff, std::size_t bytes, std::size_t align ) const
         {
-                auto idx = _next == npos ? sizeof( node ) : _next + sizeof( node );
-                idx      = _align_idx( buff, idx, align );
+                if ( _last == npos ) {
+                        // Empty buffer
+                        ECOR_ASSERT( _first == npos && _last == npos );
+                        auto idx      = _align_idx( buff.data(), sizeof( node ), align );
+                        auto capacity = buff.size() - idx;
+                        if ( capacity >= bytes )
+                                return idx - sizeof( node );
+                } else if ( _first <= _next ) {
+                        // Non-overflow state: [ ][x][x][x][ ][ ]
+                        {
+                                auto idx = _align_idx( buff.data(), _next + sizeof( node ), align );
+                                auto capacity = buff.size() - idx;
+                                if ( idx < buff.size() && capacity >= bytes )
+                                        return idx - sizeof( node );
+                        }
+                        {
+                                auto idx      = _align_idx( buff.data(), sizeof( node ), align );
+                                auto capacity = idx - _first;
+                                if ( capacity >= bytes )
+                                        return idx - sizeof( node );
+                        }
 
-                auto capacity = size - idx;
-                if ( capacity >= bytes )
-                        return idx - sizeof( node );
+                } else {  // _first > _next
+                        // Overflow state: [x][x][ ][ ][x][x]
+                        auto idx = _align_idx( buff.data(), _next + sizeof( node ), align );
 
-                idx      = _align_idx( buff, sizeof( node ), align );
-                capacity = _first != npos ? idx - _first : size - idx;
-                if ( capacity >= bytes )
-                        return idx - sizeof( node );
-
+                        auto capacity = _first - idx;
+                        if ( capacity >= bytes )
+                                return idx - sizeof( node );
+                }
                 return npos;
         }
 
@@ -120,18 +205,18 @@ struct _circular_buffer_memory_base
                 std::memcpy( buff + idx, &n, sizeof( node ) );
         }
 
-        void* _allocate( uint8_t* buff, std::size_t bytes, std::size_t align, std::size_t size )
+        void* _allocate( std::span< uint8_t > buff, std::size_t bytes, std::size_t align )
         {
-                auto idx = _pick_index( buff, bytes, align, size );
+                auto idx = _pick_index( buff, bytes, align );
                 if ( idx == npos )
                         return nullptr;
-                auto* p = buff + idx;
+                auto* p = buff.data() + idx;
                 if ( _first == npos ) {
                         _first = idx;
                 } else {
-                        auto nn     = _get_node( buff, _last );
+                        auto nn     = _get_node( buff.data(), _last );
                         nn.next_idx = idx;
-                        _set_node( buff, _last, nn );
+                        _set_node( buff.data(), _last, nn );
                 }
                 node n{
                     .prev_idx = _last,
@@ -139,7 +224,7 @@ struct _circular_buffer_memory_base
                 };
                 _last = idx;
                 _next = idx + sizeof( node ) + bytes;
-                _set_node( buff, idx, n );
+                _set_node( buff.data(), idx, n );
                 return p + sizeof( node );
         }
 
@@ -159,7 +244,7 @@ struct _circular_buffer_memory_base
 
                 if ( _last == idx ) {
                         _last = n.prev_idx;
-                        _next = npos;
+                        _next = idx;
                 } else {
                         auto nn     = _get_node( buff, n.next_idx );
                         nn.prev_idx = n.prev_idx;
@@ -170,29 +255,73 @@ struct _circular_buffer_memory_base
         }
 };
 
-template < std::size_t N >
-struct circular_buffer_memory : private _circular_buffer_memory_base< _index_type< N > >
+template < typename T, typename IndexType, typename Base >
+struct circular_buffer_allocator
 {
-        using base = _circular_buffer_memory_base< _index_type< N > >;
-        using base::_first;
-        using base::_last;
-        using base::_next;
-        using node = base::node;
-        using base::npos;
-        using index_type = base::index_type;
+        using value_type      = T;
+        using size_type       = std::size_t;
+        using difference_type = std::ptrdiff_t;
 
-        alignas( std::max_align_t ) uint8_t _buf[N];
-
-        void* allocate( std::size_t bytes, std::size_t align )
+        // Required for C++17 allocator requirements
+        template < typename U >
+        struct rebind
         {
-                return base::_allocate( _buf, bytes, align, N );
+                using other = circular_buffer_allocator< U, IndexType, Base >;
+        };
+
+private:
+        circular_buffer_memory< IndexType, Base >* buffer_;
+
+public:
+        explicit circular_buffer_allocator(
+            circular_buffer_memory< IndexType, Base >& buffer ) noexcept
+          : buffer_( &buffer )
+        {
         }
 
-        void deallocate( void* p, std::size_t, std::size_t )
+        circular_buffer_allocator( circular_buffer_allocator const& ) noexcept = default;
+
+        template < typename U >
+        circular_buffer_allocator(
+            circular_buffer_allocator< U, IndexType, Base > const& other ) noexcept
+          : buffer_( other.buffer_ )
         {
-                base::_deallocate( _buf, (uint8_t*) p );
         }
+
+        T* allocate( std::size_t n )
+        {
+                if ( n == 0 )
+                        return nullptr;
+
+                std::size_t bytes = n * sizeof( T );
+                void*       ptr   = buffer_->allocate( bytes, alignof( T ) );
+
+                if ( !ptr )
+                        throw std::bad_alloc();
+
+                return static_cast< T* >( ptr );
+        }
+
+        void deallocate( T* ptr, std::size_t n ) noexcept
+        {
+                if ( ptr )
+                        buffer_->deallocate( ptr, n * sizeof( T ), alignof( T ) );
+        }
+
+        bool operator==( circular_buffer_allocator const& other ) const noexcept
+        {
+                return buffer_ == other.buffer_;
+        }
+
+        bool operator!=( circular_buffer_allocator const& other ) const noexcept
+        {
+                return !( *this == other );
+        }
+
+        template < typename U, typename IdxType, typename Base2 >
+        friend class circular_buffer_allocator;
 };
+
 
 template < typename T >
 struct _set_error
