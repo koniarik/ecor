@@ -22,6 +22,8 @@
 /// SOFTWARE.
 #include <cstddef>
 #include <functional>
+#include <iostream>
+
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 
 #include "doctest.h"
@@ -29,7 +31,7 @@
 
 #include <algorithm>
 #include <deque>
-#include <iostream>
+#include <list>
 #include <map>
 #include <variant>
 #include <vector>
@@ -58,45 +60,26 @@ struct err
 {
 };
 
-static void test_simple_event_source( task_ctx& ctx, auto& es, auto& val )
+static void test_simple_broadcast_source( task_ctx& ctx, auto& es, auto& val )
 {
-        ctx.core.run_once();
         int value = 42;
         es.set_value( value );
+        ctx.core.run_n( 10 );
         CHECK( value == val );
 
-        ctx.core.run_once();
         value = 666;
         es.set_value( value );
+        ctx.core.run_n( 10 );
         CHECK( value == val );
-        ctx.core.run_once();
 }
 
 TEST_CASE( "dyn_memory_base" )
 {
-        nd_mem                   mem;
-        task_ctx                 ctx{ mem };
-        event_source< int, err > es;
-        int                      y = -1;
+        nd_mem                                                            mem;
+        task_ctx                                                          ctx{ mem };
+        broadcast_source< set_value_t( int ), set_error_t( task_error ) > es;
+        int                                                               y = -1;
 
-        auto f = [&]( task_ctx& ) -> ecor::task< void > {
-                for ( ;; ) {
-                        int x = std::get< 0 >( co_await es.schedule() );
-                        y     = x;
-                }
-        };
-
-        auto h = f( ctx );
-
-        test_simple_event_source( ctx, es, y );
-}
-
-TEST_CASE( "void error" )
-{
-        nd_mem                    mem;
-        task_ctx                  ctx{ mem };
-        event_source< int, void > es;
-        int                       y = -1;
 
         auto f = [&]( task_ctx& ) -> ecor::task< void > {
                 for ( ;; ) {
@@ -105,17 +88,37 @@ TEST_CASE( "void error" )
                 }
         };
 
-        auto h = f( ctx );
+        auto h = f( ctx ).connect( _dummy_receiver{} );
+        h.start();
+        test_simple_broadcast_source( ctx, es, y );
+}
 
-        test_simple_event_source( ctx, es, y );
+TEST_CASE( "void error" )
+{
+        nd_mem                                 mem;
+        task_ctx                               ctx{ mem };
+        broadcast_source< set_value_t( int ) > es;
+        int                                    y = -1;
+
+        auto f = [&]( task_ctx& ) -> ecor::task< void > {
+                for ( ;; ) {
+                        int x = co_await es.schedule();
+                        y     = x;
+                }
+        };
+
+        auto h = f( ctx ).connect( _dummy_receiver{} );
+        h.start();
+
+        test_simple_broadcast_source( ctx, es, y );
 }
 
 TEST_CASE( "op" )
 {
-        nd_mem                    mem;
-        task_ctx                  ctx{ mem };
-        event_source< int, void > es;
-        int                       y = -1;
+        nd_mem                                 mem;
+        task_ctx                               ctx{ mem };
+        broadcast_source< set_value_t( int ) > es;
+        int                                    y = -1;
 
         struct
         {
@@ -136,7 +139,7 @@ TEST_CASE( "op" )
         CHECK( value == y );
 }
 
-ecor::task< void > rec_task( task_ctx& ctx, event_source< int, void >& es, int& y )
+ecor::task< void > rec_task( task_ctx& ctx, broadcast_source< set_value_t( int ) >& es, int& y )
 {
         for ( ;; ) {
                 int x  = co_await es.schedule();
@@ -148,21 +151,22 @@ ecor::task< void > rec_task( task_ctx& ctx, event_source< int, void >& es, int& 
 
 TEST_CASE( "recursive" )
 {
-        nd_mem                    mem;
-        task_ctx                  ctx{ mem };
-        event_source< int, void > es;
-        int                       y = -1;
+        nd_mem                                 mem;
+        task_ctx                               ctx{ mem };
+        broadcast_source< set_value_t( int ) > es;
+        int                                    y = -1;
 
-        auto h = rec_task( ctx, es, y );
-        test_simple_event_source( ctx, es, y );
+        auto h = rec_task( ctx, es, y ).connect( _dummy_receiver{} );
+        h.start();
+        test_simple_broadcast_source( ctx, es, y );
 }
 
 TEST_CASE( "transitive noop" )
 {
-        nd_mem                    mem;
-        task_ctx                  ctx{ mem };
-        event_source< int, void > es;
-        int                       y = -1;
+        nd_mem                                 mem;
+        task_ctx                               ctx{ mem };
+        broadcast_source< set_value_t( int ) > es;
+        int                                    y = -1;
 
         auto g = [&]( task_ctx& ) -> ecor::task< void > {
                 co_return;
@@ -176,8 +180,9 @@ TEST_CASE( "transitive noop" )
                 }
         };
 
-        auto h = f( ctx );
-        test_simple_event_source( ctx, es, y );
+        auto h = f( ctx ).connect( _dummy_receiver{} );
+        h.start();
+        test_simple_broadcast_source( ctx, es, y );
 }
 
 struct timer
@@ -197,7 +202,7 @@ struct timer
         }
 
 private:
-        seq_source< time_point, time_point, void > _es;
+        seq_source< time_point, set_value_t( time_point ) > _es;
 };
 
 TEST_CASE( "timer" )
@@ -215,10 +220,13 @@ TEST_CASE( "timer" )
                 }
         };
 
-        auto h = f( ctx );
+        auto h = f( ctx ).connect( _dummy_receiver{} );
+        h.start();
 
-        ctx.core.run_once();
-        tm.tick( 41 );
+        for ( std::size_t i = 0; i <= 42; i++ ) {
+                ctx.core.run_once();
+                tm.tick( i );
+        }
         CHECK( cnt == 42 );
 }
 
@@ -267,10 +275,14 @@ TEST_CASE( "timer_complex_heap" )
                 }
         };
 
-        auto h1 = lambda1( ctx );
-        auto h2 = lambda2( ctx );
-        auto h3 = lambda3( ctx );
-        auto h4 = lambda4( ctx );
+        auto h1 = lambda1( ctx ).connect( _dummy_receiver{} );
+        h1.start();
+        auto h2 = lambda2( ctx ).connect( _dummy_receiver{} );
+        h2.start();
+        auto h3 = lambda3( ctx ).connect( _dummy_receiver{} );
+        h3.start();
+        auto h4 = lambda4( ctx ).connect( _dummy_receiver{} );
+        h4.start();
 
         for ( uint32_t current_time = 0; current_time <= 100; ++current_time ) {
                 tm.tick( current_time );
@@ -307,17 +319,18 @@ TEST_CASE( "operator||" )
         task_ctx ctx{ mem };
 
         {
-                event_source< int, void > es1;
-                event_source< int, void > es2;
-                int                       result    = -1;
-                bool                      completed = false;
+                broadcast_source< set_value_t( int ) > es1;
+                broadcast_source< set_value_t( int ) > es2;
+                int                                    result    = -1;
+                bool                                   completed = false;
 
                 auto test_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
                         result    = co_await ( es1.schedule() || es2.schedule() );
                         completed = true;
                 };
 
-                auto h = test_or( ctx );
+                auto h = test_or( ctx ).connect( _dummy_receiver{} );
+                h.start();
                 ctx.core.run_once();  // Initialize coroutine
 
                 CHECK( !completed );
@@ -336,17 +349,18 @@ TEST_CASE( "operator||" )
         }
 
         {
-                event_source< int, void > es1;
-                event_source< int, void > es2;
-                int                       result    = -1;
-                bool                      completed = false;
+                broadcast_source< set_value_t( int ) > es1;
+                broadcast_source< set_value_t( int ) > es2;
+                int                                    result    = -1;
+                bool                                   completed = false;
 
                 auto test_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
                         result    = co_await ( es1.schedule() || es2.schedule() );
                         completed = true;
                 };
 
-                auto h = test_or( ctx );
+                auto h = test_or( ctx ).connect( _dummy_receiver{} );
+                h.start();
                 ctx.core.run_once();  // Initialize coroutine
 
                 CHECK( !completed );
@@ -360,17 +374,18 @@ TEST_CASE( "operator||" )
         }
 
         {
-                event_source< int, void >         es_int;
-                event_source< std::string, void > es_string;
-                std::variant< int, std::string >  result;
-                bool                              completed = false;
+                broadcast_source< set_value_t( int ) >         es_int;
+                broadcast_source< set_value_t( std::string ) > es_string;
+                std::variant< int, std::string >               result;
+                bool                                           completed = false;
 
                 auto test_mixed_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                        result    = co_await ( es_int.schedule() || es_string.schedule() );
+                        result = co_await as_variant( es_int.schedule() || es_string.schedule() );
                         completed = true;
                 };
 
-                auto h = test_mixed_or( ctx );
+                auto h = test_mixed_or( ctx ).connect( _dummy_receiver{} );
+                h.start();
                 ctx.core.run_once();  // Initialize coroutine
 
                 CHECK( !completed );
@@ -385,17 +400,18 @@ TEST_CASE( "operator||" )
         }
 
         {
-                seq_source< uint32_t, uint32_t, void > seq1;
-                seq_source< uint32_t, uint32_t, void > seq2;
-                uint32_t                               result    = 0;
-                bool                                   completed = false;
+                seq_source< uint32_t, set_value_t( uint32_t ) > seq1;
+                seq_source< uint32_t, set_value_t( uint32_t ) > seq2;
+                uint32_t                                        result    = 0;
+                bool                                            completed = false;
 
                 auto test_seq_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
                         result    = co_await ( seq1.schedule( 10 ) || seq2.schedule( 5 ) );
                         completed = true;
                 };
 
-                auto h = test_seq_or( ctx );
+                auto h = test_seq_or( ctx ).connect( _dummy_receiver{} );
+                h.start();
                 ctx.core.run_once();  // Initialize coroutine
 
                 CHECK( !completed );
@@ -748,8 +764,8 @@ TEST_CASE( "task_coroutine_with_circular_buffer_memory" )
         task_ctx                                                 ctx{ mem };
 
         // Create event sources for inter-task communication
-        event_source< int, void >         data_source;
-        event_source< std::string, void > message_source;
+        broadcast_source< set_value_t( int ) >         data_source;
+        broadcast_source< set_value_t( std::string ) > message_source;
 
         // Shared state to verify task execution
         std::vector< int >         processed_numbers;
@@ -796,26 +812,29 @@ TEST_CASE( "task_coroutine_with_circular_buffer_memory" )
         };
 
         // Start all tasks
-        auto h1 = data_processor( ctx );
-        auto h2 = message_handler( ctx );
-        auto h3 = data_sender( ctx );
+        auto h1 = data_processor( ctx ).connect( _dummy_receiver{} );
+        h1.start();
+        auto h2 = message_handler( ctx ).connect( _dummy_receiver{} );
+        h2.start();
+        auto h3 = data_sender( ctx ).connect( _dummy_receiver{} );
+        h3.start();
 
         // Test execution sequence
-        ctx.core.run_once();  // Initialize tasks
+        ctx.core.run_n( 10 );  // Initialize tasks
 
         // Send initial messages to trigger data sender
         message_source.set_value( "start" );
-        ctx.core.run_once();
+        ctx.core.run_n( 10 );
 
         // Send more trigger messages to continue the sequence
         message_source.set_value( "continue1" );
-        ctx.core.run_once();
+        ctx.core.run_n( 10 );
 
         message_source.set_value( "continue2" );
-        ctx.core.run_once();
+        ctx.core.run_n( 10 );
 
         // Allow final processing
-        ctx.core.run_once();
+        ctx.core.run_n( 10 );
 
         // Verify the results
         CHECK( processed_numbers.size() == 3 );
@@ -842,13 +861,14 @@ TEST_CASE( "task_coroutine_circular_buffer_memory_stress" )
         circular_buffer_memory< _index_type< 2048 >, noop_base > mem{ buffer_span };
         task_ctx                                                 ctx{ mem };
 
-        event_source< int, void > trigger;
-        std::vector< int >        execution_order;
-        int                       task_counter = 0;
+        broadcast_source< set_value_t( int ) > trigger;
+        std::vector< int >                     execution_order;
+        int                                    task_counter = 0;
 
         // Create multiple short-lived tasks that should stress the circular buffer
         auto task = [&]( task_ctx& ctx, int task_id ) -> ecor::task< void > {
                 // Wait for trigger
+                std::cout << "Task " << task_id << " waiting for trigger\n";
                 int value = co_await trigger.schedule();
                 execution_order.push_back( task_id );
                 task_counter++;
@@ -863,20 +883,23 @@ TEST_CASE( "task_coroutine_circular_buffer_memory_stress" )
         };
 
         // Create several tasks
-        std::vector< ecor::task< void > > tasks;
+        using C = connect_type< ecor::task< void >, _dummy_receiver >;
+        std::list< C > tasks;
         for ( int i = 1; i <= 5; ++i )
-                tasks.push_back( task( ctx, i ) );
+                tasks.emplace_back( task( ctx, i ).connect( _dummy_receiver{} ) );
+        for ( C& c : tasks )
+                c.start();
 
         // Run initial setup
-        ctx.core.run_once();
+        ctx.core.run_n( 10 );
 
         // Trigger all tasks
         trigger.set_value( 1 );
-        ctx.core.run_once();
+        ctx.core.run_n( 10 );
 
         // Trigger even tasks for second execution
         trigger.set_value( 2 );
-        ctx.core.run_once();
+        ctx.core.run_n( 10 );
 
         // Verify execution
         CHECK( task_counter >= 5 );  // All tasks executed at least once
@@ -1369,6 +1392,52 @@ TEST_CASE( "circular_buffer_memory stress test" )
 
                 CHECK( allocated_blocks.empty() );
         }
+}
+
+TEST_CASE( "task - pass data" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        auto f = [&]( task_ctx& ctx ) -> ecor::task< std::vector< int > > {
+                std::vector< int > data = { 1, 2, 3, 4, 5 };
+                co_return data;
+        };
+
+        auto g = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                std::vector< int > received_data = co_await f( ctx );
+                CHECK( received_data.size() == 5 );
+                CHECK( received_data[0] == 1 );
+                CHECK( received_data[4] == 5 );
+        };
+
+        auto h = g( ctx ).connect( _dummy_receiver{} );
+        h.start();
+        ctx.core.run_once();
+}
+
+TEST_CASE( "broadcast - multiple set_value" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        broadcast_source< set_value_t( int ), set_value_t( float ) > source;
+
+
+        auto f = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                for ( int i = 0; i < 3; ++i )
+                        auto value = co_await as_variant( source.schedule() );
+        };
+
+        auto h = f( ctx ).connect( _dummy_receiver{} );
+        h.start();
+        ctx.core.run_n( 10 );
+        source.set_value( 42 );
+
+        ctx.core.run_n( 10 );
+        source.set_value( 3.14f );
+
+        ctx.core.run_n( 10 );
 }
 
 

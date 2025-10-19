@@ -9,47 +9,46 @@ Checks: >
   portability*,
   readbility*,
 WarningsAsErrors: true
-HeaderFilterRegex: '.*'
-FormatStyle:     file
+HeaderFilterRegex: ".*"
+FormatStyle: file
 CheckOptions:
-  - key:             readability-identifier-naming.IgnoreFailedSplit
-    value: '0'
-  - key:             readability-identifier-naming.ClassCase
+  - key: readability-identifier-naming.IgnoreFailedSplit
+    value: "0"
+  - key: readability-identifier-naming.ClassCase
     value: lower_case
-  - key:             readability-identifier-naming.ClassConstantCase
+  - key: readability-identifier-naming.ClassConstantCase
     value: lower_case
-  - key:             readability-identifier-naming.ClassMemberCase
+  - key: readability-identifier-naming.ClassMemberCase
     value: lower_case
-  - key:             readability-identifier-naming.PrivateMemberSuffix
-    value: '_'
-  - key:             readability-identifier-naming.EnumCase
+  - key: readability-identifier-naming.PrivateMemberPreffix
+    value: "_"
+  - key: readability-identifier-naming.EnumCase
     value: lower_case
-  - key:             readability-identifier-naming.FunctionCase
+  - key: readability-identifier-naming.FunctionCase
     value: lower_case
-  - key:             readability-identifier-naming.GlobalConstantCase
+  - key: readability-identifier-naming.GlobalConstantCase
     value: lower_case
-  - key:             readability-identifier-naming.GlobalVariableCase
+  - key: readability-identifier-naming.GlobalVariableCase
     value: UPPER_CASE
-  - key:             readability-identifier-naming.GlobalPointerCase
+  - key: readability-identifier-naming.GlobalPointerCase
     value: UPPER_CASE
-  - key:             readability-identifier-naming.GlobalFunctionCase
+  - key: readability-identifier-naming.GlobalFunctionCase
     value: lower_case
-  - key:             readability-identifier-naming.MethodCase
+  - key: readability-identifier-naming.MethodCase
     value: lower_case
-  - key:             readability-identifier-naming.NamespaceCase
+  - key: readability-identifier-naming.NamespaceCase
     value: lower_case
-  - key:             readability-identifier-naming.ParameterCase
+  - key: readability-identifier-naming.ParameterCase
     value: lower_case
-  - key:             readability-identifier-naming.StructCase
+  - key: readability-identifier-naming.StructCase
     value: lower_case
-  - key:             readability-identifier-naming.TemplateParameterCase
+  - key: readability-identifier-naming.TemplateParameterCase
     value: CamelCase
-  - key:             readability-identifier-naming.TypeAliasCase
+  - key: readability-identifier-naming.TypeAliasCase
     value: lower_case
-  - key:             readability-identifier-naming.UnionCase
+  - key: readability-identifier-naming.UnionCase
     value: lower_case
-  - key:             readability-identifier-naming.VariableCase
+  - key: readability-identifier-naming.VariableCase
     value: lower_case
-  - key:             misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic
-    value: '1'
-...
+  - key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic
+    value: "1"
