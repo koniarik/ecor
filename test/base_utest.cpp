@@ -1440,5 +1440,81 @@ TEST_CASE( "broadcast - multiple set_value" )
         ctx.core.run_n( 10 );
 }
 
+struct _check_error_receiver
+{
+        task_error& err;
+
+        void set_value()
+        {
+        }
+
+        void set_error( task_error e )
+        {
+                err = e;
+        }
+};
+
+TEST_CASE( "task - allocation error" )
+{
+        std::array< uint8_t, 1 >                   buffer_storage;
+        std::span< uint8_t, 1 >                    buffer_span{ buffer_storage };
+        circular_buffer_memory< _index_type< 1 > > mem{ buffer_span };
+        task_ctx                                   ctx{ mem };
+        bool                                       lambda_triggered = false;
+
+        auto f = [&]( task_ctx& ctx ) -> ecor::task< void > {
+                lambda_triggered = true;
+                co_return;
+        };
+
+        task_error err = task_error::none;
+
+        auto h = f( ctx ).connect( _check_error_receiver{ err } );
+        h.start();
+        CHECK_EQ( err, task_error::task_allocation_failure );
+        CHECK_EQ( lambda_triggered, false );
+        ctx.core.run_once();
+}
+
+TEST_CASE( "task - error extension" )
+{
+        struct task_cfg
+        {
+                using extra_error_signatures = completion_signatures< set_error_t( std::string ) >;
+        };
+
+        using my_task = ecor::task< void, task_cfg >;
+
+        nd_mem      mem;
+        task_ctx    ctx{ mem };
+        std::string err_msg;
+        auto        f = [&]( task_ctx& ctx ) -> my_task {
+                co_await just_error( std::string{ "custom error occurred" } );
+        };
+        struct my_receiver
+        {
+                std::string& err_msg;
+
+                void set_value()
+                {
+                }
+
+                void set_error( task_error e )
+                {
+                        err_msg = "task_error: " + std::to_string( static_cast< int >( e ) );
+                }
+
+                void set_error( std::string msg )
+                {
+                        err_msg = msg;
+                }
+        };
+
+        auto h = f( ctx ).connect( my_receiver{ err_msg } );
+        h.start();
+        ctx.core.run_once();
+        CHECK_EQ( err_msg, "custom error occurred" );
+}
+
 
 }  // namespace ecor

@@ -36,11 +36,11 @@ concept memory_resource = requires( T a, std::size_t bytes, std::size_t align, v
 struct _dummy_receiver
 {
         template < typename... Args >
-        void set_value( Args&&... args ) noexcept
+        void set_value( Args&&... ) noexcept
         {
         }
         template < typename... Args >
-        void set_error( Args&&... args ) noexcept
+        void set_error( Args&&... ) noexcept
         {
         }
 
@@ -174,36 +174,34 @@ struct circular_buffer_memory : Base
             std::size_t          bytes,
             std::size_t          align ) const noexcept
         {
+                index_type idx      = npos;
+                int        capacity = 0;
                 if ( _last == npos ) {
                         // Empty buffer
                         ECOR_ASSERT( _first == npos && _last == npos );
-                        auto idx      = _align_idx( buff.data(), sizeof( node ), align );
-                        auto capacity = buff.size() - idx;
-                        if ( capacity >= bytes )
-                                return idx - sizeof( node );
+                        idx      = _align_idx( buff.data(), sizeof( node ), align );
+                        capacity = buff.size() - idx;
                 } else if ( _first <= _next ) {
                         // Non-overflow state: [ ][x][x][x][ ][ ]
                         {
-                                auto idx = _align_idx( buff.data(), _next + sizeof( node ), align );
-                                auto capacity = buff.size() - idx;
-                                if ( idx < buff.size() && capacity >= bytes )
+                                idx      = _align_idx( buff.data(), _next + sizeof( node ), align );
+                                capacity = buff.size() - idx;
+                                if ( idx < buff.size() && capacity >= (int) bytes )
                                         return idx - sizeof( node );
                         }
+                        // Non-overflow state, but overflow triggered: [ ][ ][ ][x][x][x]
                         {
-                                auto idx      = _align_idx( buff.data(), sizeof( node ), align );
-                                auto capacity = idx - _first;
-                                if ( capacity >= bytes )
-                                        return idx - sizeof( node );
+                                idx      = _align_idx( buff.data(), sizeof( node ), align );
+                                capacity = idx - _first;
                         }
 
                 } else {  // _first > _next
-                        // Overflow state: [x][x][ ][ ][x][x]
-                        auto idx = _align_idx( buff.data(), _next + sizeof( node ), align );
-
-                        auto capacity = _first - idx;
-                        if ( capacity >= bytes )
-                                return idx - sizeof( node );
+                          // Overflow state: [x][x][ ][ ][x][x]
+                        idx      = _align_idx( buff.data(), _next + sizeof( node ), align );
+                        capacity = _first - idx;
                 }
+                if ( idx < buff.size() && capacity >= (int) bytes )
+                        return idx - sizeof( node );
                 return npos;
         }
 
@@ -333,7 +331,7 @@ public:
         }
 
         template < typename U, typename IdxType, typename Base2 >
-        friend class circular_buffer_allocator;
+        friend struct circular_buffer_allocator;
 };
 
 template < typename T >
@@ -451,9 +449,21 @@ struct _vtable : _vtable_row< S >...
         using _vtable_row< S >::set...;
 };
 
+template < typename R, typename VTable >
+static constexpr VTable _vtable_of = { _tag< R >{} };
+
 template < typename... S >
 struct completion_signatures
 {
+};
+
+template < typename Sigs >
+struct _vtable_of_sigs;
+
+template < signature... S >
+struct _vtable_of_sigs< completion_signatures< S... > >
+{
+        using type = _vtable< S... >;
 };
 
 template < typename TL, typename Tag, typename Sigs, template < class... > class Tuple >
@@ -517,6 +527,12 @@ template < typename Sigs >
 using _map_errors_of_t =
     typename _filter_map_tag< std::variant<>, set_error_t, Sigs, _type_identity_t >::type;
 
+template < typename Sigs >
+using _filter_values_of_t = typename _filter_map_tag<
+    completion_signatures<>,
+    set_value_t,
+    Sigs,
+    _tag_identity_t< set_value_t >::type >::type;
 
 template < typename Sigs >
 using _filter_errors_of_t = typename _filter_map_tag<
@@ -549,6 +565,25 @@ template < typename T >
 struct _contains_type< T >
 {
         static constexpr bool value = false;
+};
+
+template < typename T, typename U >
+struct _sigs_contains_type;
+
+template < typename T, typename... Ts >
+struct _sigs_contains_type< T, completion_signatures< Ts... > > : _contains_type< T, Ts... >
+{
+};
+
+template < typename Sigs1, typename Sigs2 >
+struct _check_compatible_sigs;
+
+template < typename... Ts, typename Sigs2 >
+struct _check_compatible_sigs< completion_signatures< Ts... >, Sigs2 >
+{
+        static_assert(
+            ( _sigs_contains_type< Ts, Sigs2 >::value && ... ),
+            "Completion signatures are not compatible" );
 };
 
 template < typename O, typename... Ts >
@@ -610,9 +645,6 @@ struct event_entry : zll::ll_base< event_entry< S... > >
                 vtable.set( set_error_t{}, this, (Args&&) args... );
         }
 };
-
-template < typename R, signature... S >
-static constexpr _vtable< S... > _vtable_of = { _tag< R >{} };
 
 
 template < signature... S >
@@ -683,7 +715,7 @@ struct _list_op : event_entry< S... >, R
 {
 
         _list_op( auto& list, R receiver )
-          : event_entry< S... >( _vtable_of< _list_op, S... > )
+          : event_entry< S... >( _vtable_of< _list_op, _vtable< S... > > )
           , R( std::move( receiver ) )
           , _list( list )
         {
@@ -707,7 +739,7 @@ struct _heap_op : seq_entry< K, S... >, R
 {
 
         _heap_op( auto& heap, K key, R receiver )
-          : seq_entry< K, S... >( key, _vtable_of< _heap_op, S... > )
+          : seq_entry< K, S... >( key, _vtable_of< _heap_op, _vtable< S... > > )
           , R( std::move( receiver ) )
           , _heap( heap )
         {
@@ -891,6 +923,46 @@ struct seq_sender
 template < typename S, typename R >
 using connect_type = decltype( std::declval< S >().connect( std::declval< R >() ) );
 
+template < typename T >
+struct _just_error
+{
+        T err;
+
+        template < typename R >
+        struct _op
+        {
+                T err;
+                R receiver;
+
+                void start()
+                {
+                        receiver.set_error( std::move( err ) );
+                }
+        };
+
+        template < typename R >
+        auto connect( R receiver ) &&
+        {
+                return _op{ std::move( err ), std::move( receiver ) };
+        }
+
+        template < typename Env >
+        using _completions = completion_signatures< set_error_t( T ) >;
+
+        template < typename Env >
+        _completions< Env > get_completion_signatures( Env&& )
+        {
+                return {};
+        }
+};
+
+template < typename T >
+_just_error< T > just_error( T err )
+{
+        return _just_error< T >{ std::move( err ) };
+}
+
+
 enum class _awaitable_state_e : uint8_t
 {
         empty,
@@ -902,10 +974,14 @@ struct _itask_op : zll::ll_base< _itask_op >
         virtual void resume() = 0;
 };
 
-struct task_core
+// This now does not need itask_op to inherit from linked list -> do we still want that?
+struct itask_core
 {
-        zll::ll_list< _itask_op > ready_tasks;
+        virtual void reschedule( _itask_op& ) = 0;
+};
 
+struct task_core : itask_core
+{
         bool run_once()
         {
                 if ( ready_tasks.empty() )
@@ -922,6 +998,14 @@ struct task_core
                         if ( !run_once() )
                                 break;
         }
+
+        void reschedule( _itask_op& op ) override
+        {
+                ready_tasks.link_back( op );
+        }
+
+private:
+        zll::ll_list< _itask_op > ready_tasks;
 };
 
 template < typename T >
@@ -937,9 +1021,10 @@ struct _expected
                 T val;
         };
 
-        void set_value( T v ) noexcept
+        template < typename... Args >
+        void set_value( Args&&... args ) noexcept
         {
-                new ( (void*) &val ) T( std::move( v ) );
+                new ( (void*) &val ) T( (Args&&) args... );
                 state = _awaitable_state_e::value;
         }
 
@@ -953,8 +1038,7 @@ struct _expected
 template <>
 struct _expected< void >
 {
-        _expected() noexcept = default;
-
+        _expected() noexcept     = default;
         _awaitable_state_e state = _awaitable_state_e::empty;
 
         void set_value() noexcept
@@ -983,7 +1067,7 @@ struct _awaitable
                 _op.start();
         }
 
-        auto await_resume() const noexcept
+        auto await_resume() noexcept
         {
                 if constexpr ( std::same_as< value_type, void > )
                         switch ( _exp.state ) {
@@ -1027,6 +1111,12 @@ struct _awaitable
 
         template <>
         struct _extract_type< std::variant< std::tuple<> > >
+        {
+                using type = void;
+        };
+
+        template <>
+        struct _extract_type< std::variant<> >
         {
                 using type = void;
         };
@@ -1106,7 +1196,7 @@ struct task_ctx
         }
 };
 
-inline task_core& get_task_core( task_ctx& t )
+inline itask_core& get_task_core( task_ctx& t )
 {
         return t.core;
 }
@@ -1116,23 +1206,34 @@ inline task_allocator& get_task_alloc( task_ctx& t )
         return t.alloc;
 }
 
+struct task_default_cfg
+{
+        using extra_error_signatures = completion_signatures<>;
+};
+
 template < typename T >
+concept task_config = requires() { typename T::extra_error_signatures; };
+
+template < typename T, task_config CFG = task_default_cfg >
 struct task;
 
 enum class task_error : uint8_t
 {
+        none,
         task_unfinished,
-
+        task_allocation_failure,
+        task_already_done,
 };
 
-template < typename T >
+template < typename Task >
 struct _task_finish_guard
 {
-        void set_error( task_error err ) noexcept
+        template < typename U >
+        void set_error( U&& err ) noexcept
         {
                 ECOR_ASSERT( this->_recv );
                 if ( this->_recv ) {
-                        this->_recv->_set_error( _obj, err );
+                        this->_recv->set( set_error_t{}, _obj, (U&&) err );
                         this->_recv = nullptr;
                 }
         }
@@ -1142,7 +1243,7 @@ struct _task_finish_guard
         {
                 ECOR_ASSERT( this->_recv );
                 if ( this->_recv ) {
-                        this->_recv->_set_value( this->_obj, (U&&) v... );
+                        this->_recv->set( set_value_t{}, this->_obj, (U&&) v... );
                         this->_recv = nullptr;
                 }
         }
@@ -1150,20 +1251,22 @@ struct _task_finish_guard
         void on_final_suspend() noexcept
         {
                 if ( _recv )
-                        _recv->_set_error( _obj, task_error::task_unfinished );
+                        _recv->set( set_error_t{}, _obj, task_error::task_unfinished );
                 _recv = nullptr;
         }
 
         template < typename U >
         void setup_continuable( U& p )
         {
-                this->_recv = &_vtable_of< U, _value_setter_t< T >, set_error_t( task_error ) >;
+                this->_recv = &_vtable_of< U, vtable >;
                 this->_obj  = static_cast< void* >( &p );
         }
 
 protected:
-        _vtable< _value_setter_t< T >, set_error_t( task_error ) > const* _recv = nullptr;
-        void*                                                             _obj  = nullptr;
+        using sigs          = typename Task::_completions;
+        using vtable        = typename _vtable_of_sigs< sigs >::type;
+        vtable const* _recv = nullptr;
+        void*         _obj  = nullptr;
 };
 
 struct _promise_base : _itask_op
@@ -1177,12 +1280,15 @@ struct _promise_base : _itask_op
 
         // XXX: check the noexcept thing
 
-        static void* alloc( std::size_t sz, task_allocator& mem, vtable& vt ) noexcept
+        static void* alloc( std::size_t sz, task_allocator& mem ) noexcept
         {
                 sz += spacing;
                 void* const vp = allocate( mem, sz, align );
                 if ( !vp )
                         return nullptr;
+                vtable vt{
+                    .mem = &mem,
+                };
                 std::memcpy( vp, (void const*) &vt, sizeof( vt ) );
                 return ( (char*) vp ) + spacing;
         }
@@ -1198,10 +1304,7 @@ struct _promise_base : _itask_op
         void* operator new( std::size_t const sz, auto&& ctx, auto&&... ) noexcept
         {
                 task_allocator& a = get_task_alloc( ctx );
-                vtable          vt{
-                             .mem = &a,
-                };
-                return alloc( sz, a, vt );
+                return alloc( sz, a );
         }
 
         void operator delete( void* const ptr, std::size_t const sz ) noexcept
@@ -1219,7 +1322,7 @@ struct _promise_base : _itask_op
                 return {};
         }
 
-        task_core& core;
+        itask_core& core;
 
         void unhandled_exception() noexcept
         {
@@ -1236,7 +1339,7 @@ struct _promise_base : _itask_op
 
         void reschedule()
         {
-                core.ready_tasks.link_back( *this );
+                core.reschedule( *this );
         }
 };
 
@@ -1246,7 +1349,7 @@ struct _promise_type_value
 {
         _task_finish_guard< T > g;
 
-        void return_value( T&& v ) noexcept
+        void return_value( typename T::value_type v ) noexcept
         {
                 g.set_value( std::move( v ) );
         }
@@ -1258,10 +1361,11 @@ struct _promise_type_value
         }
 };
 
-template <>
-struct _promise_type_value< void >
+template < typename T >
+        requires( std::same_as< typename T::value_type, void > )
+struct _promise_type_value< T >
 {
-        _task_finish_guard< void > g;
+        _task_finish_guard< T > g;
 
         void return_void() noexcept
         {
@@ -1275,19 +1379,20 @@ struct _promise_type_value< void >
         }
 };
 
-template < typename T >
-struct _promise_type : _promise_base, _promise_type_value< T >
+template < typename Task >
+struct _promise_type : _promise_base, _promise_type_value< Task >
 {
-        using value_type = T;
+        using value_type = typename Task::value_type;
         using _promise_base::_promise_base;
 
-        static task< T > get_return_object_on_allocation_failure()
+        static Task get_return_object_on_allocation_failure()
         {
                 // write test cases for this
-                return { std::coroutine_handle< _promise_type >{} };
+                return {
+                    std::coroutine_handle< _promise_type >{}, task_error::task_allocation_failure };
         }
 
-        task< T > get_return_object()
+        Task get_return_object()
         {
                 return { std::coroutine_handle< _promise_type >::from_promise( *this ) };
         }
@@ -1298,10 +1403,7 @@ struct _promise_type : _promise_base, _promise_type_value< T >
                 // XXX: leaky implementation detail
                 using compls = _sender_completions_t< S, typename _promise_base::_env >;
                 using errs   = _filter_errors_of_t< compls >;
-                static_assert(
-                    std::same_as< errs, completion_signatures<> > ||
-                        std::same_as< errs, completion_signatures< set_error_t( task_error ) > >,
-                    "Sender used in co_await must only complete with set_error(task_error)" );
+                _check_compatible_sigs< errs, typename Task::_error_completions > _{};
                 using vals = _map_values_of_t< compls >;
                 static_assert(
                     std::variant_size_v< vals > <= 1,
@@ -1311,6 +1413,15 @@ struct _promise_type : _promise_base, _promise_type_value< T >
                     std::coroutine_handle< _promise_type >::from_promise( *this ) };
         }
 
+        template < typename Err >
+                requires( _sigs_contains_type<
+                          set_error_t( Err ),
+                          typename Task::_error_completions >::value )
+        auto await_transform( Err e ) noexcept
+        {
+                return await_transform( just_error( std::move( e ) ) );
+        }
+
 
         void resume() override
         {
@@ -1318,12 +1429,13 @@ struct _promise_type : _promise_base, _promise_type_value< T >
                 h.resume();
         }
 };
-template < typename U, typename R >
+template < typename T, task_config CFG, typename R >
 struct _task_op
 {
-        _task_op( std::coroutine_handle< _promise_type< U > > h, R r )
+        _task_op( task_error err, std::coroutine_handle< _promise_type< task< T, CFG > > > h, R r )
           : _h( h )
           , _recv( std::move( r ) )
+          , _error( err )
         {
         }
 
@@ -1332,12 +1444,20 @@ struct _task_op
         _task_op( _task_op&& other ) noexcept
           : _h( std::exchange( other._h, nullptr ) )
           , _recv( std::move( other._recv ) )
+          , _error( other._error )
         {
         }
 
         void start()
         {
-                ECOR_ASSERT( _h && !_h.done() );
+                if ( _error != task_error::none ) {
+                        _recv.set_error( _error );
+                        return;
+                }
+                if ( !_h || _h.done() ) {
+                        _recv.set_error( task_error::task_already_done );
+                        return;
+                }
                 _h.promise().g.setup_continuable( _recv );
                 _h.resume();
         }
@@ -1348,20 +1468,34 @@ struct _task_op
                         this->_h.destroy();
         }
 
-        std::coroutine_handle< _promise_type< U > > _h;
-        R                                           _recv;
+        std::coroutine_handle< _promise_type< task< T, CFG > > > _h;
+        R                                                        _recv;
+        task_error                                               _error;
 };
 
-template < typename T >
+template < typename T, task_config CFG >
 struct task
 {
-        using promise_type = _promise_type< T >;
+        using value_type   = T;
+        using promise_type = _promise_type< task >;
+
+        // XXX: append?
+        using _error_completions = _type_merge_t<
+            completion_signatures< set_error_t( task_error ) >,
+            typename CFG::extra_error_signatures >;
+
+        // XXX: convert to simple concat instead of merge
+        using _completions =
+            _type_merge_t< completion_signatures< _value_setter_t< T > >, _error_completions >;
         static_assert(
             alignof( promise_type ) <= alignof( std::max_align_t ),
             "Unsupported alignment" );
 
-        task( std::coroutine_handle< promise_type > handle )
+        task(
+            std::coroutine_handle< promise_type > handle,
+            task_error                            error = task_error::none ) noexcept
           : _h( handle )
+          , _error( error )
         {
         }
 
@@ -1369,8 +1503,10 @@ struct task
         task& operator=( task const& ) = delete;
         task( task&& other ) noexcept
           : _h( std::exchange( other._h, nullptr ) )
+          , _error( other._error )
         {
         }
+
         task& operator=( task&& other ) noexcept
         {
                 if ( this != &other ) {
@@ -1381,11 +1517,7 @@ struct task
         }
 
         template < typename Env >
-        using _completions =
-            completion_signatures< _value_setter_t< T >, set_error_t( task_error ) >;
-
-        template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& )
+        _completions get_completion_signatures( Env&& )
         {
                 return {};
         }
@@ -1396,7 +1528,7 @@ struct task
         {
                 auto tmp = _h;
                 _h       = nullptr;
-                return _task_op< T, R >{ std::move( tmp ), std::move( receiver ) };
+                return _task_op< T, CFG, R >{ _error, std::move( tmp ), std::move( receiver ) };
         }
 
         ~task()
@@ -1407,6 +1539,7 @@ struct task
 
 private:
         std::coroutine_handle< promise_type > _h;
+        task_error                            _error = task_error::none;
 };
 
 template < typename S1, typename S2, typename R >
@@ -1504,7 +1637,7 @@ _or_sender< S1, S2 > operator||( S1 s1, S2 s2 )
 }
 
 template < sender S >
-struct as_variant
+struct _as_variant
 {
         template < typename Env >
         using _s_completions = _sender_completions_t< S, Env >;
@@ -1552,7 +1685,7 @@ struct as_variant
                 return std::move( _s ).connect( _recv< R >{ std::move( receiver ) } );
         }
 
-        as_variant( S s )
+        _as_variant( S s )
           : _s( std::move( s ) )
         {
         }
@@ -1560,5 +1693,153 @@ struct as_variant
         S _s;
 };
 
+static inline struct as_variant_t
+{
+        template < sender S >
+        auto operator()( S s ) const noexcept
+        {
+                return _as_variant< S >{ std::move( s ) };
+        }
+
+} as_variant;
+
+auto operator|( auto s, as_variant_t ) noexcept
+{
+        return as_variant( std::move( s ) );
+}
+
+
+template < sender S >
+struct _err_to_val
+{
+        template < typename Env >
+        using _s_completions = _sender_completions_t< S, Env >;
+
+        template < typename Env >
+        using _s_values = _filter_values_of_t< _s_completions< Env > >;
+
+        template < typename Env >
+        using _s_errors_as_val = typename _filter_map_tag<
+            completion_signatures<>,
+            set_error_t,
+            _s_completions< Env >,
+            _tag_identity_t< set_value_t >::type >::type;
+
+        template < typename Env >
+        using _completions = _type_merge_t< _s_values< Env >, _s_errors_as_val< Env > >;
+
+        template < typename Env >
+        _completions< Env > get_completion_signatures( Env&& )
+        {
+                return {};
+        }
+
+        template < typename R >
+        struct _recv : R
+        {
+                _recv( R r )
+                  : R( std::move( r ) )
+                {
+                }
+
+                template < typename... Ts >
+                void set_error( Ts&&... errs ) noexcept
+                {
+                        R::set_value( (Ts&&) errs... );
+                }
+        };
+
+        template < typename R >
+        auto connect( R receiver ) &&
+        {
+                return std::move( _s ).connect( _recv< R >{ std::move( receiver ) } );
+        }
+
+        S _s;
+};
+
+static inline struct err_to_val_t
+{
+        template < sender S >
+        auto operator()( S s ) const noexcept
+        {
+                return _err_to_val< S >{ std::move( s ) };
+        }
+
+} err_to_val;
+
+auto operator|( auto s, err_to_val_t ) noexcept
+{
+        return err_to_val( std::move( s ) );
+}
+
+template < sender S, template < typename R > class CB, typename DataType >
+struct _then_cb
+{
+
+        S         s;
+        DataType& cb;
+
+        template < typename R >
+        auto connect( R receiver )
+        {
+                return s.connect( CB{ std::move( receiver ), cb } );
+        }
+};
+
+template < template < typename R > class CB, typename DataType >
+struct _then_t
+{
+        DataType& data;
+};
+
+template < sender S, template < typename R > class CB, typename DataType >
+auto operator|( S s, _then_t< CB, DataType > t ) noexcept
+{
+        return _then_cb< S, CB, DataType >{ std::move( s ), t.data };
+}
+
+template < template < typename R > class CB, typename DataType >
+auto then( DataType& data ) noexcept
+{
+        return _then_t< CB, DataType >{ data };
+}
+
+template < sender S >
+struct repeater
+{
+        repeater( S s )
+          : _s( std::move( s ) )
+        {
+        }
+
+
+        struct _recv
+        {
+                repeater* r;
+
+                template < typename... Ts >
+                void set_value( Ts&&... ) noexcept
+                {
+                        r->start();
+                }
+
+                template < typename... Es >
+                void set_error( Es&&... ) noexcept
+                {
+                        r->start();
+                }
+        };
+
+        void start()
+        {
+                _opop.emplace( _s.connect( _recv{ .r = this } ) );
+                _opop->start();
+        }
+
+        S _s;
+
+        std::optional< connect_type< S, _recv > > _opop;
+};
 
 }  // namespace ecor
