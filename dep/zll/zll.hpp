@@ -25,6 +25,7 @@
 #include <concepts>
 #include <cstdint>
 #include <iterator>
+#include <tuple>
 
 #ifdef ZLL_DEFAULT_ASSERT
 
@@ -876,6 +877,15 @@ struct ll_list
                 detach< T, Acc >( *first );
         }
 
+        /// Detaches and returns the first element of the list. The second element becomes the first
+        /// element. Undefined behavior if the list is empty.
+        T& take_front() noexcept( noexcept_access )
+        {
+                auto& node = *first;
+                detach< T, Acc >( node );
+                return node;
+        }
+
         /// Returns true if the list is empty, i.e. contains no elements.
         bool empty() const noexcept
         {
@@ -899,6 +909,15 @@ struct ll_list
         void detach_back() noexcept( noexcept_access )
         {
                 detach< T, Acc >( *last );
+        }
+
+        /// Detaches and returns the last element of the list. The second last element becomes the
+        /// last element. Undefined behavior if the list is empty.
+        T& take_back() noexcept( noexcept_access )
+        {
+                auto& node = *last;
+                detach< T, Acc >( node );
+                return node;
         }
 
         /// Detaches all nodes in the list. The list becomes empty after this operation.

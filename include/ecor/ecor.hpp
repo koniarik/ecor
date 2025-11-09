@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <new>
 #include <optional>
 #include <span>
 #include <utility>
@@ -27,6 +28,18 @@
 namespace ecor
 {
 
+struct sender_t
+{
+};
+
+struct receiver_t
+{
+};
+
+struct operation_state_t
+{
+};
+
 template < typename T >
 concept memory_resource = requires( T a, std::size_t bytes, std::size_t align, void* p ) {
         { allocate( a, bytes, align ) } -> std::same_as< void* >;
@@ -35,12 +48,18 @@ concept memory_resource = requires( T a, std::size_t bytes, std::size_t align, v
 
 struct _dummy_receiver
 {
+        using receiver_concept = receiver_t;
+
         template < typename... Args >
         void set_value( Args&&... ) noexcept
         {
         }
-        template < typename... Args >
-        void set_error( Args&&... ) noexcept
+        template < typename Err >
+        void set_error( Err&& ) noexcept
+        {
+        }
+
+        void set_stopped() noexcept
         {
         }
 
@@ -139,6 +158,11 @@ struct circular_buffer_memory : Base
         {
                 p.~T();
                 deallocate( &p, sizeof( T ), alignof( T ) );
+        }
+
+        std::size_t capacity() const noexcept
+        {
+                return _buff.size();
         }
 
         std::size_t used_bytes() const noexcept
@@ -263,6 +287,10 @@ struct circular_buffer_memory : Base
                         _set_node( buff, n.next_idx, nn );
                 }
 
+                // If buffer is now empty, reset _next to npos as well
+                if ( _first == npos && _last == npos )
+                        _next = npos;
+
                 _set_node( buff, idx, node{ .next_idx = 0, .prev_idx = 0 } );
         }
 };
@@ -335,9 +363,31 @@ public:
 };
 
 template < typename T >
-concept sender = requires( T s ) {
-        { std::move( s ).connect( std::declval< _dummy_receiver >() ) };
-};
+concept queryable = std::is_object_v< T >;
+
+template < typename T >
+concept sender = std::derived_from< typename std::remove_cvref_t< T >::sender_concept, sender_t > &&
+                 requires( T const& s ) {
+                         { get_env( s ) } -> queryable;
+                 } && std::move_constructible< std::remove_cvref_t< T > > &&
+                 std::constructible_from< std::remove_cvref_t< T >, T >;
+
+template < typename T >
+concept receiver =
+    std::derived_from< typename std::remove_cvref_t< T >::receiver_concept, receiver_t > &&
+    requires( T const& r ) {
+            { get_env( r ) } -> queryable;
+    } && std::move_constructible< std::remove_cvref_t< T > > &&
+    std::constructible_from< std::remove_cvref_t< T >, T >;
+
+template < typename T >
+auto get_env( T const& ) noexcept
+{
+        struct empty_env
+        {
+        };
+        return empty_env{};
+}
 
 
 struct set_value_t
@@ -376,12 +426,12 @@ template < typename... Args >
 struct _is_signature< set_value_t( Args... ) > : std::true_type
 {
 };
-template < typename... Args >
-struct _is_signature< set_error_t( Args... ) > : std::true_type
+template < typename Err >
+struct _is_signature< set_error_t( Err ) > : std::true_type
 {
 };
-template < typename... Args >
-struct _is_signature< set_stopped_t( Args... ) > : std::true_type
+template <>
+struct _is_signature< set_stopped_t() > : std::true_type
 {
 };
 
@@ -434,6 +484,26 @@ struct _vtable_row< set_error_t( Args... ) >
         void set( set_error_t, void* self, Args... args ) const
         {
                 _set_error( self, (Args&&) args... );
+        }
+};
+
+template <>
+struct _vtable_row< set_stopped_t() >
+{
+        using f_t = void ( * )( void* );
+        f_t _set_stopped;
+
+        template < typename T >
+        constexpr _vtable_row( _tag< T > ) noexcept
+          : _set_stopped{ +[]( void* self ) {
+                  static_cast< T* >( self )->set_stopped();
+          } }
+        {
+        }
+
+        void set( set_stopped_t, void* self ) const
+        {
+                _set_stopped( self );
         }
 };
 
@@ -541,6 +611,13 @@ using _filter_errors_of_t = typename _filter_map_tag<
     Sigs,
     _tag_identity_t< set_error_t >::type >::type;
 
+template < typename Sigs >
+using _filter_stopped_of_t = typename _filter_map_tag<
+    completion_signatures<>,
+    set_stopped_t,
+    Sigs,
+    _tag_identity_t< set_stopped_t >::type >::type;
+
 template < sender S, typename Env >
 using _sender_completions_t =
     decltype( std::declval< S >().get_completion_signatures( std::declval< Env >() ) );
@@ -622,6 +699,98 @@ struct _type_merge : _type_merge_impl< completion_signatures<>, S... >
 template < typename... S >
 using _type_merge_t = typename _type_merge< S... >::type;
 
+// XXX: copy-pasta-festival from standard library concepts
+template < class Token >
+concept stoppable_token = requires( Token const tok ) {
+        { tok.stop_requested() } noexcept -> std::same_as< bool >;
+        { tok.stop_possible() } noexcept -> std::same_as< bool >;
+        { Token( tok ) } noexcept;
+} && std::copyable< Token > && std::equality_comparable< Token > && std::swappable< Token >;
+
+template < class Token >
+concept unstoppable_token =
+    stoppable_token< Token > && requires { requires( !Token{}.stop_possible() ); };
+
+template < class Source >
+concept stoppable_source = requires( Source& src, Source const csrc ) {
+        { csrc.get_token() } -> stoppable_token;
+        { csrc.stop_possible() } noexcept -> std::same_as< bool >;
+        { csrc.stop_requested() } noexcept -> std::same_as< bool >;
+        { src.request_stop() } -> std::same_as< bool >;
+};
+
+struct inplace_stop_token;
+
+struct inplace_stop_source
+{
+        inplace_stop_source() = default;
+
+        inplace_stop_source( inplace_stop_source const& )            = delete;
+        inplace_stop_source& operator=( inplace_stop_source const& ) = delete;
+
+        inplace_stop_token get_token() const noexcept;
+
+        bool stop_possible() const noexcept
+        {
+                return true;
+        }
+
+        bool stop_requested() const noexcept
+        {
+                return _stopped;
+        }
+
+        bool request_stop() noexcept
+        {
+                if ( _stopped )
+                        return false;
+                _stopped = true;
+                return true;
+        }
+
+private:
+        bool _stopped = false;
+};
+
+struct inplace_stop_token
+{
+
+        bool stop_requested() const noexcept
+        {
+                return _source && _source->stop_requested();
+        }
+        bool stop_possible() const noexcept
+        {
+                return _source != nullptr && _source->stop_possible();
+        }
+
+        friend bool
+        operator==( inplace_stop_token const& lhs, inplace_stop_token const& rhs ) noexcept
+        {
+                return lhs._source == rhs._source;
+        }
+
+        friend bool
+        operator!=( inplace_stop_token const& lhs, inplace_stop_token const& rhs ) noexcept
+        {
+                return lhs._source != rhs._source;
+        }
+
+private:
+        inplace_stop_source const* _source = nullptr;
+
+        inplace_stop_token( inplace_stop_source const* source ) noexcept
+          : _source( source )
+        {
+        }
+
+        friend struct inplace_stop_source;
+};
+
+inplace_stop_token inplace_stop_source::get_token() const noexcept
+{
+        return inplace_stop_token{ this };
+}
 
 template < signature... S >
 struct event_entry : zll::ll_base< event_entry< S... > >
@@ -644,11 +813,16 @@ struct event_entry : zll::ll_base< event_entry< S... > >
         {
                 vtable.set( set_error_t{}, this, (Args&&) args... );
         }
+
+        void _set_stopped()
+        {
+                vtable.set( set_stopped_t{}, this );
+        }
 };
 
 
 template < signature... S >
-struct broadcast_core
+struct _broadcast_core
 {
 
         template < typename V >
@@ -664,6 +838,13 @@ struct broadcast_core
         {
                 for_each( [&]( auto& n ) {
                         n._set_error( err );
+                } );
+        }
+
+        void _set_stopped()
+        {
+                for_each( [&]( auto& n ) {
+                        n._set_stopped();
                 } );
         }
 
@@ -705,14 +886,20 @@ struct broadcast_source
                 _core.set_error( (Args&&) args... );
         }
 
+        void set_stopped()
+        {
+                _core._set_stopped();
+        }
+
 private:
-        broadcast_core< S... > _core;
+        _broadcast_core< S... > _core;
 };
 
 
 template < typename R, signature... S >
 struct _list_op : event_entry< S... >, R
 {
+        using operation_state_concept = operation_state_t;
 
         _list_op( auto& list, R receiver )
           : event_entry< S... >( _vtable_of< _list_op, _vtable< S... > > )
@@ -737,6 +924,7 @@ struct seq_entry;
 template < typename R, typename K, signature... S >
 struct _heap_op : seq_entry< K, S... >, R
 {
+        using operation_state_concept = operation_state_t;
 
         _heap_op( auto& heap, K key, R receiver )
           : seq_entry< K, S... >( key, _vtable_of< _heap_op, _vtable< S... > > )
@@ -757,8 +945,9 @@ private:
 template < signature... S >
 struct broadcast_sender
 {
+        using sender_concept = sender_t;
 
-        broadcast_sender( broadcast_core< S... >& core )
+        broadcast_sender( _broadcast_core< S... >& core )
           : core_( core )
         {
         }
@@ -772,13 +961,22 @@ struct broadcast_sender
                 return {};
         }
 
-        template < typename R >
+        struct _env
+        {
+        };
+
+        _env get_env() const noexcept
+        {
+                return {};
+        }
+
+        template < receiver R >
         _list_op< R, S... > connect( R receiver )
         {
                 return { core_.list, std::move( receiver ) };
         }
 
-        broadcast_core< S... >& core_;
+        _broadcast_core< S... >& core_;
 };
 
 template < typename K, signature... S >
@@ -807,6 +1005,11 @@ struct seq_entry : zll::sh_base< seq_entry< K, S... > >
                 vtable._set_error( this, (Args&&) args... );
         }
 
+        void _set_stopped()
+        {
+                vtable._set_stopped( this );
+        }
+
         constexpr bool operator<( seq_entry const& o ) const
         {
                 return key < o.key;
@@ -814,7 +1017,7 @@ struct seq_entry : zll::sh_base< seq_entry< K, S... > >
 };
 
 template < typename K, signature... S >
-struct seq_core
+struct _seq_core
 {
         template < typename V >
         void set_value( V&& value )
@@ -827,8 +1030,17 @@ struct seq_core
         template < typename E1 >
         void set_error( E1&& err )
         {
+                // XXX: should this treat all entries or just the front one?
                 do_f( [&]( auto& n ) {
                         n._set_error( (E1&&) err );
+                } );
+        }
+
+        void _set_stopped()
+        {
+                // XXX: should this treat all entries or just the front one?
+                do_f( [&]( auto& n ) {
+                        n._set_stopped();
                 } );
         }
 
@@ -890,13 +1102,15 @@ struct seq_source
         }
 
 private:
-        seq_core< K, S... > _core;
+        _seq_core< K, S... > _core;
 };
 
 template < typename K, signature... S >
 struct seq_sender
 {
-        seq_sender( K key, seq_core< K, S... >& core )
+        using sender_concept = sender_t;
+
+        seq_sender( K key, _seq_core< K, S... >& core )
           : key( key )
           , core_( core )
         {
@@ -910,14 +1124,23 @@ struct seq_sender
                 return {};
         }
 
-        template < typename R >
+        struct _env
+        {
+        };
+
+        _env get_env() const noexcept
+        {
+                return {};
+        }
+
+        template < receiver R >
         _heap_op< R, K, S... > connect( R receiver ) &&
         {
                 return { core_.h, std::move( key ), std::move( receiver ) };
         }
 
-        K                    key;
-        seq_core< K, S... >& core_;
+        K                     key;
+        _seq_core< K, S... >& core_;
 };
 
 template < typename S, typename R >
@@ -926,11 +1149,15 @@ using connect_type = decltype( std::declval< S >().connect( std::declval< R >() 
 template < typename T >
 struct _just_error
 {
+        using sender_concept = sender_t;
+
         T err;
 
-        template < typename R >
+        template < receiver R >
         struct _op
         {
+                using operation_state_concept = operation_state_t;
+
                 T err;
                 R receiver;
 
@@ -940,7 +1167,7 @@ struct _just_error
                 }
         };
 
-        template < typename R >
+        template < receiver R >
         auto connect( R receiver ) &&
         {
                 return _op{ std::move( err ), std::move( receiver ) };
@@ -951,6 +1178,15 @@ struct _just_error
 
         template < typename Env >
         _completions< Env > get_completion_signatures( Env&& )
+        {
+                return {};
+        }
+
+        struct _env
+        {
+        };
+
+        _env get_env() const noexcept
         {
                 return {};
         }
@@ -1127,6 +1363,8 @@ struct _awaitable
 
         struct _receiver
         {
+                using receiver_concept = receiver_t;
+
                 _aw_tp*                              _exp;
                 std::coroutine_handle< PromiseType > _cont;
 
@@ -1140,7 +1378,12 @@ struct _awaitable
                 template < typename... Es >
                 void set_error( Es&&... errs ) noexcept
                 {
-                        _cont.promise().g.set_error( (Es&&) errs... );
+                        _cont.promise()._g.set_error( (Es&&) errs... );
+                }
+
+                void set_stopped() noexcept
+                {
+                        _cont.promise()._g.set_stopped();
                 }
 
                 auto get_env() const noexcept -> decltype( std::declval< PromiseType >().get_env() )
@@ -1233,8 +1476,8 @@ struct _task_finish_guard
         {
                 ECOR_ASSERT( this->_recv );
                 if ( this->_recv ) {
-                        this->_recv->set( set_error_t{}, _obj, (U&&) err );
-                        this->_recv = nullptr;
+                        auto* r = std::exchange( this->_recv, nullptr );
+                        r->set( set_error_t{}, _obj, (U&&) err );
                 }
         }
 
@@ -1243,16 +1486,26 @@ struct _task_finish_guard
         {
                 ECOR_ASSERT( this->_recv );
                 if ( this->_recv ) {
-                        this->_recv->set( set_value_t{}, this->_obj, (U&&) v... );
-                        this->_recv = nullptr;
+                        auto* r = std::exchange( this->_recv, nullptr );
+                        r->set( set_value_t{}, this->_obj, (U&&) v... );
+                }
+        }
+
+        void set_stopped() noexcept
+        {
+                ECOR_ASSERT( this->_recv );
+                if ( this->_recv ) {
+                        auto* r = std::exchange( this->_recv, nullptr );
+                        r->set( set_stopped_t{}, this->_obj );
                 }
         }
 
         void on_final_suspend() noexcept
         {
-                if ( _recv )
-                        _recv->set( set_error_t{}, _obj, task_error::task_unfinished );
-                _recv = nullptr;
+                if ( _recv ) {
+                        auto* r = std::exchange( this->_recv, nullptr );
+                        r->set( set_error_t{}, _obj, task_error::task_unfinished );
+                }
         }
 
         template < typename U >
@@ -1347,16 +1600,16 @@ struct _promise_base : _itask_op
 template < typename T >
 struct _promise_type_value
 {
-        _task_finish_guard< T > g;
+        _task_finish_guard< T > _g;
 
         void return_value( typename T::value_type v ) noexcept
         {
-                g.set_value( std::move( v ) );
+                _g.set_value( std::move( v ) );
         }
 
         std::suspend_always final_suspend() noexcept
         {
-                g.on_final_suspend();
+                _g.on_final_suspend();
                 return {};
         }
 };
@@ -1365,16 +1618,16 @@ template < typename T >
         requires( std::same_as< typename T::value_type, void > )
 struct _promise_type_value< T >
 {
-        _task_finish_guard< T > g;
+        _task_finish_guard< T > _g;
 
         void return_void() noexcept
         {
-                g.set_value();
+                _g.set_value();
         }
 
         std::suspend_always final_suspend() noexcept
         {
-                g.on_final_suspend();
+                _g.on_final_suspend();
                 return {};
         }
 };
@@ -1432,6 +1685,8 @@ struct _promise_type : _promise_base, _promise_type_value< Task >
 template < typename T, task_config CFG, typename R >
 struct _task_op
 {
+        using operation_state_concept = operation_state_t;
+
         _task_op( task_error err, std::coroutine_handle< _promise_type< task< T, CFG > > > h, R r )
           : _h( h )
           , _recv( std::move( r ) )
@@ -1458,7 +1713,7 @@ struct _task_op
                         _recv.set_error( task_error::task_already_done );
                         return;
                 }
-                _h.promise().g.setup_continuable( _recv );
+                _h.promise()._g.setup_continuable( _recv );
                 _h.resume();
         }
 
@@ -1476,8 +1731,9 @@ struct _task_op
 template < typename T, task_config CFG >
 struct task
 {
-        using value_type   = T;
-        using promise_type = _promise_type< task >;
+        using sender_concept = sender_t;
+        using value_type     = T;
+        using promise_type   = _promise_type< task >;
 
         // XXX: append?
         using _error_completions = _type_merge_t<
@@ -1485,8 +1741,9 @@ struct task
             typename CFG::extra_error_signatures >;
 
         // XXX: convert to simple concat instead of merge
-        using _completions =
-            _type_merge_t< completion_signatures< _value_setter_t< T > >, _error_completions >;
+        using _completions = _type_merge_t<
+            completion_signatures< _value_setter_t< T >, set_stopped_t() >,
+            _error_completions >;
         static_assert(
             alignof( promise_type ) <= alignof( std::max_align_t ),
             "Unsupported alignment" );
@@ -1522,8 +1779,16 @@ struct task
                 return {};
         }
 
+        struct _env
+        {
+        };
 
-        template < typename R >
+        _env get_env() const noexcept
+        {
+                return {};
+        }
+
+        template < receiver R >
         auto connect( R receiver ) &&
         {
                 auto tmp = _h;
@@ -1545,6 +1810,8 @@ private:
 template < typename S1, typename S2, typename R >
 struct _or_op
 {
+        using operation_state_concept = operation_state_t;
+
         _or_op( S1 s1, S2 s2, R r )
           : _recv( std::move( r ) )
           , _op1( std::move( s1 ).connect( _r{ ._fired = _fired, ._recv = _recv } ) )
@@ -1561,16 +1828,18 @@ struct _or_op
 
         struct _r
         {
+                using receiver_concept = receiver_t;
+
                 bool& _fired;
                 R&    _recv;
 
-                template < typename T >
-                void set_value( T&& v )
+                template < typename... Args >
+                void set_value( Args&&... v )
                 {
                         if ( _fired )
                                 return;
                         _fired = true;
-                        _recv.set_value( (T&&) v );
+                        _recv.set_value( (Args&&) v... );
                 }
 
                 template < typename T >
@@ -1582,13 +1851,18 @@ struct _or_op
                         _recv.set_error( (T&&) e );
                 }
 
-                struct _env
+                // XXX: investigate whenever this should cancel the other operation
+                void set_stopped()
                 {
-                };
+                        if ( _fired )
+                                return;
+                        _fired = true;
+                        _recv.set_stopped();
+                }
 
-                _env get_env() noexcept
+                auto&& get_env() noexcept
                 {
-                        return {};
+                        return _recv.get_env();
                 }
         };
 
@@ -1602,6 +1876,8 @@ struct _or_op
 template < typename S1, typename S2 >
 struct _or_sender
 {
+        using sender_concept = sender_t;
+
         _or_sender( S1 s1, S2 s2 )
           : _s1( std::move( s1 ) )
           , _s2( std::move( s2 ) )
@@ -1619,7 +1895,16 @@ struct _or_sender
                 return {};
         }
 
-        template < typename R >
+        struct _env
+        {
+        };
+
+        _env get_env() const noexcept
+        {
+                return {};
+        }
+
+        template < receiver R >
         _or_op< S1, S2, R > connect( R receiver )
         {
                 return { std::move( _s1 ), std::move( _s2 ), std::move( receiver ) };
@@ -1639,6 +1924,8 @@ _or_sender< S1, S2 > operator||( S1 s1, S2 s2 )
 template < sender S >
 struct _as_variant
 {
+        using sender_concept = sender_t;
+
         template < typename Env >
         using _s_completions = _sender_completions_t< S, Env >;
 
@@ -1653,8 +1940,13 @@ struct _as_variant
         using _error = _filter_errors_of_t< _s_completions< Env > >;
 
         template < typename Env >
-        using _completions =
-            _type_merge_t< completion_signatures< set_value_t( _values< Env > ) >, _error< Env > >;
+        using _stopped = _filter_stopped_of_t< _s_completions< Env > >;
+
+        template < typename Env >
+        using _completions = _type_merge_t<
+            completion_signatures< set_value_t( _values< Env > ) >,
+            _error< Env >,
+            _stopped< Env > >;
 
         template < typename Env >
         _completions< Env > get_completion_signatures( Env&& )
@@ -1662,9 +1954,20 @@ struct _as_variant
                 return {};
         }
 
+        struct _env
+        {
+        };
+
+        _env get_env() const noexcept
+        {
+                return {};
+        }
+
         template < typename R >
         struct _recv : R
         {
+                using receiver_concept = receiver_t;
+
                 _recv( R r )
                   : R( std::move( r ) )
                 {
@@ -1679,7 +1982,7 @@ struct _as_variant
                 }
         };
 
-        template < typename R >
+        template < receiver R >
         auto connect( R receiver ) &&
         {
                 return std::move( _s ).connect( _recv< R >{ std::move( receiver ) } );
@@ -1712,11 +2015,16 @@ auto operator|( auto s, as_variant_t ) noexcept
 template < sender S >
 struct _err_to_val
 {
+        using sender_concept = sender_t;
+
         template < typename Env >
         using _s_completions = _sender_completions_t< S, Env >;
 
         template < typename Env >
         using _s_values = _filter_values_of_t< _s_completions< Env > >;
+
+        template < typename Env >
+        using _stopped = _filter_stopped_of_t< _s_completions< Env > >;
 
         template < typename Env >
         using _s_errors_as_val = typename _filter_map_tag<
@@ -1726,7 +2034,8 @@ struct _err_to_val
             _tag_identity_t< set_value_t >::type >::type;
 
         template < typename Env >
-        using _completions = _type_merge_t< _s_values< Env >, _s_errors_as_val< Env > >;
+        using _completions =
+            _type_merge_t< _s_values< Env >, _s_errors_as_val< Env >, _stopped< Env > >;
 
         template < typename Env >
         _completions< Env > get_completion_signatures( Env&& )
@@ -1734,9 +2043,20 @@ struct _err_to_val
                 return {};
         }
 
+        struct _env
+        {
+        };
+
+        _env get_env() const noexcept
+        {
+                return {};
+        }
+
         template < typename R >
         struct _recv : R
         {
+                using receiver_concept = receiver_t;
+
                 _recv( R r )
                   : R( std::move( r ) )
                 {
@@ -1749,7 +2069,7 @@ struct _err_to_val
                 }
         };
 
-        template < typename R >
+        template < receiver R >
         auto connect( R receiver ) &&
         {
                 return std::move( _s ).connect( _recv< R >{ std::move( receiver ) } );
@@ -1773,14 +2093,106 @@ auto operator|( auto s, err_to_val_t ) noexcept
         return err_to_val( std::move( s ) );
 }
 
+template < sender S >
+struct _sink_err
+{
+        using sender_concept = sender_t;
+
+        template < typename Env >
+        using _s_completions = _sender_completions_t< S, Env >;
+
+        template < typename Env >
+        using _s_errors_as_val = std::optional< typename _filter_map_tag<
+            std::variant<>,
+            set_error_t,
+            _s_completions< Env >,
+            _type_identity_t >::type >;
+
+        template < typename Env >
+        using _s_values = _filter_values_of_t< _s_completions< Env > >;
+
+        template < typename Env >
+        using _s_stopped = _filter_stopped_of_t< _s_completions< Env > >;
+
+        template < typename Env >
+        using _completions = _type_merge_t<
+            completion_signatures< set_value_t( _s_errors_as_val< Env > ) >,
+            _s_stopped< Env > >;
+
+        template < typename Env >
+        _completions< Env > get_completion_signatures( Env&& )
+        {
+                static_assert(
+                    std::same_as< _s_values< Env >, completion_signatures<> > ||
+                        std::same_as< _s_values< Env >, completion_signatures< set_value_t() > >,
+                    "Sender used with sink_err must not complete with set_value, or there has to be only one set_value of shape set_value_t()" );
+                return {};
+        }
+
+        struct _env
+        {
+        };
+
+        _env get_env() const noexcept
+        {
+                return {};
+        }
+
+        template < typename R >
+        struct _recv : R
+        {
+                using receiver_concept = receiver_t;
+
+                _recv( R r )
+                  : R( std::move( r ) )
+                {
+                }
+
+                using value_t = _s_errors_as_val< decltype( std::declval< R >().get_env() ) >;
+
+                template < typename T >
+                void set_error( T&& err ) noexcept
+                {
+                        R::set_value( value_t{ (T&&) err } );
+                }
+        };
+
+        template < receiver R >
+        auto connect( R receiver ) &&
+        {
+                return std::move( _s ).connect( _recv< R >{ std::move( receiver ) } );
+        }
+
+        S _s;
+};
+
+static inline struct sink_err_t
+{
+
+        auto operator()( sender auto s ) const noexcept
+        {
+                return _sink_err{ std::move( s ) };
+        }
+
+} sink_err;
+
+auto operator|( sender auto s, sink_err_t ) noexcept
+{
+        return _sink_err{ std::move( s ) };
+}
+
 template < sender S, template < typename R > class CB, typename DataType >
 struct _then_cb
 {
+        // XXX: Missing sender_concept tag and get_completion_signatures()
+        // These are needed for P2300 compliance, but get_completion_signatures() must
+        // compute the transformed signatures based on CB's transformation of values/errors.
+        // Currently we lack the API to extract signature transformation from CB.
 
         S         s;
         DataType& cb;
 
-        template < typename R >
+        template < receiver R >
         auto connect( R receiver )
         {
                 return s.connect( CB{ std::move( receiver ), cb } );
@@ -1805,6 +2217,7 @@ auto then( DataType& data ) noexcept
         return _then_t< CB, DataType >{ data };
 }
 
+// XXX: replace this iwth actually sender: repeat_until
 template < sender S >
 struct repeater
 {
@@ -1814,8 +2227,11 @@ struct repeater
         }
 
 
+        // XXX: this is wrong, lifetimes will get broken
         struct _recv
         {
+                using receiver_concept = receiver_t;
+
                 repeater* r;
 
                 template < typename... Ts >
@@ -1828,6 +2244,20 @@ struct repeater
                 void set_error( Es&&... ) noexcept
                 {
                         r->start();
+                }
+
+                void set_stopped() noexcept
+                {
+                        r->start();
+                }
+
+                struct _env
+                {
+                };
+
+                _env get_env() const noexcept
+                {
+                        return {};
                 }
         };
 
