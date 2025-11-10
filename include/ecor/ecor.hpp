@@ -721,6 +721,17 @@ concept stoppable_source = requires( Source& src, Source const csrc ) {
 
 struct inplace_stop_token;
 
+template < typename CallbackFn >
+struct inplace_stop_callback;
+
+struct _inplace_stop_callback_base : zll::ll_base< _inplace_stop_callback_base >
+{
+
+        virtual void _execute() noexcept = 0;
+
+        virtual ~_inplace_stop_callback_base() = default;
+};
+
 struct inplace_stop_source
 {
         inplace_stop_source() = default;
@@ -745,23 +756,38 @@ struct inplace_stop_source
                 if ( _stopped )
                         return false;
                 _stopped = true;
+
+                while ( !_callbacks.empty() ) {
+                        auto& cb = _callbacks.front();
+                        cb._execute();
+                        if ( !_callbacks.empty() && &_callbacks.front() == &cb )
+                                zll::detach( cb );
+                }
+
                 return true;
         }
 
 private:
         bool _stopped = false;
+
+        // XXX: veve oficially hates that standard requires this to be mutable
+        mutable zll::ll_list< _inplace_stop_callback_base > _callbacks;
+
+        template < typename CallbackFn >
+        friend struct inplace_stop_callback;
 };
 
 struct inplace_stop_token
 {
+        inplace_stop_token() noexcept = default;
 
-        bool stop_requested() const noexcept
+        [[nodiscard]] bool stop_requested() const noexcept
         {
                 return _source && _source->stop_requested();
         }
-        bool stop_possible() const noexcept
+        [[nodiscard]] constexpr bool stop_possible() const noexcept
         {
-                return _source != nullptr && _source->stop_possible();
+                return _source != nullptr;
         }
 
         friend bool
@@ -776,6 +802,9 @@ struct inplace_stop_token
                 return lhs._source != rhs._source;
         }
 
+        template < typename CallbackFn >
+        using callback_type = inplace_stop_callback< CallbackFn >;
+
 private:
         inplace_stop_source const* _source = nullptr;
 
@@ -785,12 +814,51 @@ private:
         }
 
         friend struct inplace_stop_source;
+
+        template < typename CallbackFn >
+        friend struct inplace_stop_callback;
 };
 
 inplace_stop_token inplace_stop_source::get_token() const noexcept
 {
         return inplace_stop_token{ this };
 }
+
+template < typename CallbackFn >
+struct inplace_stop_callback : _inplace_stop_callback_base
+{
+        template < typename Initializer >
+        explicit inplace_stop_callback( inplace_stop_token st, Initializer&& init ) noexcept(
+            std::is_nothrow_constructible_v< CallbackFn, Initializer > &&
+            std::is_nothrow_invocable_v< CallbackFn > )
+          : _callback_fn( (Initializer&&) init )
+          , _source( st._source )
+        {
+                if ( _source && _source->stop_possible() ) {
+                        if ( _source->stop_requested() )
+                                ( (CallbackFn&&) _callback_fn )();
+                        else
+                                _source->_callbacks.link_back( *this );
+                }
+        }
+
+        inplace_stop_callback( inplace_stop_callback&& )                 = delete;
+        inplace_stop_callback( inplace_stop_callback const& )            = delete;
+        inplace_stop_callback& operator=( inplace_stop_callback&& )      = delete;
+        inplace_stop_callback& operator=( inplace_stop_callback const& ) = delete;
+
+        void _execute() noexcept override
+        {
+                ( (CallbackFn&&) _callback_fn )();
+        }
+
+private:
+        CallbackFn                 _callback_fn;
+        inplace_stop_source const* _source;
+};
+
+template < typename CallbackFn >
+inplace_stop_callback( inplace_stop_token, CallbackFn ) -> inplace_stop_callback< CallbackFn >;
 
 template < signature... S >
 struct event_entry : zll::ll_base< event_entry< S... > >
@@ -2271,5 +2339,6 @@ struct repeater
 
         std::optional< connect_type< S, _recv > > _opop;
 };
+
 
 }  // namespace ecor

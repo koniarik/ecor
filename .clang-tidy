@@ -4,7 +4,7 @@ Checks: >
   bugprone*,-bugprone-forwarding-reference-overload,-bugprone-easily-swappable-parameters,
   concurrency*,
   modernize*,-modernize-use-trailing-return-type,-modernize-avoid-c-arrays,
-  misc*,-misc-no-recursion,-misc-include-cleaner,
+  misc*,-misc-no-recursion,-misc-include-cleaner,-misc-use-anonymous-namespace,
   performance*,-performance-avoid-endl,
   portability*,
   readbility*,
