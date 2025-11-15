@@ -90,6 +90,7 @@ TEST_CASE( "dyn_memory_base" )
 
         auto h = f( ctx ).connect( _dummy_receiver{} );
         h.start();
+        ctx.core.run_n( 10 );
         test_simple_broadcast_source( ctx, es, y );
 }
 
@@ -110,6 +111,7 @@ TEST_CASE( "void error" )
         auto h = f( ctx ).connect( _dummy_receiver{} );
         h.start();
 
+        ctx.core.run_n( 10 );
         test_simple_broadcast_source( ctx, es, y );
 }
 
@@ -166,6 +168,7 @@ TEST_CASE( "recursive" )
 
         auto h = rec_task( ctx, es, y ).connect( _dummy_receiver{} );
         h.start();
+        ctx.core.run_n( 10 );
         test_simple_broadcast_source( ctx, es, y );
 }
 
@@ -190,6 +193,7 @@ TEST_CASE( "transitive noop" )
 
         auto h = f( ctx ).connect( _dummy_receiver{} );
         h.start();
+        ctx.core.run_n( 10 );
         test_simple_broadcast_source( ctx, es, y );
 }
 

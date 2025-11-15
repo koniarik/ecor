@@ -40,6 +40,33 @@ struct operation_state_t
 {
 };
 
+struct _allocate_t
+{
+        template < typename T >
+                requires( requires( T x ) { x.allocate( std::size_t{}, std::size_t{} ); } )
+        void* operator()( T& x, std::size_t bytes, std::size_t align ) const
+            noexcept( noexcept( x.allocate( bytes, align ) ) )
+        {
+                return x.allocate( bytes, align );
+        }
+};
+static constexpr _allocate_t allocate{};
+
+
+struct _deallocate_t
+{
+        template < typename T >
+                requires( requires( T x, void* p, std::size_t b, std::size_t a ) {
+                        x.deallocate( p, b, a );
+                } )
+        void operator()( T& x, void* p, std::size_t bytes, std::size_t align ) const
+            noexcept( noexcept( x.deallocate( p, bytes, align ) ) )
+        {
+                x.deallocate( p, bytes, align );
+        }
+};
+static constexpr _deallocate_t deallocate{};
+
 template < typename T >
 concept memory_resource = requires( T a, std::size_t bytes, std::size_t align, void* p ) {
         { allocate( a, bytes, align ) } -> std::same_as< void* >;
@@ -72,20 +99,6 @@ struct _dummy_receiver
                 return _env{};
         }
 };
-
-template < typename T >
-void* allocate( T& mem, std::size_t bytes, std::size_t align ) noexcept(
-    noexcept( mem.allocate( bytes, align ) ) )
-{
-        return mem.allocate( bytes, align );
-}
-
-template < typename T >
-void deallocate( T& mem, void* p, std::size_t bytes, std::size_t align ) noexcept(
-    noexcept( mem.deallocate( p, bytes, align ) ) )
-{
-        return mem.deallocate( p, bytes, align );
-}
 
 template < typename T >
 T _align_idx( uint8_t const* buff, T idx, std::size_t align ) noexcept
@@ -124,25 +137,16 @@ struct circular_buffer_memory : Base
 
         template < std::size_t N >
                 requires( std::numeric_limits< IndexType >::max() >= N )
-        circular_buffer_memory( std::span< uint8_t, N > b ) noexcept
+        constexpr circular_buffer_memory( std::span< uint8_t, N > b ) noexcept
           : _buff( std::move( b ) )
         {
         }
 
         // Allocate `bytes` with `align`, returns nullptr if no space is available
-        void* allocate( std::size_t bytes, std::size_t align ) noexcept
+        [[nodiscard]] void* allocate( std::size_t bytes, std::size_t align ) noexcept
         {
                 auto* p = _allocate( _buff, bytes, align );
                 return p;
-        }
-
-        template < typename T, typename... Args >
-        T* construct( Args&&... args )
-        {
-                void* p = allocate( sizeof( T ), alignof( T ) );
-                if ( !p )
-                        return nullptr;
-                return new ( p ) T( (Args&&) ( args )... );
         }
 
         // Deallocate pointer previously allocated by allocate()
@@ -153,19 +157,12 @@ struct circular_buffer_memory : Base
                 _deallocate( _buff.data(), (uint8_t*) p );
         }
 
-        template < typename T >
-        void destroy( T& p )
-        {
-                p.~T();
-                deallocate( &p, sizeof( T ), alignof( T ) );
-        }
-
-        std::size_t capacity() const noexcept
+        [[nodiscard]] std::size_t capacity() const noexcept
         {
                 return _buff.size();
         }
 
-        std::size_t used_bytes() const noexcept
+        [[nodiscard]] std::size_t used_bytes() const noexcept
         {
                 if ( _first == npos )
                         return 0;
@@ -183,6 +180,7 @@ struct circular_buffer_memory : Base
                 index_type next_idx = npos;
                 index_type prev_idx = npos;
         };
+
         // Index of first node in the list, npos if empty
         index_type _first = npos;
         // Index of last node in the list, npos if empty
@@ -295,6 +293,54 @@ struct circular_buffer_memory : Base
         }
 };
 
+template < typename IndexType >
+struct circular_buffer_area
+{
+        using index_type = IndexType;
+
+        struct _deleter
+        {
+                circular_buffer_area< IndexType >* area;
+
+                template < typename T >
+                void operator()( T* p ) noexcept
+                {
+                        if ( p ) {
+                                p->~T();
+                                area->deallocate( p, sizeof( T ), alignof( T ) );
+                        }
+                }
+        };
+
+        template < typename T, typename... Args >
+        std::unique_ptr< T, _deleter > make( Args&&... args )
+        {
+                void* p = _mem.allocate( sizeof( T ), alignof( T ) );
+                if ( !p )
+                        return { nullptr, _deleter{ this } };
+                T* t = new ( p ) T( (Args&&) args... );
+                return { t, _deleter{ this } };
+        }
+
+        [[nodiscard]] std::size_t capacity() const noexcept
+        {
+                return _mem.capacity();
+        }
+
+        [[nodiscard]] std::size_t used_bytes() const noexcept
+        {
+                return _mem.used_bytes();
+        }
+
+private:
+        void deallocate( void* p, std::size_t size, std::size_t align ) noexcept
+        {
+                _mem.deallocate( p, size, align );
+        }
+
+        circular_buffer_memory< IndexType > _mem;
+};
+
 template < typename T, typename IndexType, typename Base >
 struct circular_buffer_allocator
 {
@@ -362,6 +408,26 @@ public:
         friend struct circular_buffer_allocator;
 };
 
+struct empty_env
+{
+};
+
+struct get_env_t
+{
+        template < typename T >
+        decltype( auto ) operator()( T const& o ) const noexcept
+        {
+                static constexpr bool v = requires( get_env_t t ) {
+                        { o.get_env() };
+                };
+                if constexpr ( v )
+                        return o.get_env();
+                else
+                        return empty_env{};
+        }
+};
+inline constexpr get_env_t get_env{};
+
 template < typename T >
 concept queryable = std::is_object_v< T >;
 
@@ -379,15 +445,6 @@ concept receiver =
             { get_env( r ) } -> queryable;
     } && std::move_constructible< std::remove_cvref_t< T > > &&
     std::constructible_from< std::remove_cvref_t< T >, T >;
-
-template < typename T >
-auto get_env( T const& ) noexcept
-{
-        struct empty_env
-        {
-        };
-        return empty_env{};
-}
 
 
 struct set_value_t
@@ -439,7 +496,7 @@ template < typename T >
 concept signature = _is_signature< T >::value;
 
 template < signature S >
-struct _vtable_row;
+struct _sig_vtable_row;
 
 template < typename T >
 struct _tag
@@ -447,14 +504,14 @@ struct _tag
 };
 
 template < typename... Args >
-struct _vtable_row< set_value_t( Args... ) >
+struct _sig_vtable_row< set_value_t( Args... ) >
 {
 
         using f_t = void ( * )( void*, Args... );
         f_t _set_value;
 
         template < typename T >
-        constexpr _vtable_row( _tag< T > ) noexcept
+        constexpr _sig_vtable_row( _tag< T > ) noexcept
           : _set_value{ +[]( void* self, Args... args ) {
                   static_cast< T* >( self )->set_value( (Args&&) args... );
           } }
@@ -468,13 +525,13 @@ struct _vtable_row< set_value_t( Args... ) >
 };
 
 template < typename... Args >
-struct _vtable_row< set_error_t( Args... ) >
+struct _sig_vtable_row< set_error_t( Args... ) >
 {
         using f_t = void ( * )( void*, Args... );
         f_t _set_error;
 
         template < typename T >
-        constexpr _vtable_row( _tag< T > ) noexcept
+        constexpr _sig_vtable_row( _tag< T > ) noexcept
           : _set_error{ +[]( void* self, Args... args ) {
                   static_cast< T* >( self )->set_error( (Args&&) args... );
           } }
@@ -488,13 +545,13 @@ struct _vtable_row< set_error_t( Args... ) >
 };
 
 template <>
-struct _vtable_row< set_stopped_t() >
+struct _sig_vtable_row< set_stopped_t() >
 {
         using f_t = void ( * )( void* );
         f_t _set_stopped;
 
         template < typename T >
-        constexpr _vtable_row( _tag< T > ) noexcept
+        constexpr _sig_vtable_row( _tag< T > ) noexcept
           : _set_stopped{ +[]( void* self ) {
                   static_cast< T* >( self )->set_stopped();
           } }
@@ -508,15 +565,15 @@ struct _vtable_row< set_stopped_t() >
 };
 
 template < signature... S >
-struct _vtable : _vtable_row< S >...
+struct _sig_vtable : _sig_vtable_row< S >...
 {
         template < typename T >
-        constexpr _vtable( _tag< T > t ) noexcept
-          : _vtable_row< S >( t )...
+        constexpr _sig_vtable( _tag< T > t ) noexcept
+          : _sig_vtable_row< S >( t )...
         {
         }
 
-        using _vtable_row< S >::set...;
+        using _sig_vtable_row< S >::set...;
 };
 
 template < typename R, typename VTable >
@@ -533,7 +590,7 @@ struct _vtable_of_sigs;
 template < signature... S >
 struct _vtable_of_sigs< completion_signatures< S... > >
 {
-        using type = _vtable< S... >;
+        using type = _sig_vtable< S... >;
 };
 
 template < typename TL, typename Tag, typename Sigs, template < class... > class Tuple >
@@ -819,7 +876,7 @@ private:
         friend struct inplace_stop_callback;
 };
 
-inplace_stop_token inplace_stop_source::get_token() const noexcept
+inline inplace_stop_token inplace_stop_source::get_token() const noexcept
 {
         return inplace_stop_token{ this };
 }
@@ -860,12 +917,56 @@ private:
 template < typename CallbackFn >
 inplace_stop_callback( inplace_stop_token, CallbackFn ) -> inplace_stop_callback< CallbackFn >;
 
+struct never_stop_token
+{
+        struct cb_type
+        {
+                // exposition only
+
+                explicit cb_type( never_stop_token, auto&& ) noexcept
+                {
+                }
+        };
+
+public:
+        template < class >
+        using callback_type = cb_type;
+
+        static constexpr bool stop_requested() noexcept
+        {
+                return false;
+        }
+        static constexpr bool stop_possible() noexcept
+        {
+                return false;
+        }
+
+        bool operator==( never_stop_token const& ) const = default;
+};
+
+struct get_stop_token_t
+{
+        template < typename T >
+        decltype( auto ) operator()( T const& env ) const noexcept
+        {
+                static constexpr bool v = requires( get_stop_token_t t ) {
+                        { env.query( t ) };
+                };
+                if constexpr ( v )
+                        return env.query( *this );
+                else
+                        return never_stop_token{};
+        }
+};
+inline constexpr get_stop_token_t get_stop_token{};
+
+
 template < signature... S >
 struct event_entry : zll::ll_base< event_entry< S... > >
 {
-        _vtable< S... > const& vtable;
+        _sig_vtable< S... > const& vtable;
 
-        event_entry( _vtable< S... > const& vtable ) noexcept
+        event_entry( _sig_vtable< S... > const& vtable ) noexcept
           : vtable( vtable )
         {
         }
@@ -970,7 +1071,7 @@ struct _list_op : event_entry< S... >, R
         using operation_state_concept = operation_state_t;
 
         _list_op( auto& list, R receiver )
-          : event_entry< S... >( _vtable_of< _list_op, _vtable< S... > > )
+          : event_entry< S... >( _vtable_of< _list_op, _sig_vtable< S... > > )
           , R( std::move( receiver ) )
           , _list( list )
         {
@@ -995,7 +1096,7 @@ struct _heap_op : seq_entry< K, S... >, R
         using operation_state_concept = operation_state_t;
 
         _heap_op( auto& heap, K key, R receiver )
-          : seq_entry< K, S... >( key, _vtable_of< _heap_op, _vtable< S... > > )
+          : seq_entry< K, S... >( key, _vtable_of< _heap_op, _sig_vtable< S... > > )
           , R( std::move( receiver ) )
           , _heap( heap )
         {
@@ -1051,11 +1152,11 @@ template < typename K, signature... S >
 struct seq_entry : zll::sh_base< seq_entry< K, S... > >
 {
 
-        _vtable< S... > const& vtable;
+        _sig_vtable< S... > const& vtable;
 
         K key;
 
-        seq_entry( K k, _vtable< S... > const& vtable )
+        seq_entry( K k, _sig_vtable< S... > const& vtable )
           : key( std::move( k ) )
           , vtable( vtable )
         {
@@ -1278,20 +1379,14 @@ struct _itask_op : zll::ll_base< _itask_op >
         virtual void resume() = 0;
 };
 
-// This now does not need itask_op to inherit from linked list -> do we still want that?
-struct itask_core
-{
-        virtual void reschedule( _itask_op& ) = 0;
-};
-
-struct task_core : itask_core
+struct task_core
 {
         bool run_once()
         {
-                if ( ready_tasks.empty() )
+                if ( _ready_tasks.empty() )
                         return false;
-                auto& t = ready_tasks.front();
-                ready_tasks.detach_front();
+                auto& t = _ready_tasks.front();
+                _ready_tasks.detach_front();
                 t.resume();
                 return true;
         }
@@ -1303,13 +1398,13 @@ struct task_core : itask_core
                                 break;
         }
 
-        void reschedule( _itask_op& op ) override
+        void reschedule( _itask_op& op )
         {
-                ready_tasks.link_back( op );
+                _ready_tasks.link_back( op );
         }
 
 private:
-        zll::ll_list< _itask_op > ready_tasks;
+        zll::ll_list< _itask_op > _ready_tasks;
 };
 
 template < typename T >
@@ -1466,19 +1561,35 @@ struct _awaitable
         _op_t  _op;
 };
 
+template < class Alloc >
+concept simple_allocator = requires( Alloc alloc, size_t n ) {
+        { *alloc.allocate( n ) } -> std::same_as< typename Alloc::value_type& >;
+        { alloc.deallocate( alloc.allocate( n ), n ) };
+} && std::copy_constructible< Alloc > && std::equality_comparable< Alloc >;
 
-struct task_allocator
+
+struct task_memory_resource
 {
         template < typename M >
-        task_allocator( M& m )
+        task_memory_resource( M& m )
           : mem( &m )
         {
                 alloc = +[]( void* mem, std::size_t const sz, std::size_t const align ) {
-                        return allocate( *( (M*) mem ), sz, align );
+                        return ecor::allocate( *( (M*) mem ), sz, align );
                 };
                 dealloc = +[]( void* mem, void* p, std::size_t const sz, std::size_t const align ) {
-                        deallocate( *( (M*) mem ), p, sz, align );
+                        ecor::deallocate( *( (M*) mem ), p, sz, align );
                 };
+        }
+
+        [[nodiscard]] void* allocate( std::size_t const sz, std::size_t const align ) const noexcept
+        {
+                return alloc( mem, sz, align );
+        }
+
+        void deallocate( void* p, std::size_t const sz, std::size_t const align ) const noexcept
+        {
+                dealloc( mem, p, sz, align );
         }
 
         void* ( *alloc )( void*, std::size_t const, std::size_t const )         = nullptr;
@@ -1486,36 +1597,47 @@ struct task_allocator
         void* mem                                                               = nullptr;
 };
 
-inline void* allocate( task_allocator& t, std::size_t const sz, std::size_t const align )
+struct get_task_core_t
 {
-        return t.alloc( t.mem, sz, align );
-}
+        template < typename T >
+        decltype( auto ) operator()( T& t ) const noexcept
+        {
+                return t.query( get_task_core_t{} );
+        }
+};
+inline constexpr get_task_core_t get_task_core{};
 
-inline void deallocate( task_allocator& t, void* p, std::size_t const sz, std::size_t const align )
+struct get_memory_resource_t
 {
-        return t.dealloc( t.mem, p, sz, align );
-}
+        template < typename T >
+        decltype( auto ) operator()( T& t ) const noexcept
+        {
+                using U = decltype( t.query( get_memory_resource_t{} ) );
+                return t.query( get_memory_resource_t{} );
+        }
+};
+inline constexpr get_memory_resource_t get_memory_resource{};
 
 struct task_ctx
 {
-        task_allocator alloc;
-        task_core      core;
+        task_memory_resource alloc;
+        task_core            core;
 
         task_ctx( auto& mem )
           : alloc( mem )
         {
         }
+
+        auto& query( get_task_core_t ) noexcept
+        {
+                return core;
+        }
+
+        auto& query( get_memory_resource_t ) noexcept
+        {
+                return alloc;
+        }
 };
-
-inline itask_core& get_task_core( task_ctx& t )
-{
-        return t.core;
-}
-
-inline task_allocator& get_task_alloc( task_ctx& t )
-{
-        return t.alloc;
-}
 
 struct task_default_cfg
 {
@@ -1595,13 +1717,13 @@ struct _promise_base : _itask_op
         static constexpr std::size_t align = alignof( std::max_align_t );
         struct vtable
         {
-                task_allocator* mem = nullptr;
+                task_memory_resource* mem = nullptr;
         };
         static constexpr std::size_t spacing = align > sizeof( vtable ) ? align : sizeof( vtable );
 
         // XXX: check the noexcept thing
 
-        static void* alloc( std::size_t sz, task_allocator& mem ) noexcept
+        static void* alloc( std::size_t sz, task_memory_resource& mem ) noexcept
         {
                 sz += spacing;
                 void* const vp = allocate( mem, sz, align );
@@ -1624,7 +1746,7 @@ struct _promise_base : _itask_op
 
         void* operator new( std::size_t const sz, auto&& ctx, auto&&... ) noexcept
         {
-                task_allocator& a = get_task_alloc( ctx );
+                task_memory_resource& a = get_memory_resource( ctx );
                 return alloc( sz, a );
         }
 
@@ -1635,6 +1757,18 @@ struct _promise_base : _itask_op
 
         _promise_base( auto&& ctx, auto&&... )
           : core( get_task_core( ctx ) )
+          , token( [&] {
+                  if constexpr ( std::same_as<
+                                     decltype( get_stop_token( ctx ) ),
+                                     never_stop_token > )
+                          return inplace_stop_token{};
+                  else
+                          return get_stop_token( ctx );
+          }() )
+        {
+        }
+
+        void unhandled_exception()
         {
         }
 
@@ -1643,19 +1777,22 @@ struct _promise_base : _itask_op
                 return {};
         }
 
-        itask_core& core;
-
-        void unhandled_exception() noexcept
-        {
-        }
+        task_core&         core;
+        inplace_stop_token token;
 
         struct _env
         {
+                inplace_stop_token& token;
+
+                auto query( get_stop_token_t ) const noexcept
+                {
+                        return token;
+                }
         };
 
         _env get_env() noexcept
         {
-                return {};
+                return { token };
         }
 
         void reschedule()
@@ -1782,7 +1919,7 @@ struct _task_op
                         return;
                 }
                 _h.promise()._g.setup_continuable( _recv );
-                _h.resume();
+                _h.promise().core.reschedule( _h.promise() );
         }
 
         ~_task_op()
@@ -1928,7 +2065,7 @@ struct _or_op
                         _recv.set_stopped();
                 }
 
-                auto&& get_env() noexcept
+                decltype( auto ) get_env() noexcept
                 {
                         return _recv.get_env();
                 }
@@ -2257,6 +2394,8 @@ struct _then_cb
         // compute the transformed signatures based on CB's transformation of values/errors.
         // Currently we lack the API to extract signature transformation from CB.
 
+        using sender_concept = sender_t;
+
         S         s;
         DataType& cb;
 
@@ -2286,9 +2425,10 @@ auto then( DataType& data ) noexcept
 }
 
 // XXX: replace this iwth actually sender: repeat_until
-template < sender S >
+template < typename S >
 struct repeater
 {
+        static_assert( sender< S >, "S must be a sender" );
         repeater( S s )
           : _s( std::move( s ) )
         {
@@ -2339,6 +2479,71 @@ struct repeater
 
         std::optional< connect_type< S, _recv > > _opop;
 };
+
+struct _await_until_stopped
+{
+        using sender_concept = sender_t;
+
+
+        template < typename Env >
+        using _completions = completion_signatures< set_value_t() >;
+
+        template < typename Env >
+        _completions< Env > get_completion_signatures( Env&& )
+        {
+                return {};
+        }
+
+        struct _env
+        {
+        };
+
+        _env get_env() const noexcept
+        {
+                return {};
+        }
+
+        template < typename R >
+        struct _op
+        {
+                using operation_state_concept = operation_state_t;
+
+                _op( R r )
+                  : _r( std::move( r ) )
+                {
+                }
+
+                void start()
+                {
+                        auto st = get_stop_token( ecor::get_env( _r ) );
+                        static_assert(
+                            !std::same_as< decltype( st ), never_stop_token >,
+                            "Receiver must be stoppable" );
+                        _cb.emplace( st, cb_t{ .op = this } );
+                }
+
+                R _r;
+
+                struct cb_t
+                {
+                        void operator()() noexcept
+                        {
+                                op->_r.set_value();
+                        }
+                        _op* op;
+                };
+
+                std::optional< inplace_stop_callback< cb_t > > _cb;
+        };
+
+        template < receiver R >
+        auto connect( R receiver ) &&
+        {
+                return _op{ std::move( receiver ) };
+        }
+};
+
+static inline _await_until_stopped wait_until_stopped;
 
 
 }  // namespace ecor
