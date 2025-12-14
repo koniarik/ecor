@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <new>
 #include <optional>
 #include <span>
@@ -126,6 +127,61 @@ constexpr auto _pick_index_type() noexcept
 template < std::size_t N >
 using _index_type = decltype( _pick_index_type< N >() );
 
+template <
+    typename T,
+    std::size_t Extent = std::dynamic_extent,
+    typename Deleter   = std::default_delete< T[] > >
+struct unique_span : std::span< T, Extent >
+{
+        using span_type = std::span< T, Extent >;
+
+        unique_span( T* data, std::size_t size, Deleter deleter ) noexcept
+          : span_type( data, size )
+          , _deleter( std::move( deleter ) )
+        {
+        }
+
+        unique_span( unique_span const& )            = delete;
+        unique_span& operator=( unique_span const& ) = delete;
+
+        unique_span( unique_span&& other ) noexcept
+          : span_type( other.data(), other.size() )
+          , _deleter( std::move( other._deleter ) )
+        {
+                *(span_type*) &other = span_type{};
+        }
+
+        unique_span& operator=( unique_span&& other ) noexcept
+        {
+                if ( this != &other ) {
+                        if ( this->data() )
+                                _deleter( this->data() );
+                        *(span_type*) this   = span_type( other.data(), other.size() );
+                        _deleter             = std::move( other._deleter );
+                        *(span_type*) &other = span_type{};
+                }
+                return *this;
+        }
+
+        std::span< T, Extent > release() noexcept
+        {
+                T*          data   = this->data();
+                std::size_t size   = this->size();
+                *(span_type*) this = span_type( data, size );
+                _deleter           = Deleter{};
+                return span_type( data, size );
+        }
+
+        ~unique_span()
+        {
+                if ( this->data() )
+                        _deleter( this->data() );
+        }
+
+private:
+        [[no_unique_address]] Deleter _deleter;
+};
+
 struct noop_base
 {
 };
@@ -141,6 +197,60 @@ struct circular_buffer_memory : Base
           : _buff( std::move( b ) )
         {
         }
+        template < std::size_t N >
+                requires( std::numeric_limits< IndexType >::max() >= N )
+        constexpr circular_buffer_memory( uint8_t ( &b )[N] ) noexcept
+          : _buff( b )
+        {
+        }
+
+        struct _deleter
+        {
+                circular_buffer_memory< IndexType, Base >* mem;
+
+                template < typename T >
+                void operator()( T* p ) noexcept
+                {
+                        if ( p ) {
+                                p->~T();
+                                mem->deallocate( p );
+                        }
+                }
+        };
+
+        template < typename T >
+        using uptr = std::unique_ptr< T, _deleter >;
+
+        template < typename T, typename... Args >
+        uptr< T > make( Args&&... args )
+        {
+                void* p = allocate( sizeof( T ), alignof( T ) );
+                if ( !p )
+                        return { nullptr, _deleter{ this } };
+                T* t = new ( p ) T( (Args&&) args... );
+                return { t, _deleter{ this } };
+        }
+
+        template < typename T, std::size_t Extent = std::dynamic_extent >
+        using uspan = unique_span< T, Extent, _deleter >;
+
+        template < typename T >
+        uspan< T > make_span( std::size_t n )
+        {
+                void* p = allocate( sizeof( T ) * n, alignof( T ) );
+                if ( !p )
+                        return uspan< T >{ nullptr, 0, _deleter{ this } };
+                auto* pp = new ( p ) T[n]();
+                return uspan< T >{ pp, n, _deleter{ this } };
+        }
+
+        template < typename T, std::size_t Extent >
+        uspan< T, Extent > make_span()
+        {
+                constexpr std::size_t n  = Extent;
+                auto                  sp = make_span< T >( n );
+                return sp;
+        }
 
         // Allocate `bytes` with `align`, returns nullptr if no space is available
         [[nodiscard]] void* allocate( std::size_t bytes, std::size_t align ) noexcept
@@ -154,6 +264,11 @@ struct circular_buffer_memory : Base
         {
                 std::ignore = bytes;
                 std::ignore = align;
+                _deallocate( _buff.data(), (uint8_t*) p );
+        }
+
+        void deallocate( void* p ) noexcept
+        {
                 _deallocate( _buff.data(), (uint8_t*) p );
         }
 
@@ -291,54 +406,6 @@ struct circular_buffer_memory : Base
 
                 _set_node( buff, idx, node{ .next_idx = 0, .prev_idx = 0 } );
         }
-};
-
-template < typename IndexType >
-struct circular_buffer_area
-{
-        using index_type = IndexType;
-
-        struct _deleter
-        {
-                circular_buffer_area< IndexType >* area;
-
-                template < typename T >
-                void operator()( T* p ) noexcept
-                {
-                        if ( p ) {
-                                p->~T();
-                                area->deallocate( p, sizeof( T ), alignof( T ) );
-                        }
-                }
-        };
-
-        template < typename T, typename... Args >
-        std::unique_ptr< T, _deleter > make( Args&&... args )
-        {
-                void* p = _mem.allocate( sizeof( T ), alignof( T ) );
-                if ( !p )
-                        return { nullptr, _deleter{ this } };
-                T* t = new ( p ) T( (Args&&) args... );
-                return { t, _deleter{ this } };
-        }
-
-        [[nodiscard]] std::size_t capacity() const noexcept
-        {
-                return _mem.capacity();
-        }
-
-        [[nodiscard]] std::size_t used_bytes() const noexcept
-        {
-                return _mem.used_bytes();
-        }
-
-private:
-        void deallocate( void* p, std::size_t size, std::size_t align ) noexcept
-        {
-                _mem.deallocate( p, size, align );
-        }
-
-        circular_buffer_memory< IndexType > _mem;
 };
 
 template < typename T, typename IndexType, typename Base >
@@ -994,11 +1061,11 @@ template < signature... S >
 struct _broadcast_core
 {
 
-        template < typename V >
-        void set_value( V&& value )
+        template < typename... V >
+        void set_value( V&&... value )
         {
                 for_each( [&]( auto& n ) {
-                        n._set_value( value );
+                        n._set_value( value... );
                 } );
         }
 
@@ -1313,7 +1380,7 @@ struct seq_sender
 };
 
 template < typename S, typename R >
-using connect_type = decltype( std::declval< S >().connect( std::declval< R >() ) );
+using connect_type = decltype( std::move( std::declval< S >() ).connect( std::declval< R >() ) );
 
 template < typename T >
 struct _just_error
@@ -1486,7 +1553,7 @@ struct _awaitable
         }
 
         using _env         = decltype( std::declval< PromiseType >().get_env() );
-        using _completions = _sender_completions_t< S, _env >;
+        using _completions = _sender_completions_t< std::remove_cvref_t< S >, _env >;
         using _values      = _map_values_of_t< _completions >;
         using _errors      = _map_errors_of_t< _completions >;
         static_assert(
@@ -1612,7 +1679,6 @@ struct get_memory_resource_t
         template < typename T >
         decltype( auto ) operator()( T& t ) const noexcept
         {
-                using U = decltype( t.query( get_memory_resource_t{} ) );
                 return t.query( get_memory_resource_t{} );
         }
 };
@@ -1757,14 +1823,7 @@ struct _promise_base : _itask_op
 
         _promise_base( auto&& ctx, auto&&... )
           : core( get_task_core( ctx ) )
-          , token( [&] {
-                  if constexpr ( std::same_as<
-                                     decltype( get_stop_token( ctx ) ),
-                                     never_stop_token > )
-                          return inplace_stop_token{};
-                  else
-                          return get_stop_token( ctx );
-          }() )
+          , token()
         {
         }
 
@@ -1837,6 +1896,13 @@ struct _promise_type_value< T >
         }
 };
 
+template < typename E >
+struct with_error
+{
+        using type = std::remove_cvref_t< E >;
+        E error;
+};
+
 template < typename Task >
 struct _promise_type : _promise_base, _promise_type_value< Task >
 {
@@ -1855,29 +1921,35 @@ struct _promise_type : _promise_base, _promise_type_value< Task >
                 return { std::coroutine_handle< _promise_type >::from_promise( *this ) };
         }
 
-        template < sender S >
-        auto await_transform( S sender ) noexcept
+        template < typename E >
+                requires( _sigs_contains_type<
+                          set_error_t( E ),
+                          typename Task::_error_completions >::value )
+        auto yield_value( with_error< E > error )
         {
-                // XXX: leaky implementation detail
-                using compls = _sender_completions_t< S, typename _promise_base::_env >;
-                using errs   = _filter_errors_of_t< compls >;
-                _check_compatible_sigs< errs, typename Task::_error_completions > _{};
-                using vals = _map_values_of_t< compls >;
-                static_assert(
-                    std::variant_size_v< vals > <= 1,
-                    "Sender used in co_await must only complete with a single set_value signature" );
-                return _awaitable< _promise_type, S >{
-                    std::move( sender ),
-                    std::coroutine_handle< _promise_type >::from_promise( *this ) };
+                return await_transform( just_error( std::move( error.error ) ) );
         }
 
-        template < typename Err >
-                requires( _sigs_contains_type<
-                          set_error_t( Err ),
-                          typename Task::_error_completions >::value )
-        auto await_transform( Err e ) noexcept
+
+        template < typename T >
+        decltype( auto ) await_transform( T&& x ) noexcept
         {
-                return await_transform( just_error( std::move( e ) ) );
+                using U = std::remove_cvref_t< T >;
+                if constexpr ( sender< U > ) {
+                        // XXX: leaky implementation detail
+                        using compls = _sender_completions_t< U, typename _promise_base::_env >;
+                        using errs   = _filter_errors_of_t< compls >;
+                        _check_compatible_sigs< errs, typename Task::_error_completions > _{};
+                        using vals = _map_values_of_t< compls >;
+                        static_assert(
+                            std::variant_size_v< vals > <= 1,
+                            "Sender used in co_await must only complete with a single set_value signature" );
+                        return _awaitable< _promise_type, T >{
+                            (T&&) x,
+                            std::coroutine_handle< _promise_type >::from_promise( *this ) };
+                } else {
+                        return (T&&) x;
+                }
         }
 
 
@@ -1892,6 +1964,7 @@ struct _task_op
 {
         using operation_state_concept = operation_state_t;
 
+        _task_op() noexcept = default;
         _task_op( task_error err, std::coroutine_handle< _promise_type< task< T, CFG > > > h, R r )
           : _h( h )
           , _recv( std::move( r ) )
@@ -1907,6 +1980,14 @@ struct _task_op
           , _error( other._error )
         {
         }
+        _task_op& operator=( _task_op&& other ) noexcept
+        {
+                _task_op cpy{ std::move( other ) };
+                std::swap( _h, cpy._h );
+                std::swap( _recv, cpy._recv );
+                std::swap( _error, cpy._error );
+                return *this;
+        }
 
         void start()
         {
@@ -1918,8 +1999,26 @@ struct _task_op
                         _recv.set_error( task_error::task_already_done );
                         return;
                 }
+                if constexpr ( !std::same_as<
+                                   decltype( get_stop_token( _recv.get_env() ) ),
+                                   never_stop_token > )
+                        _h.promise().token = get_stop_token( _recv.get_env() );
                 _h.promise()._g.setup_continuable( _recv );
                 _h.promise().core.reschedule( _h.promise() );
+        }
+
+        void clear()
+        {
+                if ( _h )
+                        _h.destroy();
+                _h     = {};
+                _recv  = {};
+                _error = task_error::none;
+        }
+
+        operator bool()
+        {
+                return this->_h && !this->_h.done();
         }
 
         ~_task_op()
@@ -1930,7 +2029,7 @@ struct _task_op
 
         std::coroutine_handle< _promise_type< task< T, CFG > > > _h;
         R                                                        _recv;
-        task_error                                               _error;
+        task_error                                               _error = task_error::none;
 };
 
 template < typename T, task_config CFG >
@@ -1979,7 +2078,7 @@ struct task
         }
 
         template < typename Env >
-        _completions get_completion_signatures( Env&& )
+        _completions get_completion_signatures( Env&& ) const noexcept
         {
                 return {};
         }
