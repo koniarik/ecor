@@ -4,6 +4,7 @@
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -1513,6 +1514,32 @@ struct _expected< void >
         }
 };
 
+template < typename T >
+struct _awaitable_extract_type;
+
+template < typename... U >
+struct _awaitable_extract_type< std::variant< std::tuple< U... > > >
+{
+        using type = std::tuple< U... >;
+};
+
+template < typename U >
+struct _awaitable_extract_type< std::variant< std::tuple< U > > >
+{
+        using type = U;
+};
+
+template <>
+struct _awaitable_extract_type< std::variant< std::tuple<> > >
+{
+        using type = void;
+};
+
+template <>
+struct _awaitable_extract_type< std::variant<> >
+{
+        using type = void;
+};
 
 template < typename PromiseType, typename S >
 struct _awaitable
@@ -1560,34 +1587,7 @@ struct _awaitable
             std::variant_size_v< _values > <= 1,
             "Multiple set_value completions not supported" );
 
-        template < typename T >
-        struct _extract_type;
-
-        template < typename... U >
-        struct _extract_type< std::variant< std::tuple< U... > > >
-        {
-                using type = std::tuple< U... >;
-        };
-
-        template < typename U >
-        struct _extract_type< std::variant< std::tuple< U > > >
-        {
-                using type = U;
-        };
-
-        template <>
-        struct _extract_type< std::variant< std::tuple<> > >
-        {
-                using type = void;
-        };
-
-        template <>
-        struct _extract_type< std::variant<> >
-        {
-                using type = void;
-        };
-
-        using value_type = typename _extract_type< _values >::type;
+        using value_type = typename _awaitable_extract_type< _values >::type;
 
         using _aw_tp = _expected< value_type >;
 
