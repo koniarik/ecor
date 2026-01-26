@@ -172,7 +172,7 @@ ecor::task<void> wait_for_event(
 
 ## Broadcast Source - One-to-Many Events
 
-`broadcast_source` allows **one producer** to send events to **multiple subscribers**. Perfect for events like button presses, sensor readings, or state changes.
+`broadcast_source` allows **one producer** to send events to **multiple subscribers**.
 
 ```cpp
 #include <ecor/ecor.hpp>
@@ -241,11 +241,9 @@ ecor::task<void> sensor_monitor(ecor::task_ctx& ctx, sensor_events& events)
 
 ## Sequential Source - Ordered Event Processing
 
-`seq_source` provides **ordered, keyed event processing**. Events with keys are processed in order, making it perfect for implementing timers, scheduled tasks, or priority queues.
+`seq_source` provides **ordered, keyed event processing**. Events with keys are processed in order of the keys.
 
 ### Timer Implementation Example
-
-This is one of the killer features - multiple tasks can sleep efficiently:
 
 ```cpp
 #include <ecor/ecor.hpp>
@@ -435,7 +433,7 @@ void example() {
 
 ## Memory Management
 
-ecor provides deterministic memory management for embedded systems through custom allocators and circular buffers.
+ecor provides deterministic memory management for embedded systems through custom allocators.
 
 ### Circular Buffer Memory
 
@@ -680,27 +678,6 @@ extern "C" void systick_isr() {
 }
 ```
 
-## Status
-
-**Experimental** - ecor is under active development. The API is subject to change.
-
-Current implementation provides:
-- Sender/Receiver concepts (P2300 subset)
-- Coroutine tasks with custom allocators
-- Broadcast and sequential event sources
-- Stop tokens and callbacks
-- Circular buffer memory management
-- Basic sender combinators
-
-Known limitations:
-- No known major limitations at this time
-- Feedback and testing needed for production use
-
-## Requirements
-
-- C++20 compiler with coroutine support
-- GCC 10+, Clang 12+, or MSVC 2019+
-- Single header, no dependencies beyond C++ standard library
 
 ## Contributing
 

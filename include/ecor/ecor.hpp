@@ -369,8 +369,8 @@ struct circular_buffer_memory : Base
                         _set_node( buff.data(), _last, nn );
                 }
                 node n{
-                    .prev_idx = _last,
                     .next_idx = npos,
+                    .prev_idx = _last,
                 };
                 _last = idx;
                 _next = idx + sizeof( node ) + bytes;
@@ -1106,6 +1106,8 @@ struct broadcast_sender;
 template < signature... S >
 struct broadcast_source
 {
+        using sender_type = broadcast_sender< S... >;
+
         broadcast_sender< S... > schedule()
         {
                 return ( _core );
@@ -1309,6 +1311,7 @@ struct seq_sender;
 template < typename K, signature... S >
 struct seq_source
 {
+        using sender_type = seq_sender< K, S... >;
 
         // TODO: technically this is not spec-conforming
         seq_sender< K, S... > schedule( K key )
@@ -1574,7 +1577,6 @@ struct _awaitable
                         case _awaitable_state_e::empty:
                                 ECOR_ASSERT( false );
                         case _awaitable_state_e::value:
-
                                 return std::move( _exp.val );
                         }
         }
