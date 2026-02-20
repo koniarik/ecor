@@ -476,6 +476,9 @@ public:
         friend struct circular_buffer_allocator;
 };
 
+// XXX: cecursive circual buffer allocator, for when the allocator itself needs to allocate memory
+// from the circular buffer
+
 struct empty_env
 {
 };
@@ -1028,7 +1031,6 @@ struct get_stop_token_t
 };
 inline constexpr get_stop_token_t get_stop_token{};
 
-
 template < signature... S >
 struct event_entry : zll::ll_base< event_entry< S... > >
 {
@@ -1055,6 +1057,86 @@ struct event_entry : zll::ll_base< event_entry< S... > >
         {
                 vtable.set( set_stopped_t{}, this );
         }
+};
+
+template < typename R, signature... S >
+struct _list_op : event_entry< S... >, R
+{
+        using operation_state_concept = operation_state_t;
+
+        _list_op( auto& list, R receiver )
+          : event_entry< S... >( _vtable_of< _list_op, _sig_vtable< S... > > )
+          , R( std::move( receiver ) )
+          , _list( list )
+        {
+        }
+
+        void start()
+        {
+                _list.link_back( *this );
+        }
+
+private:
+        zll::ll_list< event_entry< S... > >& _list;
+};
+
+template < typename K, signature... S >
+struct kval_entry : zll::sh_base< kval_entry< K, S... > >
+{
+
+        _sig_vtable< S... > const& vtable;
+
+        K key;
+
+        kval_entry( K k, _sig_vtable< S... > const& vtable )
+          : key( std::move( k ) )
+          , vtable( vtable )
+        {
+        }
+
+        template < typename... Args >
+        void _set_value( Args... args )
+        {
+                vtable._set_value( this, (Args&&) args... );
+        }
+
+        template < typename... Args >
+        void _set_error( Args... args )
+        {
+                vtable._set_error( this, (Args&&) args... );
+        }
+
+        void _set_stopped()
+        {
+                vtable._set_stopped( this );
+        }
+
+        constexpr bool operator<( kval_entry const& o ) const
+        {
+                return key < o.key;
+        }
+};
+
+
+template < typename R, typename K, signature... S >
+struct _heap_op : kval_entry< K, S... >, R
+{
+        using operation_state_concept = operation_state_t;
+
+        _heap_op( auto& heap, K key, R receiver )
+          : kval_entry< K, S... >( key, _vtable_of< _heap_op, _sig_vtable< S... > > )
+          , R( std::move( receiver ) )
+          , _heap( heap )
+        {
+        }
+
+        void start()
+        {
+                _heap.link( *this );
+        }
+
+private:
+        zll::sh_heap< kval_entry< K, S... > >& _heap;
 };
 
 
@@ -1135,52 +1217,6 @@ private:
 };
 
 
-template < typename R, signature... S >
-struct _list_op : event_entry< S... >, R
-{
-        using operation_state_concept = operation_state_t;
-
-        _list_op( auto& list, R receiver )
-          : event_entry< S... >( _vtable_of< _list_op, _sig_vtable< S... > > )
-          , R( std::move( receiver ) )
-          , _list( list )
-        {
-        }
-
-        void start()
-        {
-                _list.link_back( *this );
-        }
-
-private:
-        zll::ll_list< event_entry< S... > >& _list;
-};
-
-
-template < typename K, signature... S >
-struct seq_entry;
-
-template < typename R, typename K, signature... S >
-struct _heap_op : seq_entry< K, S... >, R
-{
-        using operation_state_concept = operation_state_t;
-
-        _heap_op( auto& heap, K key, R receiver )
-          : seq_entry< K, S... >( key, _vtable_of< _heap_op, _sig_vtable< S... > > )
-          , R( std::move( receiver ) )
-          , _heap( heap )
-        {
-        }
-
-        void start()
-        {
-                _heap.link( *this );
-        }
-
-private:
-        zll::sh_heap< seq_entry< K, S... > >& _heap;
-};
-
 template < signature... S >
 struct broadcast_sender
 {
@@ -1218,42 +1254,6 @@ struct broadcast_sender
         _broadcast_core< S... >& core_;
 };
 
-template < typename K, signature... S >
-struct seq_entry : zll::sh_base< seq_entry< K, S... > >
-{
-
-        _sig_vtable< S... > const& vtable;
-
-        K key;
-
-        seq_entry( K k, _sig_vtable< S... > const& vtable )
-          : key( std::move( k ) )
-          , vtable( vtable )
-        {
-        }
-
-        template < typename... Args >
-        void _set_value( Args... args )
-        {
-                vtable._set_value( this, (Args&&) args... );
-        }
-
-        template < typename... Args >
-        void _set_error( Args... args )
-        {
-                vtable._set_error( this, (Args&&) args... );
-        }
-
-        void _set_stopped()
-        {
-                vtable._set_stopped( this );
-        }
-
-        constexpr bool operator<( seq_entry const& o ) const
-        {
-                return key < o.key;
-        }
-};
 
 template < typename K, signature... S >
 struct _seq_core
@@ -1297,12 +1297,12 @@ struct _seq_core
                 return h.empty();
         }
 
-        seq_entry< K, S... > const& front() const
+        kval_entry< K, S... > const& front() const
         {
                 return *h.top;
         }
 
-        zll::sh_heap< seq_entry< K, S... > > h;
+        zll::sh_heap< kval_entry< K, S... > > h;
 };
 
 template < typename K, signature... S >
@@ -1336,7 +1336,7 @@ struct seq_source
                 return _core.empty();
         }
 
-        seq_entry< K, S... > const& front() const
+        kval_entry< K, S... > const& front() const
         {
                 return _core.front();
         }
@@ -1572,13 +1572,15 @@ struct _awaitable
                         case _awaitable_state_e::value:
                                 return;
                         }
-                else
+                else {
                         switch ( _exp.state ) {
                         case _awaitable_state_e::empty:
                                 ECOR_ASSERT( false );
                         case _awaitable_state_e::value:
-                                return std::move( _exp.val );
+                                break;
                         }
+                        return std::move( _exp.val );
+                }
         }
 
         using _env         = decltype( std::declval< PromiseType >().get_env() );

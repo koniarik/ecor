@@ -1,7 +1,7 @@
 
 /// MIT License
 ///
-/// Copyright (c) 2025 koniarik
+/// Copyright (c) 2025-2026 koniarik
 ///
 /// Permission is hereby granted, free of charge, to any person obtaining a copy
 /// of this software and associated documentation files (the "Software"), to deal
@@ -73,6 +73,15 @@ static void test_simple_broadcast_source( task_ctx& ctx, auto& es, auto& val )
         CHECK( value == val );
 }
 
+
+static ecor::task< void > dyn_mem_f( task_ctx&, auto& es, int& y )
+{
+        for ( ;; ) {
+                int x = co_await es.schedule();
+                y     = x;
+        }
+};
+
 TEST_CASE( "dyn_memory_base" )
 {
         nd_mem                                                            mem;
@@ -81,18 +90,20 @@ TEST_CASE( "dyn_memory_base" )
         int                                                               y = -1;
 
 
-        auto f = [&]( task_ctx& ) -> ecor::task< void > {
-                for ( ;; ) {
-                        int x = co_await es.schedule();
-                        y     = x;
-                }
-        };
-
-        auto h = f( ctx ).connect( _dummy_receiver{} );
+        auto h = dyn_mem_f( ctx, es, y ).connect( _dummy_receiver{} );
         h.start();
         ctx.core.run_n( 10 );
         test_simple_broadcast_source( ctx, es, y );
 }
+
+
+static ecor::task< void > void_error_f( task_ctx& ctx, auto& es, int& y )
+{
+        for ( ;; ) {
+                int x = co_await es.schedule();
+                y     = x;
+        }
+};
 
 TEST_CASE( "void error" )
 {
@@ -101,14 +112,7 @@ TEST_CASE( "void error" )
         broadcast_source< set_value_t( int ) > es;
         int                                    y = -1;
 
-        auto f = [&]( task_ctx& ) -> ecor::task< void > {
-                for ( ;; ) {
-                        int x = co_await es.schedule();
-                        y     = x;
-                }
-        };
-
-        auto h = f( ctx ).connect( _dummy_receiver{} );
+        auto h = void_error_f( ctx, es, y ).connect( _dummy_receiver{} );
         h.start();
 
         ctx.core.run_n( 10 );
@@ -171,6 +175,19 @@ TEST_CASE( "recursive" )
         ctx.core.run_n( 10 );
         test_simple_broadcast_source( ctx, es, y );
 }
+ecor::task< void > trans_g( task_ctx& )
+{
+        co_return;
+};
+ecor::task< void > trans_f( task_ctx& ctx, auto& es, int& y )
+{
+        for ( ;; ) {
+                int x  = co_await es.schedule();
+                y      = x;
+                auto h = trans_g( ctx );
+                co_await std::move( h );
+        }
+};
 
 TEST_CASE( "transitive noop" )
 {
@@ -179,19 +196,8 @@ TEST_CASE( "transitive noop" )
         broadcast_source< set_value_t( int ) > es;
         int                                    y = -1;
 
-        auto g = [&]( task_ctx& ) -> ecor::task< void > {
-                co_return;
-        };
-        auto f = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                for ( ;; ) {
-                        int x  = co_await es.schedule();
-                        y      = x;
-                        auto h = g( ctx );
-                        co_await std::move( h );
-                }
-        };
 
-        auto h = f( ctx ).connect( _dummy_receiver{} );
+        auto h = trans_f( ctx, es, y ).connect( _dummy_receiver{} );
         h.start();
         ctx.core.run_n( 10 );
         test_simple_broadcast_source( ctx, es, y );
@@ -217,6 +223,15 @@ private:
         seq_source< time_point, set_value_t( time_point ) > _es;
 };
 
+static ecor::task< void > timer_f( task_ctx&, timer& tm, uint32_t& cnt )
+{
+        uint32_t i = 0;
+        for ( ;; ) {
+                co_await tm.wait_until( i++ );
+                ++cnt;
+        }
+};
+
 TEST_CASE( "timer" )
 {
         nd_mem   mem;
@@ -224,15 +239,8 @@ TEST_CASE( "timer" )
         timer    tm;
         uint32_t cnt = 0;
 
-        auto f = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                uint32_t i = 0;
-                for ( ;; ) {
-                        co_await tm.wait_until( i++ );
-                        ++cnt;
-                }
-        };
 
-        auto h = f( ctx ).connect( _dummy_receiver{} );
+        auto h = timer_f( ctx, tm, cnt ).connect( _dummy_receiver{} );
         h.start();
 
         for ( std::size_t i = 0; i <= 42; i++ ) {
@@ -241,6 +249,21 @@ TEST_CASE( "timer" )
         }
         CHECK( cnt == 42 );
 }
+
+static ecor::task< void > timer_complex_f(
+    task_ctx&,
+    timer&                                          tm,
+    std::vector< std::pair< uint32_t, uint32_t > >& execution_log,
+    uint32_t&                                       total_executions,
+    uint32_t                                        id,
+    std::vector< uint32_t >                         times )
+{
+        for ( auto time : times ) {
+                co_await tm.wait_until( time );
+                execution_log.emplace_back( id, time );
+                ++total_executions;
+        }
+};
 
 TEST_CASE( "timer_complex_heap" )
 {
@@ -251,49 +274,26 @@ TEST_CASE( "timer_complex_heap" )
         std::vector< std::pair< uint32_t, uint32_t > > execution_log;
         uint32_t                                       total_executions = 0;
 
-        auto lambda1 = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                std::vector< uint32_t > times = { 10, 30, 50, 70, 90 };
-                for ( auto time : times ) {
-                        co_await tm.wait_until( time );
-                        execution_log.emplace_back( 1, time );
-                        ++total_executions;
-                }
-        };
-
-        auto lambda2 = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                std::vector< uint32_t > times = { 5, 25, 45, 65, 85 };
-                for ( auto time : times ) {
-                        co_await tm.wait_until( time );
-                        execution_log.emplace_back( 2, time );
-                        ++total_executions;
-                }
-        };
-
-        auto lambda3 = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                std::vector< uint32_t > times = { 15, 35, 55, 75, 95 };
-                for ( auto time : times ) {
-                        co_await tm.wait_until( time );
-                        execution_log.emplace_back( 3, time );
-                        ++total_executions;
-                }
-        };
-
-        auto lambda4 = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                std::vector< uint32_t > times = { 12, 18, 22, 28, 32, 38, 42, 48, 52, 58 };
-                for ( auto time : times ) {
-                        co_await tm.wait_until( time );
-                        execution_log.emplace_back( 4, time );
-                        ++total_executions;
-                }
-        };
-
-        auto h1 = lambda1( ctx ).connect( _dummy_receiver{} );
+        auto h1 =
+            timer_complex_f( ctx, tm, execution_log, total_executions, 1, { 10, 30, 50, 70, 90 } )
+                .connect( _dummy_receiver{} );
         h1.start();
-        auto h2 = lambda2( ctx ).connect( _dummy_receiver{} );
+        auto h2 =
+            timer_complex_f( ctx, tm, execution_log, total_executions, 2, { 5, 25, 45, 65, 85 } )
+                .connect( _dummy_receiver{} );
         h2.start();
-        auto h3 = lambda3( ctx ).connect( _dummy_receiver{} );
+        auto h3 =
+            timer_complex_f( ctx, tm, execution_log, total_executions, 3, { 15, 35, 55, 75, 95 } )
+                .connect( _dummy_receiver{} );
         h3.start();
-        auto h4 = lambda4( ctx ).connect( _dummy_receiver{} );
+        auto h4 = timer_complex_f(
+                      ctx,
+                      tm,
+                      execution_log,
+                      total_executions,
+                      4,
+                      { 12, 18, 22, 28, 32, 38, 42, 48, 52, 58 } )
+                      .connect( _dummy_receiver{} );
         h4.start();
 
         for ( uint32_t current_time = 0; current_time <= 100; ++current_time ) {
@@ -325,6 +325,30 @@ TEST_CASE( "timer_complex_heap" )
         CHECK( executions_by_time[30] == std::vector< uint32_t >{ 1 } );
 }
 
+static ecor::task< void > test_or_f( task_ctx&, auto& es1, auto& es2, int& result, bool& completed )
+{
+        result    = co_await ( es1.schedule() || es2.schedule() );
+        completed = true;
+};
+
+static ecor::task< void > test_mixed_or_f(
+    task_ctx&,
+    auto&                             es_int,
+    auto&                             es_string,
+    std::variant< int, std::string >& result,
+    bool&                             completed )
+{
+        result    = co_await as_variant( es_int.schedule() || es_string.schedule() );
+        completed = true;
+};
+
+static ecor::task< void >
+test_seq_or_f( task_ctx&, auto& seq1, auto& seq2, uint32_t& result, bool& completed )
+{
+        result    = co_await ( seq1.schedule( 10 ) || seq2.schedule( 5 ) );
+        completed = true;
+};
+
 TEST_CASE( "operator||" )
 {
         nd_mem   mem;
@@ -336,12 +360,8 @@ TEST_CASE( "operator||" )
                 int                                    result    = -1;
                 bool                                   completed = false;
 
-                auto test_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                        result    = co_await ( es1.schedule() || es2.schedule() );
-                        completed = true;
-                };
 
-                auto h = test_or( ctx ).connect( _dummy_receiver{} );
+                auto h = test_or_f( ctx, es1, es2, result, completed ).connect( _dummy_receiver{} );
                 h.start();
                 ctx.core.run_once();  // Initialize coroutine
 
@@ -366,12 +386,8 @@ TEST_CASE( "operator||" )
                 int                                    result    = -1;
                 bool                                   completed = false;
 
-                auto test_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                        result    = co_await ( es1.schedule() || es2.schedule() );
-                        completed = true;
-                };
 
-                auto h = test_or( ctx ).connect( _dummy_receiver{} );
+                auto h = test_or_f( ctx, es1, es2, result, completed ).connect( _dummy_receiver{} );
                 h.start();
                 ctx.core.run_once();  // Initialize coroutine
 
@@ -391,12 +407,9 @@ TEST_CASE( "operator||" )
                 std::variant< int, std::string >               result;
                 bool                                           completed = false;
 
-                auto test_mixed_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                        result = co_await as_variant( es_int.schedule() || es_string.schedule() );
-                        completed = true;
-                };
 
-                auto h = test_mixed_or( ctx ).connect( _dummy_receiver{} );
+                auto h = test_mixed_or_f( ctx, es_int, es_string, result, completed )
+                             .connect( _dummy_receiver{} );
                 h.start();
                 ctx.core.run_once();  // Initialize coroutine
 
@@ -417,12 +430,9 @@ TEST_CASE( "operator||" )
                 uint32_t                                        result    = 0;
                 bool                                            completed = false;
 
-                auto test_seq_or = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                        result    = co_await ( seq1.schedule( 10 ) || seq2.schedule( 5 ) );
-                        completed = true;
-                };
 
-                auto h = test_seq_or( ctx ).connect( _dummy_receiver{} );
+                auto h = test_seq_or_f( ctx, seq1, seq2, result, completed )
+                             .connect( _dummy_receiver{} );
                 h.start();
                 ctx.core.run_once();  // Initialize coroutine
 
@@ -767,6 +777,54 @@ TEST_CASE( "circular_buffer_memory_allocation_pattern" )
                 mem.deallocate( p, 10, 2 );
 }
 
+static ecor::task< void > data_processor_f(
+    task_ctx&,
+    auto&               data_source,
+    std::vector< int >& processed_numbers,
+    int&                computation_result,
+    auto&               message_source )
+{
+        int count = 0;
+        while ( count < 3 ) {
+                int value = co_await data_source.schedule();
+                processed_numbers.push_back( value );
+                computation_result += value * 2;  // Some computation
+                count++;
+        }
+
+        // Signal completion by sending a message
+        message_source.set_value( "data_processing_complete" );
+};
+
+static ecor::task< void > message_handler_f(
+    task_ctx&,
+    auto&                       message_source,
+    std::vector< std::string >& processed_messages,
+    bool&                       tasks_completed )
+{
+        int message_count = 0;
+        while ( message_count < 4 ) {  // Expect 3 regular messages + 1 completion
+                                       // message
+                std::string msg = co_await message_source.schedule();
+                processed_messages.push_back( msg );
+
+                if ( msg == "data_processing_complete" )
+                        tasks_completed = true;
+                message_count++;
+        }
+};
+
+static ecor::task< void > data_sender_f( task_ctx&, auto& message_source, auto& data_source )
+{
+        // Send some test data
+        std::vector< int > test_data = { 10, 20, 30 };
+        for ( int value : test_data ) {
+                // Yield control to allow other tasks to run
+                co_await message_source.schedule();  // Wait for any message to proceed
+                data_source.set_value( value );
+        }
+};
+
 TEST_CASE( "task_coroutine_with_circular_buffer_memory" )
 {
         // Use circular buffer memory instead of regular allocator
@@ -785,50 +843,16 @@ TEST_CASE( "task_coroutine_with_circular_buffer_memory" )
         int                        computation_result = 0;
         bool                       tasks_completed    = false;
 
-        // Task 1: Data processor - processes integers and accumulates result
-        auto data_processor = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                int count = 0;
-                while ( count < 3 ) {
-                        int value = co_await data_source.schedule();
-                        processed_numbers.push_back( value );
-                        computation_result += value * 2;  // Some computation
-                        count++;
-                }
-
-                // Signal completion by sending a message
-                message_source.set_value( "data_processing_complete" );
-        };
-
-        // Task 2: Message handler - processes string messages
-        auto message_handler = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                int message_count = 0;
-                while ( message_count < 4 ) {  // Expect 3 regular messages + 1 completion message
-                        std::string msg = co_await message_source.schedule();
-                        processed_messages.push_back( msg );
-
-                        if ( msg == "data_processing_complete" )
-                                tasks_completed = true;
-                        message_count++;
-                }
-        };
-
-        // Task 3: Periodic sender - sends data at intervals
-        auto data_sender = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                // Send some test data
-                std::vector< int > test_data = { 10, 20, 30 };
-                for ( int value : test_data ) {
-                        // Yield control to allow other tasks to run
-                        co_await message_source.schedule();  // Wait for any message to proceed
-                        data_source.set_value( value );
-                }
-        };
 
         // Start all tasks
-        auto h1 = data_processor( ctx ).connect( _dummy_receiver{} );
+        auto h1 = data_processor_f(
+                      ctx, data_source, processed_numbers, computation_result, message_source )
+                      .connect( _dummy_receiver{} );
         h1.start();
-        auto h2 = message_handler( ctx ).connect( _dummy_receiver{} );
+        auto h2 = message_handler_f( ctx, message_source, processed_messages, tasks_completed )
+                      .connect( _dummy_receiver{} );
         h2.start();
-        auto h3 = data_sender( ctx ).connect( _dummy_receiver{} );
+        auto h3 = data_sender_f( ctx, message_source, data_source ).connect( _dummy_receiver{} );
         h3.start();
 
         // Test execution sequence
@@ -865,6 +889,28 @@ TEST_CASE( "task_coroutine_with_circular_buffer_memory" )
         CHECK( tasks_completed == true );
 }
 
+static ecor::task< void > stress_task(
+    task_ctx&,
+    int                 task_id,
+    auto&               trigger,
+    std::vector< int >& execution_order,
+    int&                task_counter )
+{
+        // Wait for trigger
+        // std::cout << "Task " << task_id << " waiting for trigger\n";
+        int value = co_await trigger.schedule();
+        execution_order.push_back( task_id );
+        task_counter++;
+
+        // Do some work that might allocate memory
+        if ( task_id % 2 == 0 ) {
+                // Even tasks wait for another trigger
+                co_await trigger.schedule();
+                execution_order.push_back( task_id + 100 );  // Mark second
+                                                             // execution
+        }
+};
+
 TEST_CASE( "task_coroutine_circular_buffer_memory_stress" )
 {
         // Smaller buffer to test memory management under pressure
@@ -877,28 +923,13 @@ TEST_CASE( "task_coroutine_circular_buffer_memory_stress" )
         std::vector< int >                     execution_order;
         int                                    task_counter = 0;
 
-        // Create multiple short-lived tasks that should stress the circular buffer
-        auto task = [&]( task_ctx& ctx, int task_id ) -> ecor::task< void > {
-                // Wait for trigger
-                std::cout << "Task " << task_id << " waiting for trigger\n";
-                int value = co_await trigger.schedule();
-                execution_order.push_back( task_id );
-                task_counter++;
-
-                // Do some work that might allocate memory
-                if ( task_id % 2 == 0 ) {
-                        // Even tasks wait for another trigger
-                        co_await trigger.schedule();
-                        execution_order.push_back( task_id + 100 );  // Mark second
-                                                                     // execution
-                }
-        };
 
         // Create several tasks
         using C = connect_type< ecor::task< void >, _dummy_receiver >;
         std::list< C > tasks;
         for ( int i = 1; i <= 5; ++i )
-                tasks.emplace_back( task( ctx, i ).connect( _dummy_receiver{} ) );
+                tasks.emplace_back( stress_task( ctx, i, trigger, execution_order, task_counter )
+                                        .connect( _dummy_receiver{} ) );
         for ( C& c : tasks )
                 c.start();
 
@@ -1092,6 +1123,68 @@ static void sanity_check_buffer(
 }
 
 
+template < typename Buffer >
+static void execute_event_f(
+    event const&                    event,
+    int                             event_num,
+    Buffer&                         buffer,
+    std::span< uint8_t >            buff_span,
+    std::vector< allocated_block >& allocated_blocks,
+    std::map< int, std::size_t >&   id_to_index,
+    int&                            next_id )
+{
+        std::string context = "Event " + std::to_string( event_num );
+
+        if ( event.type == event_type::alloc ) {
+                void* ptr = buffer.allocate( event.size, event.align );
+
+                INFO( context << ": Allocation should succeed but got nullptr" );
+                REQUIRE( ptr != nullptr );
+
+                int id = event.id >= 0 ? event.id : next_id++;
+                allocated_blocks.emplace_back( ptr, event.size, event.align, id );
+                id_to_index[id] = allocated_blocks.size() - 1;
+
+                // Fill with pattern for debugging
+                std::memset( ptr, 0xAA + ( id % 16 ), event.size );
+
+                INFO( context << ": After allocation " << id );
+                sanity_check_buffer( buffer, buff_span, allocated_blocks, context );
+        } else if ( event.type == event_type::dealloc ) {
+                INFO( context << ": Deallocation ID " << event.id << " not found" );
+                REQUIRE( id_to_index.find( event.id ) != id_to_index.end() );
+
+                std::size_t idx   = id_to_index[event.id];
+                auto const& block = allocated_blocks[idx];
+
+                buffer.deallocate( block.ptr, block.size, block.align );
+
+                // Remove from tracking
+                allocated_blocks.erase(
+                    allocated_blocks.begin() + static_cast< std::ptrdiff_t >( idx ) );
+                id_to_index.erase( event.id );
+
+                // Update indices in map
+                for ( auto& [id, index] : id_to_index )
+                        if ( index > idx )
+                                --index;
+
+                INFO( context << ": After deallocation " << event.id );
+                sanity_check_buffer( buffer, buff_span, allocated_blocks, context );
+        } else if ( event.type == event_type::failed_alloc ) {
+                void* ptr = buffer.allocate( event.size, event.align );
+
+                INFO( context << ": Allocation should fail but succeeded" );
+                auto used = buffer.used_bytes();
+                INFO( context << "Buffer usage: " << used << "/" << buff_span.size() );
+                CHECK( ptr == nullptr );
+
+                // State shouldn't change on failed allocation
+                INFO( context << ": After failed allocation attempt" );
+                sanity_check_buffer( buffer, buff_span, allocated_blocks, context );
+        }
+};
+
 TEST_CASE( "circular_buffer_memory stress test" )
 {
 
@@ -1105,58 +1198,6 @@ TEST_CASE( "circular_buffer_memory stress test" )
         std::map< int, std::size_t >   id_to_index;  // Map allocation ID to index in vector
         int                            next_id = 0;
 
-        auto execute_event = [&]( event const& event, int event_num ) {
-                std::string context = "Event " + std::to_string( event_num );
-
-                if ( event.type == event_type::alloc ) {
-                        void* ptr = buffer.allocate( event.size, event.align );
-
-                        INFO( context << ": Allocation should succeed but got nullptr" );
-                        REQUIRE( ptr != nullptr );
-
-                        int id = event.id >= 0 ? event.id : next_id++;
-                        allocated_blocks.emplace_back( ptr, event.size, event.align, id );
-                        id_to_index[id] = allocated_blocks.size() - 1;
-
-                        // Fill with pattern for debugging
-                        std::memset( ptr, 0xAA + ( id % 16 ), event.size );
-
-                        INFO( context << ": After allocation " << id );
-                        sanity_check_buffer( buffer, buff_span, allocated_blocks, context );
-                } else if ( event.type == event_type::dealloc ) {
-                        INFO( context << ": Deallocation ID " << event.id << " not found" );
-                        REQUIRE( id_to_index.find( event.id ) != id_to_index.end() );
-
-                        std::size_t idx   = id_to_index[event.id];
-                        auto const& block = allocated_blocks[idx];
-
-                        buffer.deallocate( block.ptr, block.size, block.align );
-
-                        // Remove from tracking
-                        allocated_blocks.erase(
-                            allocated_blocks.begin() + static_cast< std::ptrdiff_t >( idx ) );
-                        id_to_index.erase( event.id );
-
-                        // Update indices in map
-                        for ( auto& [id, index] : id_to_index )
-                                if ( index > idx )
-                                        --index;
-
-                        INFO( context << ": After deallocation " << event.id );
-                        sanity_check_buffer( buffer, buff_span, allocated_blocks, context );
-                } else if ( event.type == event_type::failed_alloc ) {
-                        void* ptr = buffer.allocate( event.size, event.align );
-
-                        INFO( context << ": Allocation should fail but succeeded" );
-                        auto used = buffer.used_bytes();
-                        INFO( context << "Buffer usage: " << used << "/" << buff_span.size() );
-                        CHECK( ptr == nullptr );
-
-                        // State shouldn't change on failed allocation
-                        INFO( context << ": After failed allocation attempt" );
-                        sanity_check_buffer( buffer, buff_span, allocated_blocks, context );
-                }
-        };
 
         SUBCASE( "Sequential allocations and deallocations" )
         {
@@ -1175,7 +1216,14 @@ TEST_CASE( "circular_buffer_memory stress test" )
                 events.emplace_back( event_type::dealloc, 0, 0, 2 );  // Remaining
 
                 for ( int i = 0; i < (int) events.size(); ++i )
-                        execute_event( events[i], i );
+                        execute_event_f(
+                            events[i],
+                            i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 CHECK( allocated_blocks.empty() );
         }
@@ -1196,7 +1244,14 @@ TEST_CASE( "circular_buffer_memory stress test" )
                 events.emplace_back( event_type::dealloc, 0, 0, 4 );
 
                 for ( int i = 0; i < (int) events.size(); ++i )
-                        execute_event( events[i], i );
+                        execute_event_f(
+                            events[i],
+                            i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 CHECK( allocated_blocks.empty() );
         }
@@ -1224,7 +1279,14 @@ TEST_CASE( "circular_buffer_memory stress test" )
                         events.emplace_back( event_type::dealloc, 0, 0, i );
 
                 for ( int i = 0; i < (int) events.size(); ++i )
-                        execute_event( events[i], i );
+                        execute_event_f(
+                            events[i],
+                            i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 CHECK( allocated_blocks.empty() );
         }
@@ -1251,7 +1313,14 @@ TEST_CASE( "circular_buffer_memory stress test" )
                                 events.emplace_back( event_type::dealloc, 0, 0, i );
 
                 for ( int i = 0; i < (int) events.size(); ++i )
-                        execute_event( events[i], i );
+                        execute_event_f(
+                            events[i],
+                            i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
         }
 
         SUBCASE( "Various alignment requirements" )
@@ -1266,7 +1335,14 @@ TEST_CASE( "circular_buffer_memory stress test" )
                 events.emplace_back( event_type::alloc, 50, 32, 5 );  // 32-byte aligned
 
                 for ( int i = 0; i < (int) events.size(); ++i )
-                        execute_event( events[i], i );
+                        execute_event_f(
+                            events[i],
+                            i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 // Verify alignments
                 for ( auto const& block : allocated_blocks )
@@ -1274,7 +1350,14 @@ TEST_CASE( "circular_buffer_memory stress test" )
 
                 // Cleanup
                 for ( int i = 0; i < 6; ++i )
-                        execute_event( event{ event_type::dealloc, 0, 0, i }, 100 + i );
+                        execute_event_f(
+                            event{ event_type::dealloc, 0, 0, i },
+                            100 + i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 CHECK( allocated_blocks.empty() );
         }
@@ -1288,14 +1371,28 @@ TEST_CASE( "circular_buffer_memory stress test" )
                         events.emplace_back( event_type::alloc, 1, 1, i );
 
                 for ( int i = 0; i < (int) events.size(); ++i )
-                        execute_event( events[i], i );
+                        execute_event_f(
+                            events[i],
+                            i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 // Cleanup
                 for ( int i = 0; i < 50; ++i )
                         events.emplace_back( event_type::dealloc, 0, 0, i );
 
                 for ( int i = 50; i < (int) events.size(); ++i )
-                        execute_event( events[i], i );
+                        execute_event_f(
+                            events[i],
+                            i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 CHECK( allocated_blocks.empty() );
         }
@@ -1316,11 +1413,32 @@ TEST_CASE( "circular_buffer_memory stress test" )
                 events.emplace_back( event_type::alloc, 600, 8, 2 );
 
                 for ( int i = 0; i < (int) events.size(); ++i )
-                        execute_event( events[i], i );
+                        execute_event_f(
+                            events[i],
+                            i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 // Cleanup
-                execute_event( event{ event_type::dealloc, 0, 0, 1 }, 100 );
-                execute_event( event{ event_type::dealloc, 0, 0, 2 }, 101 );
+                execute_event_f(
+                    event{ event_type::dealloc, 0, 0, 1 },
+                    100,
+                    buffer,
+                    buff_span,
+                    allocated_blocks,
+                    id_to_index,
+                    next_id );
+                execute_event_f(
+                    event{ event_type::dealloc, 0, 0, 2 },
+                    101,
+                    buffer,
+                    buff_span,
+                    allocated_blocks,
+                    id_to_index,
+                    next_id );
 
                 CHECK( allocated_blocks.empty() );
         }
@@ -1342,14 +1460,35 @@ TEST_CASE( "circular_buffer_memory stress test" )
                         events.emplace_back( event_type::alloc, 100, 8, i );
 
                 for ( int i = 0; i < (int) events.size(); ++i )
-                        execute_event( events[i], i );
+                        execute_event_f(
+                            events[i],
+                            i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 // Cleanup - deallocate remaining blocks (IDs 4-7 from initial, IDs 10-13 from
                 // wraparound)
                 for ( int i = 4; i < 8; ++i )
-                        execute_event( event{ event_type::dealloc, 0, 0, i }, 100 + i );
+                        execute_event_f(
+                            event{ event_type::dealloc, 0, 0, i },
+                            100 + i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
                 for ( int i = 10; i < 14; ++i )
-                        execute_event( event{ event_type::dealloc, 0, 0, i }, 200 + i );
+                        execute_event_f(
+                            event{ event_type::dealloc, 0, 0, i },
+                            200 + i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 CHECK( allocated_blocks.empty() );
         }
@@ -1398,36 +1537,59 @@ TEST_CASE( "circular_buffer_memory stress test" )
                 }
 
                 for ( int i = 0; i < (int) events.size(); ++i )
-                        execute_event( events[i], i );
+                        execute_event_f(
+                            events[i],
+                            i,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 for ( int id : active_ids )
-                        execute_event( event{ event_type::dealloc, 0, 0, id }, 1000 + id );
+                        execute_event_f(
+                            event{ event_type::dealloc, 0, 0, id },
+                            1000 + id,
+                            buffer,
+                            buff_span,
+                            allocated_blocks,
+                            id_to_index,
+                            next_id );
 
                 CHECK( allocated_blocks.empty() );
         }
 }
+
+static ecor::task< std::vector< int > > pass_data_f( task_ctx& )
+{
+        std::vector< int > data = { 1, 2, 3, 4, 5 };
+        co_return data;
+};
+
+static ecor::task< void > pass_data_g( task_ctx& ctx )
+{
+        std::vector< int > received_data = co_await pass_data_f( ctx );
+        CHECK( received_data.size() == 5 );
+        CHECK( received_data[0] == 1 );
+        CHECK( received_data[4] == 5 );
+};
 
 TEST_CASE( "task - pass data" )
 {
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        auto f = [&]( task_ctx& ctx ) -> ecor::task< std::vector< int > > {
-                std::vector< int > data = { 1, 2, 3, 4, 5 };
-                co_return data;
-        };
 
-        auto g = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                std::vector< int > received_data = co_await f( ctx );
-                CHECK( received_data.size() == 5 );
-                CHECK( received_data[0] == 1 );
-                CHECK( received_data[4] == 5 );
-        };
-
-        auto h = g( ctx ).connect( _dummy_receiver{} );
+        auto h = pass_data_g( ctx ).connect( _dummy_receiver{} );
         h.start();
         ctx.core.run_once();
 }
+
+static ecor::task< void > multiple_set_value_f( task_ctx&, auto& source )
+{
+        for ( int i = 0; i < 3; ++i )
+                auto value = co_await as_variant( source.schedule() );
+};
 
 TEST_CASE( "broadcast - multiple set_value" )
 {
@@ -1437,12 +1599,7 @@ TEST_CASE( "broadcast - multiple set_value" )
         broadcast_source< set_value_t( int ), set_value_t( float ) > source;
 
 
-        auto f = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                for ( int i = 0; i < 3; ++i )
-                        auto value = co_await as_variant( source.schedule() );
-        };
-
-        auto h = f( ctx ).connect( _dummy_receiver{} );
+        auto h = multiple_set_value_f( ctx, source ).connect( _dummy_receiver{} );
         h.start();
         ctx.core.run_n( 10 );
         source.set_value( 42 );
@@ -1481,6 +1638,12 @@ struct _check_error_receiver
         }
 };
 
+static ecor::task< void > task_alloc_error_f( task_ctx&, bool& lambda_triggered )
+{
+        lambda_triggered = true;
+        co_return;
+};
+
 TEST_CASE( "task - allocation error" )
 {
         std::array< uint8_t, 1 >                   buffer_storage;
@@ -1489,35 +1652,33 @@ TEST_CASE( "task - allocation error" )
         task_ctx                                   ctx{ mem };
         bool                                       lambda_triggered = false;
 
-        auto f = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                lambda_triggered = true;
-                co_return;
-        };
 
         task_error err = task_error::none;
 
-        auto h = f( ctx ).connect( _check_error_receiver{ err } );
+        auto h =
+            task_alloc_error_f( ctx, lambda_triggered ).connect( _check_error_receiver{ err } );
         h.start();
         CHECK_EQ( err, task_error::task_allocation_failure );
         CHECK_EQ( lambda_triggered, false );
         ctx.core.run_once();
 }
 
+struct task_cfg
+{
+        using extra_error_signatures = completion_signatures< set_error_t( std::string ) >;
+};
+using my_task = ecor::task< void, task_cfg >;
+
+static my_task task_error_ext_f( task_ctx& )
+{
+        co_await just_error( std::string{ "custom error occurred" } );
+};
+
 TEST_CASE( "task - error extension" )
 {
-        struct task_cfg
-        {
-                using extra_error_signatures = completion_signatures< set_error_t( std::string ) >;
-        };
-
-        using my_task = ecor::task< void, task_cfg >;
-
         nd_mem      mem;
         task_ctx    ctx{ mem };
         std::string err_msg;
-        auto        f = [&]( task_ctx& ctx ) -> my_task {
-                co_await just_error( std::string{ "custom error occurred" } );
-        };
         struct my_receiver
         {
                 using receiver_concept = ecor::receiver_t;
@@ -1551,7 +1712,7 @@ TEST_CASE( "task - error extension" )
                 }
         };
 
-        auto h = f( ctx ).connect( my_receiver{ err_msg } );
+        auto h = task_error_ext_f( ctx ).connect( my_receiver{ err_msg } );
         h.start();
         ctx.core.run_once();
         CHECK_EQ( err_msg, "custom error occurred" );
@@ -1691,6 +1852,12 @@ TEST_CASE( "stop_token_concepts - unstoppable_token" )
         CHECK( token_with_source.stop_possible() );
 }
 
+static ecor::task< void > stop_token_env_f( task_ctx&, int& received_value, auto& es )
+{
+        int x          = co_await es.schedule();
+        received_value = x;
+};
+
 TEST_CASE( "stop_token - receiver with stop token environment" )
 {
         // Test a receiver that provides a stop token in its environment
@@ -1741,13 +1908,10 @@ TEST_CASE( "stop_token - receiver with stop token environment" )
                 }
         };
 
-        auto f = [&]( task_ctx& ctx ) -> ecor::task< void > {
-                int x          = co_await es.schedule();
-                received_value = x;
-        };
 
         // Connect with our receiver that has a stop token
-        auto op = f( ctx ).connect( receiver_with_stop_token{ received_value, stopped, stop_src } );
+        auto op = stop_token_env_f( ctx, received_value, es )
+                      .connect( receiver_with_stop_token{ received_value, stopped, stop_src } );
         op.start();
         ctx.core.run_once();
 
@@ -1760,6 +1924,22 @@ TEST_CASE( "stop_token - receiver with stop token environment" )
         // This test documents the expected interface for receivers with stop tokens
         // Full integration would require senders to check stop_requested() at appropriate times
 }
+
+static task< void >
+cancellable_operation_f( task_ctx&, int& value_count, inplace_stop_source& stop_src, auto& values )
+{
+        for ( int i = 0; i < 10; ++i ) {
+                // In a real implementation, senders would check the stop token
+                // from the receiver's environment. For now, we check manually:
+                if ( stop_src.stop_requested() ) {
+                        // Should call set_stopped on the receiver
+                        // For now, we just break
+                        break;
+                }
+                int x = co_await values.schedule();
+                value_count += x;
+        }
+};
 
 TEST_CASE( "stop_token - manual cancellation check" )
 {
@@ -1810,23 +1990,9 @@ TEST_CASE( "stop_token - manual cancellation check" )
 
         broadcast_source< set_value_t( int ) > values;
 
-        // Simulate a sender that checks for cancellation
-        auto cancellable_operation = [&]( task_ctx& ctx ) -> task< void > {
-                for ( int i = 0; i < 10; ++i ) {
-                        // In a real implementation, senders would check the stop token
-                        // from the receiver's environment. For now, we check manually:
-                        if ( stop_src.stop_requested() ) {
-                                // Should call set_stopped on the receiver
-                                // For now, we just break
-                                break;
-                        }
-                        int x = co_await values.schedule();
-                        value_count += x;
-                }
-        };
 
-        auto op = cancellable_operation( ctx ).connect(
-            cancellable_receiver{ value_count, was_stopped, stop_src } );
+        auto op = cancellable_operation_f( ctx, value_count, stop_src, values )
+                      .connect( cancellable_receiver{ value_count, was_stopped, stop_src } );
         op.start();
         ctx.core.run_once();
 
