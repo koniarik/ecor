@@ -21,8 +21,13 @@
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 /// SOFTWARE.
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <iostream>
+#include <mutex>
+#include <semaphore>
+#include <stop_token>
+#include <thread>
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 
@@ -38,6 +43,8 @@
 
 namespace ecor
 {
+
+using namespace std::chrono_literals;
 
 struct nd_mem
 {
@@ -2252,5 +2259,453 @@ TEST_CASE( "inplace_stop_callback - callback_type alias" )
             "callback_type should match inplace_stop_callback" );
 }
 
+
+static task< void >
+fifo_waiter_f( task_ctx&, fifo_source< set_value_t( int ) >& source, std::vector< int >& results )
+{
+        int v = co_await source.schedule();
+        results.push_back( v );
+}
+
+TEST_CASE( "fifo_source - basic ordering" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t( int ) > source;
+        std::vector< int >                results;
+
+        auto h1 = fifo_waiter_f( ctx, source, results ).connect( _dummy_receiver{} );
+        h1.start();
+
+        auto h2 = fifo_waiter_f( ctx, source, results ).connect( _dummy_receiver{} );
+        h2.start();
+
+        for ( int i = 0; i < 10; ++i )
+                ctx.core.run_once();
+
+        CHECK( results.empty() );
+
+        source.set_value( 10 );
+        ctx.core.run_once();
+        CHECK( results.size() == 1 );
+        CHECK( results[0] == 10 );
+
+        source.set_value( 20 );
+        ctx.core.run_once();
+        CHECK( results.size() == 2 );
+        CHECK( results[1] == 20 );
+
+        // No more waiters, third value lost
+        source.set_value( 30 );
+        ctx.core.run_once();
+        CHECK( results.size() == 2 );
+}
+
+TEST_CASE( "fifo_source - set_error" )
+{
+        struct helper
+        {
+                static task< void > waiter(
+                    task_ctx&,
+                    fifo_source< set_value_t(), set_error_t( int ) >& source,
+                    bool&                                             error_caught )
+                {
+                        std::optional< std::variant< int > > e =
+                            co_await ( source.schedule() | sink_err );
+                        if ( e.has_value() && std::get< int >( *e ) == 42 )
+                                error_caught = true;
+                }
+        };
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t(), set_error_t( int ) > source;
+        bool                                             error_caught = false;
+
+        auto h = helper::waiter( ctx, source, error_caught ).connect( _dummy_receiver{} );
+        h.start();
+        ctx.core.run_once();
+
+        source.set_error( 42 );
+        ctx.core.run_once();
+
+        CHECK( error_caught );
+}
+
+TEST_CASE( "fifo_source - set_stopped" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t( int ), set_stopped_t() > source;
+        bool                                               stopped = false;
+
+        // Receiver that detects stopped signal
+        struct stopped_receiver : _dummy_receiver
+        {
+                bool* _stopped;
+                void  set_stopped() noexcept
+                {
+                        *_stopped = true;
+                }
+        };
+
+        auto op = source.schedule().connect( stopped_receiver{ ._stopped = &stopped } );
+        op.start();
+
+        source.set_stopped();
+        ctx.core.run_once();
+
+        CHECK( stopped );
+}
+
+TEST_CASE( "fifo_source - cancellation" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t( int ) > source;
+        std::vector< int >                results;
+
+        auto h1 = fifo_waiter_f( ctx, source, results ).connect( _dummy_receiver{} );
+        h1.start();
+
+        {
+                auto h2 = fifo_waiter_f( ctx, source, results ).connect( _dummy_receiver{} );
+                h2.start();
+                // h2 is destroyed here, should unlink
+        }
+
+        auto h3 = fifo_waiter_f( ctx, source, results ).connect( _dummy_receiver{} );
+        h3.start();
+
+        ctx.core.run_n( 5 );
+
+        source.set_value( 10 );  // Should go to h1
+        ctx.core.run_once();
+        CHECK( results.size() == 1 );
+        CHECK( results[0] == 10 );
+
+        source.set_value( 20 );  // Should go to h3 (h2 was cancelled/destroyed)
+        ctx.core.run_once();
+        CHECK( results.size() == 2 );
+        CHECK( results[1] == 20 );
+}
+
+
+enum class uart_error : uint32_t
+{
+        overrun = 1 << 0,  // old data unread during RX
+        framing = 1 << 1,  // stop bit not found, RX
+        parity  = 1 << 2,  // parity check failed, RX
+        timeout = 1 << 3,  // receiver timeout, RX
+        nack    = 1 << 4,  // Smartcard NACK detected, TX
+};
+
+enum class uart_status
+{
+        ok,
+        busy
+};
+
+struct uart_peripheral
+{
+        uart_peripheral(
+            std::function< void() >              on_tx_irq,
+            std::function< void( uart_error ) >  on_tx_err,
+            std::function< void( std::size_t ) > on_rx_irq,
+            std::function< void( uart_error ) >  on_rx_err )
+          : on_tx_irq( std::move( on_tx_irq ) )
+          , on_tx_err( std::move( on_tx_err ) )
+          , on_rx_irq( std::move( on_rx_irq ) )
+          , on_rx_err( std::move( on_rx_err ) )
+        {
+        }
+
+        void delay()
+        {
+                auto x = std::rand() % 42;
+                for ( int i = 0; i < x; i++ )
+                        asm( "nop" );
+        }
+
+        uart_status transmit( std::span< uint8_t > data )
+        {
+                if ( tx_active.load() )
+                        return uart_status::busy;
+                tx_active = true;
+                tx_jq.emplace_back(
+                    [data = std::vector< uint8_t >( data.begin(), data.end() ), this] {
+                            delay();
+                            tx_active = false;
+                            on_tx_irq();
+                            do_reply( data );
+                    } );
+                return uart_status::ok;
+        }
+
+        void do_reply( std::span< uint8_t const > data )
+        {
+                auto schedule_rx = [&]( std::string sv ) {
+                        rx_jq.emplace_back( [sv = std::move( sv ), this] {
+                                delay();
+                                if ( rx_buff.empty() )
+                                        std::abort();
+                                if ( rx_buff.size() < sv.size() )
+                                        std::abort();
+                                std::memcpy( rx_buff.data(), sv.data(), sv.size() );
+                                this->rx_active = false;
+                                this->on_rx_irq( sv.size() );
+                        } );
+                };
+                // XXX: errors
+                std::string_view sv{ (char*) data.data(), data.size() };
+                if ( sv.starts_with( "valid_req" ) )
+                        schedule_rx( "valid_resp" );
+                else
+                        std::abort();
+        }
+
+        uart_status receive( std::span< uint8_t > data )
+        {
+                if ( rx_active.load() )
+                        return uart_status::busy;
+                rx_active = true;
+                rx_buff   = data;
+                return uart_status::ok;
+        }
+
+        struct job_queue
+        {
+                std::list< std::function< void() > > cbs;
+                std::mutex                           m;
+                std::counting_semaphore< 1024 >      cs{ 0 };
+                std::jthread                         thread{ [this]( std::stop_token st ) {
+                        this->run( std::move( st ) );
+                } };
+
+                void emplace_back( std::function< void() > cb )
+                {
+                        std::lock_guard lg{ m };
+                        cbs.emplace_back( std::move( cb ) );
+                        cs.release();
+                }
+
+                void run( std::stop_token st )
+                {
+                        while ( !st.stop_requested() ) {
+                                if ( !cs.try_acquire_for( 10ms ) )
+                                        continue;
+                                auto f = [&] {
+                                        std::lock_guard lg{ m };
+                                        auto            f = std::move( cbs.front() );
+                                        cbs.pop_front();
+                                        return f;
+                                }();
+                                f();
+                        }
+                }
+        };
+
+        std::function< void() >              on_tx_irq;
+        std::function< void( uart_error ) >  on_tx_err;
+        std::function< void( std::size_t ) > on_rx_irq;
+        std::function< void( uart_error ) >  on_rx_err;
+
+        job_queue           tx_jq;
+        std::atomic< bool > tx_active = false;
+
+        job_queue            rx_jq;
+        std::atomic< bool >  rx_active = false;
+        std::span< uint8_t > rx_buff;
+};
+
+struct uart_trans
+{
+        template < typename Env >
+        using _completions =
+            completion_signatures< set_value_t( std::span< uint8_t > ), set_error_t( uart_error ) >;
+
+        template < typename Env >
+        _completions< Env > get_completion_signatures( Env&& )
+        {
+                return {};
+        }
+
+        bool stoppable = true;
+
+        // Buffer for message
+        std::span< uint8_t > buffer;
+        // How much of "buffer" is used by transmitted message
+        uint16_t tx_used;
+        uint16_t rx_used;
+
+        using tp = std::chrono::steady_clock::time_point;
+        tp timeout;
+};
+
+// XXX: I wonder how this will work if we drop one message one way ...
+struct uart
+{
+
+        // returns sender that has following API:
+        // - set_value_t(std::span<uint8_t>) - reply
+        // - set_error_t(uart_error) - error during transaction
+        auto transact( std::span< uint8_t > buffer, uint16_t tx_used )
+        {
+                return _source.schedule( uart_trans{ .buffer = buffer, .tx_used = tx_used } );
+        }
+
+        void on_tx_complete_irq()
+        {
+                _tmp.mid2++;
+                dispatch_rx();
+                dispatch_tx();
+        }
+
+        void on_tx_error_irq( uart_error )
+        {
+                // XXX: mark as errored
+                std::abort();
+        }
+
+        void on_rx_complete_irq( std::size_t s )
+        {
+                _tmp[_tmp.mid1]->data.rx_used = s;
+                _tmp.mid1++;
+                // Check if we can receive more
+                dispatch_rx();
+        }
+
+        void on_rx_error_irq( uart_error )
+        {
+                // wat now?
+                std::abort();
+        }
+
+        void dispatch_tx()
+        {
+                if ( _tmp.mid2 == _tmp.last )
+                        return;
+                auto* n = _tmp[_tmp.mid2];
+                _handle.transmit( n->data.buffer.subspan( 0, n->data.tx_used ) );
+        }
+
+        void dispatch_rx()
+        {
+                if ( _tmp.mid1 == _tmp.mid2 )
+                        return;
+                auto* n = _tmp[_tmp.mid1];
+                _handle.receive( n->data.buffer );
+        }
+
+        void tick()
+        {
+                while ( !_source.pending_tx.empty() && !_tmp.full() ) {
+                        auto& n         = _source.pending_tx.take_back();
+                        n.stoppable     = false;
+                        _tmp[_tmp.last] = &n;
+                        _tmp.last++;
+                }
+
+                if ( !_handle.tx_active )
+                        dispatch_tx();
+                // XXX: maybe activate RX?
+
+                while ( _tmp.first != _tmp.mid1 ) {
+                        auto* p = _tmp[_tmp.first];
+                        _tmp.first++;
+                        // We are already running in 'task_ctx' loop presumably, or this is called
+                        // from it. However, linking back into pending_rx might be useful for
+                        // tracking. But p is a transaction_entry*. The user code seems to expect
+                        // _set_value called.
+                        _source.pending_rx.link_back( *p );
+                        p->_set_value( p->data.buffer.subspan( 0, p->data.rx_used ) );
+                }
+        }
+
+private:
+        transaction_source< uart_trans >                 _source;
+        circ_buff< transaction_entry< uart_trans >*, 4 > _tmp;
+
+        uart_peripheral _handle{
+            [this] {
+                    on_tx_complete_irq();
+            },
+            [this]( uart_error e ) {
+                    on_tx_error_irq( e );
+            },
+            [this]( std::size_t s ) {
+                    on_rx_complete_irq( s );
+            },
+            [this]( uart_error e ) {
+                    on_rx_error_irq( e );
+            } };
+};
+
+task< void > simple_exchange( task_ctx&, uart& u, std::string& result_out )
+{
+        uint8_t     buffer[42];
+        std::string req = "valid_req";
+        std::memcpy( buffer, req.data(), req.size() );
+
+        // We expect result to be span of uint8_t
+        auto result_span = co_await ( u.transact( buffer, req.size() ) | err_to_val | as_variant );
+
+        if ( auto* p = std::get_if< std::span< uint8_t > >( &result_span ) )
+                result_out = std::string( (char*) p->data(), p->size() );
+}
+
+task< void > multiple_exchanges( task_ctx& ctx, uart& u, int count, bool& done )
+{
+        std::string result;
+        int         passed = 0;
+        for ( int i = 0; i < count; ++i ) {
+                result.clear();
+                co_await simple_exchange( ctx, u, result );
+                if ( result == "valid_resp" )
+                        passed++;
+        }
+        CHECK_EQ( passed, count );
+        done = true;
+}
+
+TEST_CASE( "transaction" )
+{
+        uart     u;
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        bool     done = false;
+
+        auto h1 = multiple_exchanges( ctx, u, 1000, done ).connect( _dummy_receiver{} );
+        h1.start();
+
+        // We need to run enough times for threads to complete and callbacks to fire
+        // tick() processes pending transactions
+
+        // Initial run to start coroutine and schedule transaction
+        ctx.core.run_once();
+
+        // Now tick uart repeatedly to process simple exchange
+        // This time, we need to run for much longer, potentially
+        auto start = std::chrono::steady_clock::now();
+        while ( !done ) {
+                u.tick();
+
+                // Run ecor loop to process completions
+                ctx.core.run_once();
+
+                if ( std::chrono::steady_clock::now() - start > 10s )
+                        break;
+
+                std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+        }
+        // sleep a bit to flush any pending logs if any
+        std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+
+        CHECK( done );
+}
 
 }  // namespace ecor

@@ -11,6 +11,7 @@
 #include <new>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <zll.hpp>
@@ -650,6 +651,19 @@ struct _sig_vtable : _sig_vtable_row< S >...
 template < typename R, typename VTable >
 static constexpr VTable _vtable_of = { _tag< R >{} };
 
+template < typename VTable, typename... Args >
+concept vtable_can_call_value = requires( VTable v, void* self, Args&&... args ) {
+        ( v.set( set_value_t{}, self, (Args&&) args... ) );
+};
+
+template < typename VTable, typename Arg >
+concept vtable_can_call_error =
+    requires( VTable v, void* self, Arg&& arg ) { ( v.set( set_error_t{}, self, (Arg&&) arg ) ); };
+
+template < typename VTable >
+concept vtable_can_call_stopped =
+    requires( VTable v, void* self ) { ( v.set( set_stopped_t{}, self ) ); };
+
 template < typename... S >
 struct completion_signatures
 {
@@ -746,7 +760,7 @@ using _filter_stopped_of_t = typename _filter_map_tag<
     Sigs,
     _tag_identity_t< set_stopped_t >::type >::type;
 
-template < sender S, typename Env >
+template < typename S, typename Env >
 using _sender_completions_t =
     decltype( std::declval< S >().get_completion_signatures( std::declval< Env >() ) );
 
@@ -1139,91 +1153,13 @@ private:
         zll::sh_heap< kval_entry< K, S... > >& _heap;
 };
 
-
 template < signature... S >
-struct _broadcast_core
-{
-
-        template < typename... V >
-        void set_value( V&&... value )
-        {
-                for_each( [&]( auto& n ) {
-                        n._set_value( value... );
-                } );
-        }
-
-        template < typename E1 >
-        void set_error( E1&& err )
-        {
-                for_each( [&]( auto& n ) {
-                        n._set_error( err );
-                } );
-        }
-
-        void _set_stopped()
-        {
-                for_each( [&]( auto& n ) {
-                        n._set_stopped();
-                } );
-        }
-
-        void for_each( auto&& f )
-        {
-                auto l    = std::move( list );
-                auto iter = l.begin();
-                auto e    = l.end();
-                while ( iter != e ) {
-                        auto n = iter++;
-                        f( *n );
-                }
-        }
-
-        zll::ll_list< event_entry< S... > > list;
-};
-
-template < signature... S >
-struct broadcast_sender;
-
-
-template < signature... S >
-struct broadcast_source
-{
-        using sender_type = broadcast_sender< S... >;
-
-        broadcast_sender< S... > schedule()
-        {
-                return ( _core );
-        }
-
-        template < typename... Args >
-        void set_value( Args... args )
-        {
-                _core.set_value( (Args&&) args... );
-        }
-
-        template < typename... Args >
-        void set_error( Args... args )
-        {
-                _core.set_error( (Args&&) args... );
-        }
-
-        void set_stopped()
-        {
-                _core._set_stopped();
-        }
-
-private:
-        _broadcast_core< S... > _core;
-};
-
-
-template < signature... S >
-struct broadcast_sender
+struct _ll_sender
 {
         using sender_concept = sender_t;
 
-        broadcast_sender( _broadcast_core< S... >& core )
-          : core_( core )
+        _ll_sender( zll::ll_list< event_entry< S... > >& ll )
+          : _ll( ll )
         {
         }
 
@@ -1236,11 +1172,7 @@ struct broadcast_sender
                 return {};
         }
 
-        struct _env
-        {
-        };
-
-        _env get_env() const noexcept
+        empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -1248,27 +1180,191 @@ struct broadcast_sender
         template < receiver R >
         _list_op< R, S... > connect( R receiver )
         {
-                return { core_.list, std::move( receiver ) };
+                return { _ll, std::move( receiver ) };
         }
 
-        _broadcast_core< S... >& core_;
+private:
+        zll::ll_list< event_entry< S... > >& _ll;
+};
+
+template < typename K, signature... S >
+struct _sh_sender
+{
+        using sender_concept = sender_t;
+
+        _sh_sender( K key, zll::sh_heap< kval_entry< K, S... > >& sh )
+          : key( key )
+          , sh( sh )
+        {
+        }
+
+        using _completions = completion_signatures< S... >;
+
+        template < typename Env >
+        _completions get_completion_signatures( Env&& )
+        {
+                return {};
+        }
+
+        empty_env get_env() const noexcept
+        {
+                return {};
+        }
+
+        template < receiver R >
+        _heap_op< R, K, S... > connect( R receiver ) &&
+        {
+                return { sh, std::move( key ), std::move( receiver ) };
+        }
+
+        K                                      key;
+        zll::sh_heap< kval_entry< K, S... > >& sh;
 };
 
 
-template < typename K, signature... S >
-struct _seq_core
+template < signature... S >
+struct broadcast_source
 {
-        template < typename V >
-        void set_value( V&& value )
+        using sender_type = _ll_sender< S... >;
+
+        _ll_sender< S... > schedule()
         {
+                return ( _list );
+        }
+
+        template < typename... Args >
+        void set_value( Args... args )
+        {
+                static_assert(
+                    vtable_can_call_value< _sig_vtable< S... >, Args... >,
+                    "Completion signatures do not contain set_value_t(Args...)" );
+                for_each( [&]( auto& n ) {
+                        n._set_value( args... );
+                } );
+        }
+
+        template < typename E >
+        void set_error( E&& err )
+        {
+                static_assert(
+                    vtable_can_call_error< _sig_vtable< S... >, E >,
+                    "Completion signatures do not contain set_error_t(E)" );
+                for_each( [&]( auto& n ) {
+                        n._set_error( err );
+                } );
+        }
+
+        void set_stopped()
+        {
+                static_assert(
+                    vtable_can_call_stopped< _sig_vtable< S... > >,
+                    "Completion signatures do not contain set_stopped_t()" );
+                for_each( [&]( auto& n ) {
+                        n._set_stopped();
+                } );
+        }
+
+private:
+        void for_each( auto&& f )
+        {
+                auto l    = std::move( _list );
+                auto iter = l.begin();
+                auto e    = l.end();
+                while ( iter != e ) {
+                        auto n = iter++;
+                        f( *n );
+                }
+        }
+
+        zll::ll_list< event_entry< S... > > _list;
+};
+
+
+template < signature... S >
+struct fifo_source
+{
+        using completion_sigs = completion_signatures< S... >;
+        using sender_type     = _ll_sender< S... >;
+
+        _ll_sender< S... > schedule()
+        {
+                return ( _ll );
+        }
+
+        template < typename... V >
+        void set_value( V&&... value )
+        {
+                static_assert(
+                    vtable_can_call_value< _sig_vtable< S... >, V... >,
+                    "Completion signatures do not contain set_value_t(Args...)" );
                 do_f( [&]( auto& n ) {
-                        n._set_value( (V&&) value );
+                        n._set_value( value... );
                 } );
         }
 
         template < typename E1 >
         void set_error( E1&& err )
         {
+                static_assert(
+                    vtable_can_call_error< _sig_vtable< S... >, E1 >,
+                    "Completion signatures do not contain set_error_t(E1)" );
+                do_f( [&]( auto& n ) {
+                        n._set_error( err );
+                } );
+        }
+
+        void set_stopped()
+        {
+                static_assert(
+                    vtable_can_call_stopped< _sig_vtable< S... > >,
+                    "Completion signatures do not contain set_stopped_t()" );
+                do_f( [&]( auto& n ) {
+                        n._set_stopped();
+                } );
+        }
+
+private:
+        void do_f( auto f )
+        {
+                if ( _ll.empty() )
+                        return;
+
+                auto& n = _ll.take_front();
+                f( n );
+        }
+
+
+        zll::ll_list< event_entry< S... > > _ll;
+};
+
+template < typename K, signature... S >
+struct seq_source
+{
+        using sender_type = _sh_sender< K, S... >;
+
+        // TODO: technically this is not spec-conforming
+        _sh_sender< K, S... > schedule( K key )
+        {
+                return { key, h };
+        }
+
+        template < typename... V >
+        void set_value( V&&... value )
+        {
+                static_assert(
+                    vtable_can_call_value< _sig_vtable< S... >, V... >,
+                    "Completion signatures do not contain set_value_t(V)" );
+                do_f( [&]( auto& n ) {
+                        n._set_value( (V&&) value... );
+                } );
+        }
+
+        template < typename E1 >
+        void set_error( E1&& err )
+        {
+                static_assert(
+                    vtable_can_call_error< _sig_vtable< S... >, E1 >,
+                    "Completion signatures do not contain set_error_t(E1)" );
                 // XXX: should this treat all entries or just the front one?
                 do_f( [&]( auto& n ) {
                         n._set_error( (E1&&) err );
@@ -1277,19 +1373,13 @@ struct _seq_core
 
         void _set_stopped()
         {
+                static_assert(
+                    vtable_can_call_stopped< _sig_vtable< S... > >,
+                    "Completion signatures do not contain set_stopped_t()" );
                 // XXX: should this treat all entries or just the front one?
                 do_f( [&]( auto& n ) {
                         n._set_stopped();
                 } );
-        }
-
-        void do_f( auto f )
-        {
-                if ( h.empty() )
-                        return;
-
-                auto& n = h.take();
-                f( n );
         }
 
         [[nodiscard]] bool empty() const
@@ -1302,86 +1392,19 @@ struct _seq_core
                 return *h.top;
         }
 
+private:
+        void do_f( auto f )
+        {
+                if ( h.empty() )
+                        return;
+
+                auto& n = h.take();
+                f( n );
+        }
+
         zll::sh_heap< kval_entry< K, S... > > h;
 };
 
-template < typename K, signature... S >
-struct seq_sender;
-
-template < typename K, signature... S >
-struct seq_source
-{
-        using sender_type = seq_sender< K, S... >;
-
-        // TODO: technically this is not spec-conforming
-        seq_sender< K, S... > schedule( K key )
-        {
-                return { key, _core };
-        }
-
-        template < typename... Args >
-        void set_value( Args... args )
-        {
-                _core.set_value( (Args&&) args... );
-        }
-
-        template < typename... Args >
-        void set_error( Args... args )
-        {
-                _core.set_error( (Args&&) args... );
-        }
-
-        [[nodiscard]] bool empty() const
-        {
-                return _core.empty();
-        }
-
-        kval_entry< K, S... > const& front() const
-        {
-                return _core.front();
-        }
-
-private:
-        _seq_core< K, S... > _core;
-};
-
-template < typename K, signature... S >
-struct seq_sender
-{
-        using sender_concept = sender_t;
-
-        seq_sender( K key, _seq_core< K, S... >& core )
-          : key( key )
-          , core_( core )
-        {
-        }
-
-        using _completions = completion_signatures< S... >;
-
-        template < typename Env >
-        _completions get_completion_signatures( Env&& )
-        {
-                return {};
-        }
-
-        struct _env
-        {
-        };
-
-        _env get_env() const noexcept
-        {
-                return {};
-        }
-
-        template < receiver R >
-        _heap_op< R, K, S... > connect( R receiver ) &&
-        {
-                return { core_.h, std::move( key ), std::move( receiver ) };
-        }
-
-        K                     key;
-        _seq_core< K, S... >& core_;
-};
 
 template < typename S, typename R >
 using connect_type = decltype( std::move( std::declval< S >() ).connect( std::declval< R >() ) );
@@ -1422,11 +1445,7 @@ struct _just_error
                 return {};
         }
 
-        struct _env
-        {
-        };
-
-        _env get_env() const noexcept
+        empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -2304,7 +2323,7 @@ struct _as_variant
         S _s;
 };
 
-static inline struct as_variant_t
+[[maybe_unused]] static inline struct as_variant_t
 {
         template < sender S >
         auto operator()( S s ) const noexcept
@@ -2386,7 +2405,7 @@ struct _err_to_val
         S _s;
 };
 
-static inline struct err_to_val_t
+[[maybe_unused]] static inline struct err_to_val_t
 {
         template < sender S >
         auto operator()( S s ) const noexcept
@@ -2474,7 +2493,7 @@ struct _sink_err
         S _s;
 };
 
-static inline struct sink_err_t
+[[maybe_unused]] static inline struct sink_err_t
 {
 
         auto operator()( sender auto s ) const noexcept
@@ -2646,7 +2665,154 @@ struct _await_until_stopped
         }
 };
 
+[[maybe_unused]]
 static inline _await_until_stopped wait_until_stopped;
 
+template < typename T >
+struct transaction_entry : zll::ll_base< transaction_entry< T > >
+{
+        // XXX: the empty env is needed because entry has to be aware of the vtable but it does
+        //      not know the env :/
+        //      note: this kinda makes sense, as we can't have the API to be vaired based on
+        //      specific R as multiple of those will be used/present
+        using _vtable = _vtable_of_sigs< _sender_completions_t< T, empty_env > >::type;
+
+        T    data;
+        bool stoppable = true;
+
+        transaction_entry( _vtable const& vt, T data )
+          : data( std::move( data ) )
+          , _vt( vt )
+        {
+        }
+
+        // XXX: meybe deduplicate from event_entry?
+        template < typename... Args >
+        void _set_value( Args... args )
+        {
+                _vt.set( set_value_t{}, this, (Args&&) args... );
+        }
+
+        template < typename... Args >
+        void _set_error( Args... args )
+        {
+                _vt.set( set_error_t{}, this, (Args&&) args... );
+        }
+
+        void _set_stopped()
+        {
+                _vt.set( set_stopped_t{}, this );
+        }
+
+private:
+        _vtable const& _vt;
+};
+
+template < typename T, typename R >
+struct transaction_op : transaction_entry< T >, R
+{
+        using _vtable = transaction_entry< T >::_vtable;
+
+        transaction_op( T data, R r, zll::ll_list< transaction_entry< T > >& pending )
+          : transaction_entry< T >{ _vtable_of< transaction_op, _vtable >, std::move( data ) }
+          , R( std::move( r ) )
+          , _pending( pending )
+        {
+        }
+
+        void start()
+        {
+                _pending.link_front( *this );
+        }
+
+private:
+        zll::ll_list< transaction_entry< T > >& _pending;
+};
+
+
+template < typename T >
+struct transaction_sender
+{
+        using sender_concept = sender_t;
+
+        template < typename Env >
+        auto get_completion_signatures( Env&& e )
+        {
+                return val.get_completion_signatures( (Env&&) e );
+        }
+
+        empty_env get_env() const noexcept
+        {
+                return {};
+        }
+
+        template < receiver R >
+        auto connect( R receiver ) &&
+        {
+                return transaction_op< T, R >{ std::move( val ), std::move( receiver ), _pending };
+        }
+
+        T                                       val;
+        zll::ll_list< transaction_entry< T > >& _pending;
+};
+
+template < typename T, size_t N >
+struct circ_buff
+{
+        static_assert( ( N & ( N - 1 ) ) == 0, "Size of circular buffer must be a power of 2" );
+        static_assert(
+            N < std::numeric_limits< uint16_t >::max(),
+            "Size of circular buffer must be less than 65536" );
+        static_assert( std::is_trivial_v< T > );
+
+        T& operator[]( uint16_t x )
+        {
+                return _data[x % N];
+        }
+
+        bool full()
+        {
+                return ( last - first ) == N;
+        }
+
+        uint16_t first = 0;
+        uint16_t mid1  = 0;
+        uint16_t mid2  = 0;
+        uint16_t last  = 0;
+
+private:
+        T _data[N];
+};
+
+/// XXX: example usage: request reply over UART - we can wait a while for reply
+/// XXX: write explicit tests about proper semantics of set stopped if used: active transaction
+/// shall not be stoppable
+
+/// Expected behavior:
+///  - Used for request-reply protocols, that allow multiple in-flight transactions, but the order
+///  of replies is not guaranteed.
+///  - Transaction is user-defined type T
+///  - User can specify signatures S... that the transaction can complete with, and provide handlers
+///  for those signatures when scheduling a transaction.
+///  - When transaction is started, it is added to the list of pending transactions. When a reply is
+///  received, user can call tick() with the reply, and transaction source will find the matching
+///  transaction and complete it with the appropriate signature.
+template < typename T >
+struct transaction_source
+{
+        using sender_type = transaction_sender< T >;
+
+        sender_type schedule( T val )
+        {
+                return { std::move( val ), pending_tx };
+        }
+
+        void tick()
+        {
+        }
+
+        zll::ll_list< transaction_entry< T > > pending_rx;
+        zll::ll_list< transaction_entry< T > > pending_tx;
+};
 
 }  // namespace ecor

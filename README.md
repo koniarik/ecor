@@ -251,7 +251,7 @@ ecor::task<void> sensor_monitor(ecor::task_ctx& ctx, sensor_events& events)
 // Timer event: key is wake-up time, value is task ID
 using timer_source = ecor::seq_source<
     uint64_t,  // Key: timestamp when to wake
-    ecor::set_value_t(int)  // Value: task/timer ID
+    ecor::set_value_t(uint64_t)  // Value: timestamp when timer fired
 >;
 
 class timer_manager {
