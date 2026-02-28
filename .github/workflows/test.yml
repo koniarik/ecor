@@ -1,0 +1,31 @@
+name: test
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        preset: [debug, asan, ubsan, release]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+
+      - name: install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: test
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure --verbose

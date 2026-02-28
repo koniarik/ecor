@@ -1,0 +1,25 @@
+name: clang-tidy
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+
+      - name: install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-tidy-15 parallel
+
+      - name: configure
+        run: make configure
+
+      - name: clang-tidy
+        # Workaround parallel to not fail if there's no output
+        run: find include/ \( -iname "*.hpp" -or -iname "*.cpp" \) -print0 | parallel -0 clang-tidy-15 -p build {}
