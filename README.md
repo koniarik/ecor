@@ -706,15 +706,9 @@ extern "C" void systick_isr() {
 ```
 
 
-## Contributing
-
-Feedback, issues, and contributions welcome! This is designed for real embedded use - if something doesn't work for your use case, let's fix it.
-
 ## Credits
 
 Created by `veverak` (koniarik). Questions? Find me on [#include discord](https://discord.gg/vSYgpmPrra).
-
-Inspired by P2300 (std::execution) but designed for the real world of embedded systems.
 
 ## License
 
