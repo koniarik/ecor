@@ -4,6 +4,8 @@
 
 **Embedded Coroutines & Execution**
 
+[**Documentation**](https://koniarik.github.io/ecor/)
+
 ---
 
 Single-header C++20 coroutine and async execution library for embedded systems
@@ -13,14 +15,6 @@ Single-header C++20 coroutine and async execution library for embedded systems
 C++ has `std::execution` (P2300) for async operations, contains part of the implementation to provide additional embedded friendly abstractions. We need something lightweight, zero-allocation capable, and usable in resource-constrained systems.
 
 `ecor` is a **single-header** implementation of P2300 sender/receiver model with coroutine support, designed specifically for embedded systems. It provides zero-allocation async primitives, custom memory management, and additional abstractions missing from the standard.
-
-**Key Features:**
-- **Single header** - Just include `ecor.hpp`
-- **Zero allocation** - Custom allocators and circular buffers for deterministic memory
-- **Embedded-first** - Small footprint, no exceptions required
-- **P2300 compatible** - Subset implementation of sender/receiver
-- **Cancellation** - Cooperative stop tokens throughout
-- **Event sources** - Broadcast and sequential event abstractions
 
 ---
 
@@ -235,6 +229,39 @@ ecor::task<void> sensor_monitor(ecor::task_ctx& ctx, sensor_events& events)
         }
     }, result);
 
+    co_return;
+}
+```
+
+## FIFO Source - Point-to-Point Events
+
+While `broadcast_source` delivers events to all waiting tasks, `fifo_source` delivers **each event to exactly one waiting task** (the one that has been waiting the longest). Note that like `broadcast_source`, `fifo_source` queues *waiters*, not *values*. If no tasks are waiting when an event is emitted, the event is immediately dropped.
+
+This pattern is highly useful for load-balancing work across multiple worker tasks where each job or signal should only be processed once by the first available worker.
+
+```cpp
+#include <ecor/ecor.hpp>
+
+// Define event signature: set_value_t(int)
+using job_queue = ecor::fifo_source<ecor::set_value_t(int)>;
+
+ecor::task<void> worker_task(ecor::task_ctx& ctx, int worker_id, job_queue& q)
+{
+    while (true) {
+        // Wait for next available job
+        // The longest waiting task receives the next job
+        int job_id = co_await q.schedule();
+
+        // Only ONE worker receives this specific job_id
+        // Process job...
+    }
+}
+
+ecor::task<void> producer_task(ecor::task_ctx& ctx, job_queue& q)
+{
+    // A task must be waiting before set_value is called, otherwise the event is ignored
+    q.set_value(101); // Wakes the first waiting worker
+    q.set_value(102); // Wakes the second waiting worker
     co_return;
 }
 ```

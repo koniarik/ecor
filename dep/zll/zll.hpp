@@ -1,6 +1,6 @@
 /// MIT License
 ///
-/// Copyright (c) 2024 koniarik
+/// Copyright (c) 2024-2026 koniarik
 ///
 /// Permission is hereby granted, free of charge, to any person obtaining a copy
 /// of this software and associated documentation files (the "Software"), to deal
@@ -25,7 +25,6 @@
 #include <concepts>
 #include <cstdint>
 #include <iterator>
-#include <tuple>
 
 #ifdef ZLL_DEFAULT_ASSERT
 
@@ -170,7 +169,7 @@ struct ll_header
         }
 };
 
-/// Unlink a node from existing list. Previous or following node are linked together instead.
+/// Unlink a node from the list. Previous or following node are linked together instead.
 /// Node itself does not keep any connections.
 template < typename T, typename Acc = typename T::access >
         requires( _provides_ll_header< T, Acc > )
@@ -216,8 +215,7 @@ bool detached_range( T& first, T& last ) noexcept( _nothrow_access< Acc, T > )
 }
 
 /// Links predecessor and successor of `from` node as predecessor and successor of `to` node.
-/// Can be used to implement move semantics of custom nodes. Undefined behavior if `to` is not
-/// detached.
+/// The `to` node must be detached.
 template < typename T, typename Acc = typename T::access >
         requires( _provides_ll_header< T, Acc > )
 void move_from_to( T& from, T& to ) noexcept( _nothrow_access< Acc, T > )
@@ -381,12 +379,12 @@ merge_ranges( T& lhf, T& lhl, T& rhf, T& rhl, Compare&& comp = std::less<>{} ) n
     _nothrow_access< Acc, T > && noexcept( comp( lhf, rhf ) ) )
 {
         detach_range( rhf, rhl );
-        T*      lh    = &lhf;
-        T*      rh    = &rhf;
-        T*      first = nullptr;
-        T*      last  = nullptr;
-        _ll_ptr pred  = Acc::get( lhf ).prev;
-        _ll_ptr succ  = Acc::get( lhl ).next;
+        T*                lh    = &lhf;
+        T*                rh    = &rhf;
+        T*                first = nullptr;
+        T*                last  = nullptr;
+        _ll_ptr< T, Acc > pred  = Acc::get( lhf ).prev;
+        _ll_ptr< T, Acc > succ  = Acc::get( lhl ).next;
         while ( lh && rh ) {
                 T* tmp = nullptr;
                 if ( comp( *rh, *lh ) ) {
@@ -1274,6 +1272,7 @@ void _replace_in_parent( T& node, T& new_node ) noexcept( _nothrow_access< Acc, 
         parent = nullptr;
 }
 
+/// Links all children from `from` node to `to` node. The `to` node must be detached.
 template < typename T, typename Acc = typename T::access >
         requires( _provides_sh_header< T, Acc > )
 void move_from_to( T& from, T& to ) noexcept( _nothrow_access< Acc, T > )
@@ -1292,24 +1291,30 @@ void move_from_to( T& from, T& to ) noexcept( _nothrow_access< Acc, T > )
                 _replace_in_parent( from, to );
 }
 
+/// Link a detached node `other` to `node`. Maintains the heap property using `comp`. The `other`
+/// node must be detached before calling this function.
 template < typename T, typename Acc = typename T::access, typename Compare = std::less<> >
         requires( _provides_sh_header< T, Acc > )
-void link_detached_copy_of( T& node, T& cpy, Compare&& comp = std::less<>{} ) noexcept(
+void link_detached_to( T& node, T& other, Compare&& comp = std::less<>{} ) noexcept(
     _nothrow_access_compare< Acc, T, Compare > )
 {
-        ZLL_ASSERT( detached( cpy ) );
+        ZLL_ASSERT( detached( other ) );
 
         T* n = nullptr;
         if ( Acc::get( node ).right ) {
                 auto& r = _detach_right( node );
-                n       = &_sh_merge< T, Acc >( r, cpy, comp );
+                n       = &_sh_merge< T, Acc >( r, other, comp );
         } else {
-                n = &cpy;
+                n = &other;
         }
         ZLL_ASSERT( n );
         _attach_right( node, *n );
 }
 
+/// Unlink a node from the heap. If the node has two children, they are merged using `comp` and the
+/// result is linked to the parent of the detached node. If the node has one child, that child is
+/// linked to the parent of the detached node. If the node has no children, the parent pointer is
+/// set to nullptr.
 template < typename T, typename Acc = typename T::access, typename Compare >
         requires( _provides_sh_header< T, Acc, Compare > )
 void detach( T& node, Compare&& comp ) noexcept( _nothrow_access_compare< Acc, T, Compare > )
@@ -1326,10 +1331,12 @@ void detach( T& node, Compare&& comp ) noexcept( _nothrow_access_compare< Acc, T
         }
         if ( n )
                 _replace_in_parent( node, *n );
-        else if ( Acc::get( node ).parent )
+        else
                 _detach_parent( node );
 }
 
+/// Traverse the heap in-order and call `f` for each node. The order of the nodes is: left child,
+/// node, right child.
 template < typename T, typename Acc = typename T::access >
         requires( _provides_sh_header< T, Acc > )
 void inorder_traverse( T& n, std::invocable< T& > auto&& f ) noexcept( _nothrow_access< Acc, T > )
@@ -1342,6 +1349,8 @@ void inorder_traverse( T& n, std::invocable< T& > auto&& f ) noexcept( _nothrow_
                 inorder_traverse< T, Acc >( *h.right, f );
 }
 
+/// Traverse the heap pre-order and call `f` for each node. The order of the nodes is: node, left
+/// child, right child.
 template < typename T, typename Acc = typename T::access >
         requires( _provides_sh_header< T, Acc > )
 void preorder_traverse( T& n, std::invocable< T& > auto&& f ) noexcept( _nothrow_access< Acc, T > )
@@ -1354,6 +1363,8 @@ void preorder_traverse( T& n, std::invocable< T& > auto&& f ) noexcept( _nothrow
                 preorder_traverse< T, Acc >( *h.right, f );
 }
 
+/// Traverse the heap post-order and call `f` for each node. The order of the nodes is: left child,
+/// right child, node.
 template < typename T, typename Acc = typename T::access >
         requires( _provides_sh_header< T, Acc > )
 void postorder_traverse( T& n, std::invocable< T& > auto&& f ) noexcept( _nothrow_access< Acc, T > )
@@ -1366,6 +1377,8 @@ void postorder_traverse( T& n, std::invocable< T& > auto&& f ) noexcept( _nothro
         f( n );
 }
 
+/// Link a detached node `n2` to the parent of `n1`. Maintains the heap property using `comp`. The
+/// `n2` node must be detached before calling this function.
 template < typename T, typename Acc = typename T::access, typename Compare = std::less<> >
         requires( _provides_sh_header< T, Acc > )
 void link_detached( T& n1, T& n2, Compare&& comp = std::less<>{} ) noexcept(
@@ -1379,6 +1392,8 @@ void link_detached( T& n1, T& n2, Compare&& comp = std::less<>{} ) noexcept(
         _attach_parent( n, p );
 }
 
+/// Returns the top node of the heap that `node` is in. The top node is the node that has no parent
+/// and is an ancestor of `node`. If `node` is detached, it is returned.
 template < typename T, typename Acc = typename T::access >
         requires( _provides_sh_header< T, Acc > )
 T& top_node_of( T& node ) noexcept( _nothrow_access< Acc, T > )
@@ -1410,6 +1425,11 @@ T* _sh_pop( T& node, Compare&& comp ) noexcept( _nothrow_access_compare< Acc, T,
         return n;
 }
 
+/// Skew heap header containing pointers to left and right children and to the parent node or heap.
+/// Will detach itself from the heap on destruction.
+///
+/// Type `T` is the type of the node that contains the header.
+/// Type `Acc` is the access type that provides access to the header of the node.
 template < typename T, typename Acc, typename Compare >
 struct sh_header
 {
@@ -1424,6 +1444,8 @@ struct sh_header
         sh_header& operator=( sh_header&& ) noexcept = delete;
 };
 
+/// CRTP base class for skew heap nodes containing `sh_header`. Provides access type to the header
+/// of the node and implements move and copy semantics for the node. Provides basic API for the node
 template < typename Derived, typename Compare = std::less<> >
 struct sh_base
 {
@@ -1458,7 +1480,7 @@ struct sh_base
 
         sh_base( sh_base& o ) noexcept
         {
-                link_detached_copy_of< Derived, access >( o.derived(), derived() );
+                link_detached_to< Derived, access >( o.derived(), derived() );
         }
 
         sh_base& operator=( sh_base& o ) noexcept
@@ -1466,7 +1488,7 @@ struct sh_base
                 if ( this == &o )
                         return *this;
                 detach< Derived, access >( derived(), _comp );
-                link_detached_copy_of< Derived, access >( o.derived(), derived() );
+                link_detached_to< Derived, access >( o.derived(), derived() );
                 return *this;
         }
 
@@ -1491,6 +1513,9 @@ private:
         [[no_unique_address]] Compare         _comp;
 };
 
+/// Skew heap implementation. Provides API for linking and merging nodes, merging and popping the
+/// heap, checking if the heap is empty and accessing the top node of the heap. The top node is the
+/// node with the smallest value in the heap according to the comparison function `Compare`.
 template < typename T, typename Acc, typename Compare >
 struct sh_heap
 {
@@ -1500,11 +1525,16 @@ struct sh_heap
         sh_heap( sh_heap const& )            = delete;
         sh_heap& operator=( sh_heap const& ) = delete;
 
+        /// Constructs a heap with the given comparison function. The comparison function is used to
+        /// maintain the heap property when linking and merging nodes. The top node of the heap is
+        /// the node with the smallest value according to the comparison function.
         sh_heap( Compare comp )
           : _comp( std::move( comp ) )
         {
         }
 
+        /// Move constructor, moved-from heap becomes empty. If top node is present in the
+        /// moved-from heap, it is detached and attached to the new heap.
         sh_heap( sh_heap&& other ) noexcept
           : _comp( std::move( other._comp ) )
         {
@@ -1514,6 +1544,9 @@ struct sh_heap
                 }
         }
 
+        /// Move assignment operator, moved-from heap becomes empty. If top node is present in the
+        /// moved-from heap, it is detached and attached to the new heap. If the current heap has
+        /// a top node, it is detached before attaching the new top node.
         sh_heap& operator=( sh_heap&& other ) noexcept
         {
                 if ( this == &other )
@@ -1528,6 +1561,9 @@ struct sh_heap
                 return *this;
         }
 
+        /// Constructs a heap from an initializer list of nodes. All nodes in the initializer list
+        /// must be detached. The nodes are linked together to form the heap using the comparison
+        /// function `Compare`.
         sh_heap( std::initializer_list< T* > il ) noexcept( noexcept_access )
         {
                 // XXX: well, this could be more optimal
@@ -1538,12 +1574,15 @@ struct sh_heap
                 }
         }
 
+        /// Destructor, detaches the top node if present.
         ~sh_heap() noexcept( noexcept_access )
         {
                 if ( top )
                         _detach_top( *this );
         }
 
+        /// Links the node `node` into the heap. The node must be detached before calling this
+        /// function. The heap property is maintained using the comparison function `Compare`.
         void link( T& node ) noexcept( noexcept_access )
         {
                 T* n = nullptr;
@@ -1556,6 +1595,8 @@ struct sh_heap
                 _attach_top( *this, *n );
         }
 
+        /// Merges the `other` heap into this heap. The `other` heap becomes empty after this
+        /// operation. The heap property is maintained using the comparison function `Compare`.
         void merge( sh_heap&& other ) noexcept
         {
                 if ( this == &other )
@@ -1564,17 +1605,22 @@ struct sh_heap
                         *this = std::move( other );
                         return;
                 }
-                auto& l   = _detach_top( *this );
-                auto& r   = _detach_top( other );
-                top       = &_sh_merge< T, Acc >( l, r, _comp );
+                auto& l      = _detach_top( *this );
+                auto& r      = _detach_top( other );
+                auto& merged = _sh_merge< T, Acc >( l, r, _comp );
+                _attach_top( *this, merged );
                 other.top = nullptr;
         }
 
+        /// Returns true if the heap is empty, i.e. contains no nodes.
         bool empty() const noexcept
         {
                 return !top;
         }
 
+        /// Unlinks the top node from the heap and returns it. The new top node is determined by
+        /// merging the left and right children of the detached top node. Undefined behavior if the
+        /// heap is empty.
         void pop() noexcept( noexcept_access )
         {
                 ZLL_ASSERT( top );
@@ -1584,6 +1630,8 @@ struct sh_heap
                         Acc::get( *top ).parent = *this;
         }
 
+        /// Unlinks and returns the top node from the heap. The new top node is determined as if
+        /// `top` is used.
         T& take() noexcept( noexcept_access )
         {
                 ZLL_ASSERT( top );

@@ -68,8 +68,8 @@ static void test_simple_broadcast_source( task_ctx& ctx, auto& es, auto& val )
 static ecor::task< void > dyn_mem_f( task_ctx&, auto& es, int& y )
 {
         for ( ;; ) {
-                int x = co_await es.schedule();
-                y     = x;
+                int const x = co_await es.schedule();
+                y           = x;
         }
 };
 
@@ -88,11 +88,11 @@ TEST_CASE( "dyn_memory_base" )
 }
 
 
-static ecor::task< void > void_error_f( task_ctx& ctx, auto& es, int& y )
+static ecor::task< void > void_error_f( task_ctx&, auto& es, int& y )
 {
         for ( ;; ) {
-                int x = co_await es.schedule();
-                y     = x;
+                int const x = co_await es.schedule();
+                y           = x;
         }
 };
 
@@ -125,14 +125,11 @@ TEST_CASE( "op" )
                 {
                         y = v;
                 }
-                struct _env
-                {
-                };
-                _env get_env() const noexcept
+                [[nodiscard]] empty_env get_env() const noexcept
                 {
                         return {};
                 }
-        } receiver{ .y = y };
+        } const receiver{ .y = y };
 
         auto s  = es.schedule();
         auto op = s.connect( receiver );
@@ -144,15 +141,19 @@ TEST_CASE( "op" )
         CHECK( value == y );
 }
 
-ecor::task< void > rec_task( task_ctx& ctx, broadcast_source< set_value_t( int ) >& es, int& y )
+namespace
 {
-        for ( ;; ) {
-                int x  = co_await es.schedule();
-                y      = x;
-                auto h = rec_task( ctx, es, y );
-                co_await std::move( h );  // XXX: is the move a bright idea?
+        ecor::task< void >
+        rec_task( task_ctx& ctx, broadcast_source< set_value_t( int ) >& es, int& y )
+        {
+                for ( ;; ) {
+                        int const x = co_await es.schedule();
+                        y           = x;
+                        auto h      = rec_task( ctx, es, y );
+                        co_await std::move( h );  // XXX: is the move a bright idea?
+                }
         }
-}
+}  // namespace
 
 TEST_CASE( "recursive" )
 {
@@ -166,19 +167,23 @@ TEST_CASE( "recursive" )
         ctx.core.run_n( 10 );
         test_simple_broadcast_source( ctx, es, y );
 }
-ecor::task< void > trans_g( task_ctx& )
+
+namespace
 {
-        co_return;
-};
-ecor::task< void > trans_f( task_ctx& ctx, auto& es, int& y )
-{
-        for ( ;; ) {
-                int x  = co_await es.schedule();
-                y      = x;
-                auto h = trans_g( ctx );
-                co_await std::move( h );
-        }
-};
+        ecor::task< void > trans_g( task_ctx& )
+        {
+                co_return;
+        };
+        ecor::task< void > trans_f( task_ctx& ctx, auto& es, int& y )
+        {
+                for ( ;; ) {
+                        int const x = co_await es.schedule();
+                        y           = x;
+                        auto h      = trans_g( ctx );
+                        co_await std::move( h );
+                }
+        };
+}  // namespace
 
 TEST_CASE( "transitive noop" )
 {
@@ -207,7 +212,7 @@ struct timer
         void tick( time_point now )
         {
                 while ( !_es.empty() && _es.front().key <= now )
-                        _es.set_value( std::move( _es.front().key ) );
+                        _es.set_value( _es.front().key );
         }
 
 private:
@@ -450,7 +455,7 @@ TEST_CASE( "_align_idx" )
                 CHECK( result == 0 );  // Should remain 0 as it's already aligned
 
                 // Verify the actual pointer is aligned
-                void* ptr = test_buffer + result;
+                void const* ptr = test_buffer + result;
                 CHECK( ( (uintptr_t) ptr % 8 ) == 0 );
         }
 
@@ -458,7 +463,7 @@ TEST_CASE( "_align_idx" )
         {
                 auto result = _align_idx( test_buffer, 1, 8 );
                 // Should round up to next 8-byte boundary
-                void* ptr = test_buffer + result;
+                void const* ptr = test_buffer + result;
                 CHECK( ( (uintptr_t) ptr % 8 ) == 0 );
                 CHECK( result >= 1 );  // Must be at least the input index
         }
@@ -470,7 +475,7 @@ TEST_CASE( "_align_idx" )
                 std::size_t alignment;
         };
 
-        std::vector< AlignTest > tests = {
+        std::vector< AlignTest > const tests = {
             { .input_idx = 0, .alignment = 1 },    // 1-byte alignment (should be no-op)
             { .input_idx = 1, .alignment = 1 },    // 1-byte alignment (should be no-op)
             { .input_idx = 42, .alignment = 1 },   // 1-byte alignment (should be no-op)
@@ -486,7 +491,7 @@ TEST_CASE( "_align_idx" )
                 auto result = _align_idx( test_buffer, test.input_idx, test.alignment );
 
                 // Check that result is properly aligned
-                void* ptr = test_buffer + result;
+                void const* ptr = test_buffer + result;
                 CHECK( ( (uintptr_t) ptr % test.alignment ) == 0 );
 
                 // Check that result is >= input (alignment never moves backwards)
@@ -501,23 +506,23 @@ TEST_CASE( "_align_idx" )
                 auto result = _align_idx( test_buffer, 250, 8 );
                 CHECK( result <= 256 );  // Should not exceed buffer size
                 if ( result < 256 ) {
-                        void* ptr = test_buffer + result;
+                        void const* ptr = test_buffer + result;
                         CHECK( ( (uintptr_t) ptr % 8 ) == 0 );
                 }
         }
 
         // Test 5: Different index types
         {
-                uint8_t idx8    = 7;
-                auto    result8 = _align_idx( test_buffer, idx8, 4 );
+                uint8_t const idx8    = 7;
+                auto          result8 = _align_idx( test_buffer, idx8, 4 );
                 CHECK( ( (uintptr_t) ( test_buffer + result8 ) % 4 ) == 0 );
 
-                uint16_t idx16    = 15;
-                auto     result16 = _align_idx( test_buffer, idx16, 8 );
+                uint16_t const idx16    = 15;
+                auto           result16 = _align_idx( test_buffer, idx16, 8 );
                 CHECK( ( (uintptr_t) ( test_buffer + result16 ) % 8 ) == 0 );
 
-                uint32_t idx32    = 31;
-                auto     result32 = _align_idx( test_buffer, idx32, 16 );
+                uint32_t const idx32    = 31;
+                auto           result32 = _align_idx( test_buffer, idx32, 16 );
                 CHECK( ( (uintptr_t) ( test_buffer + result32 ) % 16 ) == 0 );
         }
 }
@@ -526,7 +531,7 @@ TEST_CASE( "circular_buffer_memory" )
 {
         alignas( std::max_align_t ) uint8_t buffer_storage[1024];
 
-        std::span< uint8_t, 1024 > buffer_span{ buffer_storage };
+        std::span< uint8_t, 1024 > const buffer_span{ buffer_storage };
         using it = _index_type< 1024 >;
         circular_buffer_memory< it, noop_base > mem{ buffer_span };
         using node = typename decltype( mem )::node;
@@ -558,7 +563,7 @@ TEST_CASE( "circular_buffer_memory" )
         mem.deallocate( p4, 8, 1 );
 
         // Test 6: Large allocation that should fail
-        void* large = mem.allocate( 2048, 1 );  // Larger than buffer
+        void const* large = mem.allocate( 2048, 1 );  // Larger than buffer
         CHECK( large == nullptr );
 }
 
@@ -566,7 +571,7 @@ TEST_CASE( "circular_buffer_memory" )
 TEST_CASE( "circular_buffer_memory_alignment" )
 {
         std::array< uint8_t, 512 >                              buffer_storage;
-        std::span< uint8_t, 512 >                               buffer_span{ buffer_storage };
+        std::span< uint8_t, 512 > const                         buffer_span{ buffer_storage };
         circular_buffer_memory< _index_type< 512 >, noop_base > mem{ buffer_span };
 
         // Test various alignment requirements
@@ -589,7 +594,7 @@ TEST_CASE( "circular_buffer_memory_alignment" )
 TEST_CASE( "circular_buffer_memory_wraparound" )
 {
         std::array< uint8_t, 256 >                              buffer_storage;
-        std::span< uint8_t, 256 >                               buffer_span{ buffer_storage };
+        std::span< uint8_t, 256 > const                         buffer_span{ buffer_storage };
         circular_buffer_memory< _index_type< 256 >, noop_base > mem{ buffer_span };
 
         std::vector< void* > pointers;
@@ -751,9 +756,9 @@ TEST_CASE( "circular_buffer_memory_allocation_pattern" )
                 void* p = mem.allocate( 10, 2 );
                 if ( p ) {
                         // Verify pointer is within buffer bounds
-                        uintptr_t buf_start = (uintptr_t) mem._buff.data();
+                        auto      buf_start = (uintptr_t) mem._buff.data();
                         uintptr_t buf_end   = buf_start + mem._buff.size();
-                        uintptr_t ptr_addr  = (uintptr_t) p;
+                        auto      ptr_addr  = (uintptr_t) p;
 
                         CHECK( ptr_addr >= buf_start );
                         CHECK( ptr_addr < buf_end );
@@ -955,7 +960,7 @@ TEST_CASE( "task_coroutine_circular_buffer_memory_stress" )
 // ============================================================================
 
 // Event types for stress testing
-enum class event_type
+enum class event_type : uint8_t
 {
         alloc,        // Allocation that should succeed
         dealloc,      // Deallocation
@@ -1250,6 +1255,7 @@ TEST_CASE( "circular_buffer_memory stress test" )
         SUBCASE( "Fragmentation and reuse" )
         {
                 std::vector< event > events;
+                events.reserve( 32 );
 
                 // Create fragmentation
                 for ( int i = 0; i < 10; ++i )
@@ -1285,6 +1291,8 @@ TEST_CASE( "circular_buffer_memory stress test" )
         SUBCASE( "Fill buffer to capacity" )
         {
                 std::vector< event > events;
+
+                events.reserve( 32 );
 
                 // Allocate until buffer is nearly full
                 int id = 0;
@@ -1356,6 +1364,8 @@ TEST_CASE( "circular_buffer_memory stress test" )
         SUBCASE( "Edge cases - very small allocations" )
         {
                 std::vector< event > events;
+
+                events.reserve( 128 );
 
                 // Many tiny allocations
                 for ( int i = 0; i < 50; ++i )
@@ -1437,6 +1447,8 @@ TEST_CASE( "circular_buffer_memory stress test" )
         SUBCASE( "Circular wrap-around behavior" )
         {
                 std::vector< event > events;
+
+                events.reserve( 32 );
 
                 // Fill buffer - reduced sizes to account for metadata overhead
                 for ( int i = 0; i < 8; ++i )
@@ -1620,10 +1632,7 @@ struct _check_error_receiver
         {
         }
 
-        struct _env
-        {
-        };
-        _env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -1687,17 +1696,14 @@ TEST_CASE( "task - error extension" )
 
                 void set_error( std::string msg )
                 {
-                        err_msg = msg;
+                        err_msg = std::move( msg );
                 }
 
                 void set_stopped()
                 {
                 }
 
-                struct _env
-                {
-                };
-                _env get_env() const noexcept
+                [[nodiscard]] empty_env get_env() const noexcept
                 {
                         return {};
                 }
@@ -1887,13 +1893,13 @@ TEST_CASE( "stop_token - receiver with stop token environment" )
                 {
                         inplace_stop_source const& src;
 
-                        inplace_stop_token get_stop_token() const noexcept
+                        [[nodiscard]] inplace_stop_token get_stop_token() const noexcept
                         {
                                 return src.get_token();
                         }
                 };
 
-                env get_env() const noexcept
+                [[nodiscard]] env get_env() const noexcept
                 {
                         return env{ stop_source };
                 }
@@ -1967,13 +1973,13 @@ TEST_CASE( "stop_token - manual cancellation check" )
                 {
                         inplace_stop_token token;
 
-                        inplace_stop_token get_stop_token() const noexcept
+                        [[nodiscard]] inplace_stop_token get_stop_token() const noexcept
                         {
                                 return token;
                         }
                 };
 
-                env get_env() const noexcept
+                [[nodiscard]] env get_env() const noexcept
                 {
                         return env{ source.get_token() };
                 }

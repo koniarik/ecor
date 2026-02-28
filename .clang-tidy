@@ -2,14 +2,14 @@
 Checks: >
   -*,
   bugprone*,-bugprone-forwarding-reference-overload,-bugprone-easily-swappable-parameters,
-  concurrency*,
-  modernize*,-modernize-use-trailing-return-type,-modernize-avoid-c-arrays,
-  misc*,-misc-no-recursion,-misc-include-cleaner,-misc-use-anonymous-namespace,
+  concurrency*,-concurrency-mt-unsafe,
+  modernize*,-modernize-use-trailing-return-type,-modernize-avoid-c-arrays,-modernize-use-integer-sign-comparison,-modernize-use-ranges,-modernize-use-designated-initializers,
+  misc*,-misc-no-recursion,-misc-include-cleaner,-misc-use-anonymous-namespace,-misc-non-private-member-variables-in-classes,-misc-const-correctness,
   performance*,-performance-avoid-endl,
-  portability*,
+  portability*,-portability-avoid-pragma-once,
   readbility*,
 WarningsAsErrors: true
-HeaderFilterRegex: ".*"
+HeaderFilterRegex: "ecor.hpp"
 FormatStyle: file
 CheckOptions:
   - key: readability-identifier-naming.IgnoreFailedSplit

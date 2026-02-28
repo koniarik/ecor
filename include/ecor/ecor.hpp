@@ -93,6 +93,11 @@ struct operation_state_t
 {
 };
 
+struct empty_env
+{
+};
+
+
 struct _allocate_t
 {
         template < typename T >
@@ -143,13 +148,9 @@ struct _dummy_receiver
         {
         }
 
-        struct _env
+        [[nodiscard]] empty_env get_env() const noexcept
         {
-        };
-
-        [[nodiscard]] _env get_env() const noexcept
-        {
-                return _env{};
+                return {};
         }
 };
 
@@ -419,7 +420,7 @@ struct circular_buffer_memory : Base
                         nn.next_idx = idx;
                         _set_node( buff.data(), _last, nn );
                 }
-                node n{
+                node const n{
                     .next_idx = npos,
                     .prev_idx = _last,
                 };
@@ -431,9 +432,9 @@ struct circular_buffer_memory : Base
 
         void _deallocate( uint8_t* buff, void* p ) noexcept
         {
-                auto*      pp  = (uint8_t*) p - sizeof( node );
-                index_type idx = pp - buff;
-                node       n   = _get_node( buff, idx );
+                auto*            pp  = (uint8_t*) p - sizeof( node );
+                index_type const idx = pp - buff;
+                node const       n   = _get_node( buff, idx );
 
                 if ( _first == idx ) {
                         _first = n.next_idx;
@@ -529,10 +530,6 @@ public:
 
 // XXX: cecursive circual buffer allocator, for when the allocator itself needs to allocate memory
 // from the circular buffer
-
-struct empty_env
-{
-};
 
 struct get_env_t
 {
@@ -955,8 +952,7 @@ struct inplace_stop_callback;
 
 struct _inplace_stop_callback_base : zll::ll_base< _inplace_stop_callback_base >
 {
-
-        virtual void _execute() noexcept = 0;
+        virtual void _execute() = 0;
 
         virtual ~_inplace_stop_callback_base() = default;
 };
@@ -980,7 +976,7 @@ struct inplace_stop_source
                 return _stopped;
         }
 
-        bool request_stop() noexcept
+        bool request_stop()
         {
                 if ( _stopped )
                         return false;
@@ -1076,7 +1072,7 @@ struct inplace_stop_callback : _inplace_stop_callback_base
         inplace_stop_callback& operator=( inplace_stop_callback&& )      = delete;
         inplace_stop_callback& operator=( inplace_stop_callback const& ) = delete;
 
-        void _execute() noexcept override
+        void _execute() override
         {
                 ( (CallbackFn&&) _callback_fn )();
         }
@@ -1235,7 +1231,7 @@ struct _ll_sender
 
         using completion_signatures = ecor::completion_signatures< S... >;
 
-        empty_env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -1263,7 +1259,7 @@ struct _sh_sender
 
         using completion_signatures = ecor::completion_signatures< S... >;
 
-        empty_env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -1444,7 +1440,7 @@ struct seq_source
                 return h.empty();
         }
 
-        kval_entry< K, S... > const& front() const
+        [[nodiscard]] kval_entry< K, S... > const& front() const
         {
                 return *h.top;
         }
@@ -1495,7 +1491,7 @@ struct _just_error
 
         using completion_signatures = ecor::completion_signatures< set_error_t( T ) >;
 
-        empty_env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -1689,7 +1685,8 @@ struct _awaitable
                         _cont.promise()._g.set_stopped();
                 }
 
-                auto get_env() const noexcept -> decltype( std::declval< PromiseType >().get_env() )
+                [[nodiscard]] auto
+                get_env() const noexcept -> decltype( std::declval< PromiseType >().get_env() )
                 {
                         return _cont.promise().get_env();
                 }
@@ -1916,6 +1913,7 @@ struct _promise_base : _itask_op
         {
                 inplace_stop_token& token;
 
+                [[nodiscard]]
                 auto query( get_stop_token_t ) const noexcept
                 {
                         return token;
@@ -2012,7 +2010,7 @@ struct _promise_type : _promise_base, _promise_type_value< Task >
                         // XXX: leaky implementation detail
                         using compls = _sender_completions_t< U, typename _promise_base::_env >;
                         using errs   = _filter_errors_of_t< compls >;
-                        _check_compatible_sigs< errs, typename Task::_error_completions > _{};
+                        _check_compatible_sigs< errs, typename Task::_error_completions > const _{};
                         using vals = _map_values_of_t< compls >;
                         static_assert(
                             std::variant_size_v< vals > <= 1,
@@ -2150,11 +2148,8 @@ struct task
                 return *this;
         }
 
-        struct _env
-        {
-        };
 
-        _env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -2266,11 +2261,7 @@ struct _or_sender
                 return {};
         }
 
-        struct _env
-        {
-        };
-
-        _env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -2325,11 +2316,7 @@ struct _as_variant
                 return {};
         }
 
-        struct _env
-        {
-        };
-
-        _env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -2414,14 +2401,11 @@ struct _err_to_val
                 return {};
         }
 
-        struct _env
-        {
-        };
-
-        _env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
+
 
         template < typename R >
         struct _recv : R
@@ -2500,11 +2484,7 @@ struct _sink_err
                 return {};
         }
 
-        struct _env
-        {
-        };
-
-        _env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -2625,11 +2605,8 @@ struct repeater
                         r->start();
                 }
 
-                struct _env
-                {
-                };
 
-                _env get_env() const noexcept
+                [[nodiscard]] empty_env get_env() const noexcept
                 {
                         return {};
                 }
@@ -2653,11 +2630,8 @@ struct _await_until_stopped
 
         using completion_signatures = ecor::completion_signatures< set_value_t() >;
 
-        struct _env
-        {
-        };
 
-        _env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
@@ -2762,7 +2736,7 @@ struct transaction_op : transaction_entry< T >, R
                 _pending.link_front( *this );
         }
 
-        bool get_stopped() const noexcept
+        [[nodiscard]] bool get_stopped() const noexcept
         {
                 if constexpr ( _has_stop_sig ) {
                         bool res = get_stop_token( get_env( (R&) *this ) ).stop_requested();
@@ -2787,7 +2761,7 @@ struct transaction_sender
                 return val.get_completion_signatures( (Env&&) e );
         }
 
-        empty_env get_env() const noexcept
+        [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
