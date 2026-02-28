@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <concepts>
 #include <coroutine>
 #include <cstddef>
@@ -30,6 +31,33 @@
 
 namespace ecor
 {
+
+template < typename T >
+struct _tag
+{
+};
+
+template < typename T, typename... Ts >
+struct _contains_type;
+
+template < typename T, typename U, typename... Ts >
+        requires( std::same_as< T, U > )
+struct _contains_type< T, U, Ts... >
+{
+        static constexpr bool value = true;
+};
+
+template < typename T, typename U, typename... Ts >
+        requires( !std::same_as< T, U > )
+struct _contains_type< T, U, Ts... > : _contains_type< T, Ts... >
+{
+};
+
+template < typename T >
+struct _contains_type< T >
+{
+        static constexpr bool value = false;
+};
 
 struct sender_t
 {
@@ -545,6 +573,9 @@ struct set_error_t
 struct set_stopped_t
 {
 };
+struct _get_stopped_t
+{
+};
 
 template < typename T >
 struct _is_signature : std::false_type
@@ -563,17 +594,21 @@ template <>
 struct _is_signature< set_stopped_t() > : std::true_type
 {
 };
+template <>
+struct _is_signature< _get_stopped_t() > : std::true_type
+{
+};
 
 template < typename T >
 concept signature = _is_signature< T >::value;
 
-template < signature S >
-struct _sig_vtable_row;
-
-template < typename T >
-struct _tag
+template < typename... S >
+struct completion_signatures
 {
 };
+
+template < signature S >
+struct _sig_vtable_row;
 
 template < typename... Args >
 struct _sig_vtable_row< set_value_t( Args... ) >
@@ -582,10 +617,10 @@ struct _sig_vtable_row< set_value_t( Args... ) >
         using f_t = void ( * )( void*, Args... );
         f_t _set_value;
 
-        template < typename T >
-        constexpr _sig_vtable_row( _tag< T > ) noexcept
+        template < typename D, typename B >
+        constexpr _sig_vtable_row( _tag< D >, _tag< B > ) noexcept
           : _set_value{ +[]( void* self, Args... args ) {
-                  static_cast< T* >( self )->set_value( (Args&&) args... );
+                  static_cast< D* >( static_cast< B* >( self ) )->set_value( (Args&&) args... );
           } }
         {
         }
@@ -602,10 +637,10 @@ struct _sig_vtable_row< set_error_t( Args... ) >
         using f_t = void ( * )( void*, Args... );
         f_t _set_error;
 
-        template < typename T >
-        constexpr _sig_vtable_row( _tag< T > ) noexcept
+        template < typename D, typename B >
+        constexpr _sig_vtable_row( _tag< D >, _tag< B > ) noexcept
           : _set_error{ +[]( void* self, Args... args ) {
-                  static_cast< T* >( self )->set_error( (Args&&) args... );
+                  static_cast< D* >( static_cast< B* >( self ) )->set_error( (Args&&) args... );
           } }
         {
         }
@@ -622,10 +657,10 @@ struct _sig_vtable_row< set_stopped_t() >
         using f_t = void ( * )( void* );
         f_t _set_stopped;
 
-        template < typename T >
-        constexpr _sig_vtable_row( _tag< T > ) noexcept
+        template < typename D, typename B >
+        constexpr _sig_vtable_row( _tag< D >, _tag< B > ) noexcept
           : _set_stopped{ +[]( void* self ) {
-                  static_cast< T* >( self )->set_stopped();
+                  static_cast< D* >( static_cast< B* >( self ) )->set_stopped();
           } }
         {
         }
@@ -636,20 +671,40 @@ struct _sig_vtable_row< set_stopped_t() >
         }
 };
 
+template <>
+struct _sig_vtable_row< _get_stopped_t() >
+{
+        using f_t = bool ( * )( void* );
+        f_t _get_stopped;
+
+        template < typename D, typename B >
+        constexpr _sig_vtable_row( _tag< D >, _tag< B > ) noexcept
+          : _get_stopped{ +[]( void* self ) {
+                  return static_cast< D* >( static_cast< B* >( self ) )->get_stopped();
+          } }
+        {
+        }
+
+        bool set( _get_stopped_t, void* self ) const
+        {
+                return _get_stopped( self );
+        }
+};
+
 template < signature... S >
 struct _sig_vtable : _sig_vtable_row< S >...
 {
-        template < typename T >
-        constexpr _sig_vtable( _tag< T > t ) noexcept
-          : _sig_vtable_row< S >( t )...
+        template < typename D, typename B >
+        constexpr _sig_vtable( _tag< D > dt, _tag< B > bt ) noexcept
+          : _sig_vtable_row< S >( dt, bt )...
         {
         }
 
         using _sig_vtable_row< S >::set...;
 };
 
-template < typename R, typename VTable >
-static constexpr VTable _vtable_of = { _tag< R >{} };
+template < typename D, typename B, typename VTable >
+static constexpr VTable _vtable_of = { _tag< D >{}, _tag< B >{} };
 
 template < typename VTable, typename... Args >
 concept vtable_can_call_value = requires( VTable v, void* self, Args&&... args ) {
@@ -664,9 +719,41 @@ template < typename VTable >
 concept vtable_can_call_stopped =
     requires( VTable v, void* self ) { ( v.set( set_stopped_t{}, self ) ); };
 
-template < typename... S >
-struct completion_signatures
+template < signature... S >
+struct _vtable_mixin
 {
+        using _vtable = _sig_vtable< S... >;
+
+        template < typename D >
+        _vtable_mixin( _tag< D > ) noexcept
+          : vtable( _vtable_of< D, _vtable_mixin< S... >, _vtable > )
+        {
+        }
+
+        template < typename... Args >
+        void _set_value( Args... args )
+        {
+                vtable.set( set_value_t{}, this, (Args&&) args... );
+        }
+
+        template < typename... Args >
+        void _set_error( Args... args )
+        {
+                vtable.set( set_error_t{}, this, (Args&&) args... );
+        }
+
+        void _set_stopped()
+        {
+                vtable.set( set_stopped_t{}, this );
+        }
+
+        bool _get_stopped() noexcept
+        {
+                return vtable.set( _get_stopped_t{}, this );
+        }
+
+private:
+        _vtable const& vtable;
 };
 
 template < typename Sigs >
@@ -677,6 +764,7 @@ struct _vtable_of_sigs< completion_signatures< S... > >
 {
         using type = _sig_vtable< S... >;
 };
+
 
 template < typename TL, typename Tag, typename Sigs, template < class... > class Tuple >
 struct _filter_map_tag;
@@ -760,32 +848,6 @@ using _filter_stopped_of_t = typename _filter_map_tag<
     Sigs,
     _tag_identity_t< set_stopped_t >::type >::type;
 
-template < typename S, typename Env >
-using _sender_completions_t =
-    decltype( std::declval< S >().get_completion_signatures( std::declval< Env >() ) );
-
-template < typename T, typename... Ts >
-struct _contains_type;
-
-template < typename T, typename U, typename... Ts >
-        requires( std::same_as< T, U > )
-struct _contains_type< T, U, Ts... >
-{
-        static constexpr bool value = true;
-};
-
-template < typename T, typename U, typename... Ts >
-        requires( !std::same_as< T, U > )
-struct _contains_type< T, U, Ts... > : _contains_type< T, Ts... >
-{
-};
-
-template < typename T >
-struct _contains_type< T >
-{
-        static constexpr bool value = false;
-};
-
 template < typename T, typename U >
 struct _sigs_contains_type;
 
@@ -793,6 +855,9 @@ template < typename T, typename... Ts >
 struct _sigs_contains_type< T, completion_signatures< Ts... > > : _contains_type< T, Ts... >
 {
 };
+
+template < typename U >
+concept _sigs_contains_set_stopped = _sigs_contains_type< set_stopped_t(), U >::value;
 
 template < typename Sigs1, typename Sigs2 >
 struct _check_compatible_sigs;
@@ -1045,31 +1110,33 @@ struct get_stop_token_t
 };
 inline constexpr get_stop_token_t get_stop_token{};
 
-template < signature... S >
-struct event_entry : zll::ll_base< event_entry< S... > >
+struct get_completion_signatures_t
 {
-        _sig_vtable< S... > const& vtable;
-
-        event_entry( _sig_vtable< S... > const& vtable ) noexcept
-          : vtable( vtable )
+        template < typename S, typename E >
+        decltype( auto ) operator()( S& s, E& e ) const noexcept
         {
+                static constexpr bool has_member = requires( S& s, E& e ) {
+                        { s.get_completion_signatures( e ) };
+                };
+                if constexpr ( has_member )
+                        return s.get_completion_signatures( e );
+                else
+                        return typename S::completion_signatures{};
         }
+};
+inline constexpr get_completion_signatures_t get_completion_signatures{};
 
-        template < typename... Args >
-        void _set_value( Args... args )
-        {
-                vtable.set( set_value_t{}, this, (Args&&) args... );
-        }
+template < typename S, typename Env >
+using _sender_completions_t =
+    decltype( get_completion_signatures( std::declval< S& >(), std::declval< Env& >() ) );
 
-        template < typename... Args >
-        void _set_error( Args... args )
+template < signature... S >
+struct event_entry : _vtable_mixin< S... >, zll::ll_base< event_entry< S... > >
+{
+        template < typename D >
+        event_entry( _tag< D > ) noexcept
+          : _vtable_mixin< S... >( _tag< D >{} )
         {
-                vtable.set( set_error_t{}, this, (Args&&) args... );
-        }
-
-        void _set_stopped()
-        {
-                vtable.set( set_stopped_t{}, this );
         }
 };
 
@@ -1079,7 +1146,7 @@ struct _list_op : event_entry< S... >, R
         using operation_state_concept = operation_state_t;
 
         _list_op( auto& list, R receiver )
-          : event_entry< S... >( _vtable_of< _list_op, _sig_vtable< S... > > )
+          : event_entry< S... >( _tag< _list_op >{} )
           , R( std::move( receiver ) )
           , _list( list )
         {
@@ -1095,34 +1162,15 @@ private:
 };
 
 template < typename K, signature... S >
-struct kval_entry : zll::sh_base< kval_entry< K, S... > >
+struct kval_entry : _vtable_mixin< S... >, zll::sh_base< kval_entry< K, S... > >
 {
-
-        _sig_vtable< S... > const& vtable;
-
         K key;
 
-        kval_entry( K k, _sig_vtable< S... > const& vtable )
-          : key( std::move( k ) )
-          , vtable( vtable )
+        template < typename D >
+        kval_entry( K k, _tag< D > )
+          : _vtable_mixin< S... >{ _tag< D >{} }
+          , key( std::move( k ) )
         {
-        }
-
-        template < typename... Args >
-        void _set_value( Args... args )
-        {
-                vtable._set_value( this, (Args&&) args... );
-        }
-
-        template < typename... Args >
-        void _set_error( Args... args )
-        {
-                vtable._set_error( this, (Args&&) args... );
-        }
-
-        void _set_stopped()
-        {
-                vtable._set_stopped( this );
         }
 
         constexpr bool operator<( kval_entry const& o ) const
@@ -1138,7 +1186,7 @@ struct _heap_op : kval_entry< K, S... >, R
         using operation_state_concept = operation_state_t;
 
         _heap_op( auto& heap, K key, R receiver )
-          : kval_entry< K, S... >( key, _vtable_of< _heap_op, _sig_vtable< S... > > )
+          : kval_entry< K, S... >( key, _tag< _heap_op >{} )
           , R( std::move( receiver ) )
           , _heap( heap )
         {
@@ -1163,14 +1211,7 @@ struct _ll_sender
         {
         }
 
-        template < typename Env >
-        using _completions = completion_signatures< S... >;
-
-        template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& )
-        {
-                return {};
-        }
+        using completion_signatures = ecor::completion_signatures< S... >;
 
         empty_env get_env() const noexcept
         {
@@ -1198,13 +1239,7 @@ struct _sh_sender
         {
         }
 
-        using _completions = completion_signatures< S... >;
-
-        template < typename Env >
-        _completions get_completion_signatures( Env&& )
-        {
-                return {};
-        }
+        using completion_signatures = ecor::completion_signatures< S... >;
 
         empty_env get_env() const noexcept
         {
@@ -1436,14 +1471,7 @@ struct _just_error
                 return _op{ std::move( err ), std::move( receiver ) };
         }
 
-        template < typename Env >
-        using _completions = completion_signatures< set_error_t( T ) >;
-
-        template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& )
-        {
-                return {};
-        }
+        using completion_signatures = ecor::completion_signatures< set_error_t( T ) >;
 
         empty_env get_env() const noexcept
         {
@@ -1790,12 +1818,12 @@ struct _task_finish_guard
         template < typename U >
         void setup_continuable( U& p )
         {
-                this->_recv = &_vtable_of< U, vtable >;
+                this->_recv = &_vtable_of< U, U, vtable >;
                 this->_obj  = static_cast< void* >( &p );
         }
 
 protected:
-        using sigs          = typename Task::_completions;
+        using sigs          = typename Task::completion_signatures;
         using vtable        = typename _vtable_of_sigs< sigs >::type;
         vtable const* _recv = nullptr;
         void*         _obj  = nullptr;
@@ -2064,12 +2092,12 @@ struct task
 
         // XXX: append?
         using _error_completions = _type_merge_t<
-            completion_signatures< set_error_t( task_error ) >,
+            ecor::completion_signatures< set_error_t( task_error ) >,
             typename CFG::extra_error_signatures >;
 
         // XXX: convert to simple concat instead of merge
-        using _completions = _type_merge_t<
-            completion_signatures< _value_setter_t< T >, set_stopped_t() >,
+        using completion_signatures = _type_merge_t<
+            ecor::completion_signatures< _value_setter_t< T >, set_stopped_t() >,
             _error_completions >;
         static_assert(
             alignof( promise_type ) <= alignof( std::max_align_t ),
@@ -2098,12 +2126,6 @@ struct task
                         std::swap( _h, tmp._h );
                 }
                 return *this;
-        }
-
-        template < typename Env >
-        _completions get_completion_signatures( Env&& ) const noexcept
-        {
-                return {};
         }
 
         struct _env
@@ -2607,14 +2629,7 @@ struct _await_until_stopped
         using sender_concept = sender_t;
 
 
-        template < typename Env >
-        using _completions = completion_signatures< set_value_t() >;
-
-        template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& )
-        {
-                return {};
-        }
+        using completion_signatures = ecor::completion_signatures< set_value_t() >;
 
         struct _env
         {
@@ -2669,52 +2684,52 @@ struct _await_until_stopped
 static inline _await_until_stopped wait_until_stopped;
 
 template < typename T >
-struct transaction_entry : zll::ll_base< transaction_entry< T > >
+struct _transaction_vtable_mixin;
+
+template < signature... S >
+        requires( !_contains_type< set_stopped_t(), S... >::value )
+struct _transaction_vtable_mixin< completion_signatures< S... > >
 {
-        // XXX: the empty env is needed because entry has to be aware of the vtable but it does
-        //      not know the env :/
-        //      note: this kinda makes sense, as we can't have the API to be vaired based on
-        //      specific R as multiple of those will be used/present
-        using _vtable = _vtable_of_sigs< _sender_completions_t< T, empty_env > >::type;
+        using type = _vtable_mixin< S... >;
+};
 
-        T    data;
-        bool stoppable = true;
+template < signature... S >
+        requires( _contains_type< set_stopped_t(), S... >::value )
+struct _transaction_vtable_mixin< completion_signatures< S... > >
+{
+        using type = _vtable_mixin< S..., _get_stopped_t() >;
+};
 
-        transaction_entry( _vtable const& vt, T data )
-          : data( std::move( data ) )
-          , _vt( vt )
+template < typename T >
+using _transaction_vtable_mixin_t =
+    typename _transaction_vtable_mixin< _sender_completions_t< T, empty_env > >::type;
+
+template < typename T >
+struct transaction_entry : _transaction_vtable_mixin_t< T >, zll::ll_base< transaction_entry< T > >
+{
+        using base    = _transaction_vtable_mixin_t< T >;
+        using _vtable = typename base::_vtable;
+        static constexpr bool _has_stop_sig =
+            _sigs_contains_set_stopped< _sender_completions_t< T, empty_env > >;
+
+        T data;
+
+        template < typename D >
+        transaction_entry( _tag< D >, T data )
+          : base( _tag< D >{} )
+          , data( std::move( data ) )
         {
         }
-
-        // XXX: meybe deduplicate from event_entry?
-        template < typename... Args >
-        void _set_value( Args... args )
-        {
-                _vt.set( set_value_t{}, this, (Args&&) args... );
-        }
-
-        template < typename... Args >
-        void _set_error( Args... args )
-        {
-                _vt.set( set_error_t{}, this, (Args&&) args... );
-        }
-
-        void _set_stopped()
-        {
-                _vt.set( set_stopped_t{}, this );
-        }
-
-private:
-        _vtable const& _vt;
 };
 
 template < typename T, typename R >
 struct transaction_op : transaction_entry< T >, R
 {
-        using _vtable = transaction_entry< T >::_vtable;
+        using _vtable                       = transaction_entry< T >::_vtable;
+        static constexpr bool _has_stop_sig = transaction_entry< T >::_has_stop_sig;
 
         transaction_op( T data, R r, zll::ll_list< transaction_entry< T > >& pending )
-          : transaction_entry< T >{ _vtable_of< transaction_op, _vtable >, std::move( data ) }
+          : transaction_entry< T >{ _tag< transaction_op >{}, std::move( data ) }
           , R( std::move( r ) )
           , _pending( pending )
         {
@@ -2723,6 +2738,15 @@ struct transaction_op : transaction_entry< T >, R
         void start()
         {
                 _pending.link_front( *this );
+        }
+
+        bool get_stopped() const noexcept
+        {
+                if constexpr ( _has_stop_sig ) {
+                        bool res = get_stop_token( get_env( (R&) *this ) ).stop_requested();
+                        return res;
+                } else
+                        return false;
         }
 
 private:
@@ -2736,7 +2760,7 @@ struct transaction_sender
         using sender_concept = sender_t;
 
         template < typename Env >
-        auto get_completion_signatures( Env&& e )
+        constexpr auto get_completion_signatures( Env&& e ) noexcept
         {
                 return val.get_completion_signatures( (Env&&) e );
         }
@@ -2757,7 +2781,7 @@ struct transaction_sender
 };
 
 template < typename T, size_t N >
-struct circ_buff
+struct transaction_circular_buffer
 {
         static_assert( ( N & ( N - 1 ) ) == 0, "Size of circular buffer must be a power of 2" );
         static_assert(
@@ -2775,10 +2799,15 @@ struct circ_buff
                 return ( last - first ) == N;
         }
 
-        uint16_t first = 0;
-        uint16_t mid1  = 0;
-        uint16_t mid2  = 0;
-        uint16_t last  = 0;
+        bool empty()
+        {
+                return first == last;
+        }
+
+        std::atomic< uint16_t > first = 0;
+        std::atomic< uint16_t > mid1  = 0;
+        std::atomic< uint16_t > mid2  = 0;
+        std::atomic< uint16_t > last  = 0;
 
 private:
         T _data[N];
@@ -2790,7 +2819,7 @@ private:
 
 /// Expected behavior:
 ///  - Used for request-reply protocols, that allow multiple in-flight transactions, but the order
-///  of replies is not guaranteed.
+///  of replies is guaranteed.
 ///  - Transaction is user-defined type T
 ///  - User can specify signatures S... that the transaction can complete with, and provide handlers
 ///  for those signatures when scheduling a transaction.
@@ -2800,19 +2829,33 @@ private:
 template < typename T >
 struct transaction_source
 {
-        using sender_type = transaction_sender< T >;
+        using sender_type                   = transaction_sender< T >;
+        static constexpr bool _has_stop_sig = transaction_entry< T >::_has_stop_sig;
 
         sender_type schedule( T val )
         {
-                return { std::move( val ), pending_tx };
+                return { std::move( val ), _pending_tx };
         }
 
-        void tick()
+        transaction_entry< T >* query_next_transaction()
         {
+                // XXX: test the stop behavior
+                if constexpr ( _has_stop_sig ) {
+                        _pending_tx.remove_if( [this]( transaction_entry< T >& tx ) {
+                                if ( !tx._get_stopped() )
+                                        return false;
+
+                                tx._set_stopped();
+                                return true;
+                        } );
+                }
+                if ( _pending_tx.empty() )
+                        return nullptr;
+                return &_pending_tx.take_back();
         }
 
-        zll::ll_list< transaction_entry< T > > pending_rx;
-        zll::ll_list< transaction_entry< T > > pending_tx;
+private:
+        zll::ll_list< transaction_entry< T > > _pending_tx;
 };
 
 }  // namespace ecor
