@@ -51,6 +51,96 @@ struct err
 {
 };
 
+TEST_CASE( "unique_span - basic operations" )
+{
+        int deleted_count = 0;
+        struct track_deleter
+        {
+                int* count_ptr;
+                void operator()( int* p ) noexcept
+                {
+                        if ( p ) {
+                                delete[] p;
+                                ( *count_ptr )++;
+                        }
+                }
+        };
+
+        SUBCASE( "construct and delete" )
+        {
+                int* buf = new int[5]{ 1, 2, 3, 4, 5 };
+                {
+                        unique_span< int, std::dynamic_extent, track_deleter > sp(
+                            buf, 5, track_deleter{ &deleted_count } );
+                        CHECK( sp.size() == 5 );
+                        CHECK( sp[0] == 1 );
+                        CHECK( sp[4] == 5 );
+                }
+                CHECK( deleted_count == 1 );
+        }
+
+        SUBCASE( "move construct" )
+        {
+                int* buf = new int[3]{ 10, 20, 30 };
+                {
+                        unique_span< int, std::dynamic_extent, track_deleter > sp1(
+                            buf, 3, track_deleter{ &deleted_count } );
+                        unique_span< int, std::dynamic_extent, track_deleter > sp2(
+                            std::move( sp1 ) );
+
+                        CHECK( sp1.data() == nullptr );
+                        CHECK( sp1.size() == 0 );
+
+                        CHECK( sp2.size() == 3 );
+                        CHECK( sp2[1] == 20 );
+                }
+                CHECK( deleted_count == 1 );
+        }
+
+        SUBCASE( "move assign" )
+        {
+                int* buf1 = new int[2]{ 1, 2 };
+                int* buf2 = new int[2]{ 3, 4 };
+                {
+                        unique_span< int, std::dynamic_extent, track_deleter > sp1(
+                            buf1, 2, track_deleter{ &deleted_count } );
+                        unique_span< int, std::dynamic_extent, track_deleter > sp2(
+                            buf2, 2, track_deleter{ &deleted_count } );
+
+                        sp2 = std::move( sp1 );
+
+                        // buf2 should be deleted here due to assignment
+                        CHECK( deleted_count == 1 );
+
+                        CHECK( sp1.data() == nullptr );
+                        CHECK( sp1.size() == 0 );
+
+                        CHECK( sp2.size() == 2 );
+                        CHECK( sp2[0] == 1 );
+                }
+                // buf1 deleted here on scope exit
+                CHECK( deleted_count == 2 );
+        }
+
+        SUBCASE( "release" )
+        {
+                int*             buf = new int[2]{ 42, 84 };
+                std::span< int > leaked_span;
+                {
+                        unique_span< int, std::dynamic_extent, track_deleter > sp1(
+                            buf, 2, track_deleter{ &deleted_count } );
+                        leaked_span = sp1.release();
+
+                        CHECK( sp1.data() == nullptr );
+                        CHECK( sp1.size() == 0 );
+                        CHECK( leaked_span.size() == 2 );
+                        CHECK( leaked_span[0] == 42 );
+                }
+                CHECK( deleted_count == 0 );
+                delete[] leaked_span.data();  // manual cleanup
+        }
+}
+
 static void test_simple_broadcast_source( task_ctx& ctx, auto& es, auto& val )
 {
         int value = 42;
@@ -532,9 +622,8 @@ TEST_CASE( "circular_buffer_memory" )
         alignas( std::max_align_t ) uint8_t buffer_storage[1024];
 
         std::span< uint8_t, 1024 > const buffer_span{ buffer_storage };
-        using it = _index_type< 1024 >;
+        using it = smallest_index_type< 1024 >;
         circular_buffer_memory< it, noop_base > mem{ buffer_span };
-        using node = typename decltype( mem )::node;
 
         // Test 1: Basic single allocation
         void* p1 = mem.allocate( 32, 8 );
@@ -570,9 +659,9 @@ TEST_CASE( "circular_buffer_memory" )
 
 TEST_CASE( "circular_buffer_memory_alignment" )
 {
-        std::array< uint8_t, 512 >                              buffer_storage;
-        std::span< uint8_t, 512 > const                         buffer_span{ buffer_storage };
-        circular_buffer_memory< _index_type< 512 >, noop_base > mem{ buffer_span };
+        std::array< uint8_t, 512 >      buffer_storage;
+        std::span< uint8_t, 512 > const buffer_span{ buffer_storage };
+        circular_buffer_memory< smallest_index_type< 512 >, noop_base > mem{ buffer_span };
 
         // Test various alignment requirements
         std::vector< std::pair< void*, std::size_t > > ptrs;
@@ -593,9 +682,9 @@ TEST_CASE( "circular_buffer_memory_alignment" )
 
 TEST_CASE( "circular_buffer_memory_wraparound" )
 {
-        std::array< uint8_t, 256 >                              buffer_storage;
-        std::span< uint8_t, 256 > const                         buffer_span{ buffer_storage };
-        circular_buffer_memory< _index_type< 256 >, noop_base > mem{ buffer_span };
+        std::array< uint8_t, 256 >      buffer_storage;
+        std::span< uint8_t, 256 > const buffer_span{ buffer_storage };
+        circular_buffer_memory< smallest_index_type< 256 >, noop_base > mem{ buffer_span };
 
         std::vector< void* > pointers;
 
@@ -625,9 +714,9 @@ TEST_CASE( "circular_buffer_memory_wraparound" )
 
 TEST_CASE( "circular_buffer_memory_fragmentation" )
 {
-        std::array< uint8_t, 512 >                              buffer_storage;
-        std::span< uint8_t, 512 >                               buffer_span{ buffer_storage };
-        circular_buffer_memory< _index_type< 512 >, noop_base > mem{ buffer_span };
+        std::array< uint8_t, 512 > buffer_storage;
+        std::span< uint8_t, 512 >  buffer_span{ buffer_storage };
+        circular_buffer_memory< smallest_index_type< 512 >, noop_base > mem{ buffer_span };
 
         // Create fragmentation by allocating and deallocating alternating blocks
         std::vector< void* > keep_ptrs;
@@ -661,9 +750,9 @@ TEST_CASE( "circular_buffer_memory_fragmentation" )
 
 TEST_CASE( "circular_buffer_memory_edge_cases" )
 {
-        std::array< uint8_t, 258 >                              buffer_storage;
-        std::span< uint8_t, 258 >                               buffer_span{ buffer_storage };
-        circular_buffer_memory< _index_type< 258 >, noop_base > mem{ buffer_span };
+        std::array< uint8_t, 258 > buffer_storage;
+        std::span< uint8_t, 258 >  buffer_span{ buffer_storage };
+        circular_buffer_memory< smallest_index_type< 258 >, noop_base > mem{ buffer_span };
 
         // Test 1: Zero-size allocation
         void* zero_ptr = mem.allocate( 0, 1 );
@@ -698,9 +787,9 @@ TEST_CASE( "circular_buffer_memory_edge_cases" )
 
 TEST_CASE( "circular_buffer_memory_double_deallocation" )
 {
-        std::array< uint8_t, 256 >                              buffer_storage;
-        std::span< uint8_t, 256 >                               buffer_span{ buffer_storage };
-        circular_buffer_memory< _index_type< 256 >, noop_base > mem{ buffer_span };
+        std::array< uint8_t, 256 > buffer_storage;
+        std::span< uint8_t, 256 >  buffer_span{ buffer_storage };
+        circular_buffer_memory< smallest_index_type< 256 >, noop_base > mem{ buffer_span };
 
         void* p = mem.allocate( 32, 8 );
         CHECK( p != nullptr );
@@ -720,7 +809,8 @@ TEST_CASE( "circular_buffer_memory_different_sizes" )
         {
                 std::array< uint8_t, 200 > buffer_storage;
                 std::span< uint8_t, 200 >  buffer_span{ buffer_storage };
-                circular_buffer_memory< _index_type< 200 >, noop_base > small_mem{ buffer_span };
+                circular_buffer_memory< smallest_index_type< 200 >, noop_base > small_mem{
+                    buffer_span };
                 static_assert(
                     std::is_same_v< typename decltype( small_mem )::index_type, uint8_t > );
 
@@ -733,7 +823,8 @@ TEST_CASE( "circular_buffer_memory_different_sizes" )
         {
                 std::array< uint8_t, 50000 > buffer_storage;
                 std::span< uint8_t, 50000 >  buffer_span{ buffer_storage };
-                circular_buffer_memory< _index_type< 50000 >, noop_base > med_mem{ buffer_span };
+                circular_buffer_memory< smallest_index_type< 50000 >, noop_base > med_mem{
+                    buffer_span };
                 static_assert(
                     std::is_same_v< typename decltype( med_mem )::index_type, uint16_t > );
 
@@ -745,9 +836,9 @@ TEST_CASE( "circular_buffer_memory_different_sizes" )
 
 TEST_CASE( "circular_buffer_memory_allocation_pattern" )
 {
-        std::array< uint8_t, 1024 >                              buffer_storage;
-        std::span< uint8_t, 1024 >                               buffer_span{ buffer_storage };
-        circular_buffer_memory< _index_type< 1024 >, noop_base > mem{ buffer_span };
+        std::array< uint8_t, 1024 > buffer_storage;
+        std::span< uint8_t, 1024 >  buffer_span{ buffer_storage };
+        circular_buffer_memory< smallest_index_type< 1024 >, noop_base > mem{ buffer_span };
 
         // Test allocation pattern and verify pointers are within buffer bounds
         std::vector< void* > ptrs;
@@ -756,8 +847,8 @@ TEST_CASE( "circular_buffer_memory_allocation_pattern" )
                 void* p = mem.allocate( 10, 2 );
                 if ( p ) {
                         // Verify pointer is within buffer bounds
-                        auto      buf_start = (uintptr_t) mem._buff.data();
-                        uintptr_t buf_end   = buf_start + mem._buff.size();
+                        auto      buf_start = (uintptr_t) buffer_span.data();
+                        uintptr_t buf_end   = buf_start + buffer_span.size();
                         auto      ptr_addr  = (uintptr_t) p;
 
                         CHECK( ptr_addr >= buf_start );
@@ -824,10 +915,10 @@ static ecor::task< void > data_sender_f( task_ctx&, auto& message_source, auto& 
 TEST_CASE( "task_coroutine_with_circular_buffer_memory" )
 {
         // Use circular buffer memory instead of regular allocator
-        std::array< uint8_t, 2048 >                              buffer_storage;
-        std::span< uint8_t, 2048 >                               buffer_span{ buffer_storage };
-        circular_buffer_memory< _index_type< 2048 >, noop_base > mem{ buffer_span };
-        task_ctx                                                 ctx{ mem };
+        std::array< uint8_t, 2048 > buffer_storage;
+        std::span< uint8_t, 2048 >  buffer_span{ buffer_storage };
+        circular_buffer_memory< smallest_index_type< 2048 >, noop_base > mem{ buffer_span };
+        task_ctx                                                         ctx{ mem };
 
         // Create event sources for inter-task communication
         broadcast_source< set_value_t( int ) >         data_source;
@@ -910,10 +1001,10 @@ static ecor::task< void > stress_task(
 TEST_CASE( "task_coroutine_circular_buffer_memory_stress" )
 {
         // Smaller buffer to test memory management under pressure
-        std::array< uint8_t, 2048 >                              buffer_storage;
-        std::span< uint8_t, 2048 >                               buffer_span{ buffer_storage };
-        circular_buffer_memory< _index_type< 2048 >, noop_base > mem{ buffer_span };
-        task_ctx                                                 ctx{ mem };
+        std::array< uint8_t, 2048 > buffer_storage;
+        std::span< uint8_t, 2048 >  buffer_span{ buffer_storage };
+        circular_buffer_memory< smallest_index_type< 2048 >, noop_base > mem{ buffer_span };
+        task_ctx                                                         ctx{ mem };
 
         broadcast_source< set_value_t( int ) > trigger;
         std::vector< int >                     execution_order;
@@ -1109,7 +1200,7 @@ static void sanity_check_buffer(
                 // Calculate where the node header should be
                 using buffer_type = std::remove_reference_t< decltype( buffer ) >;
                 auto* node_ptr    = reinterpret_cast< uint8_t* >( block.ptr ) -
-                                 sizeof( typename buffer_type::node );
+                                 sizeof( typename buffer_type::_node );
                 auto node_idx = node_ptr - buff_span.data();
 
                 INFO( context << ": Block " << block.id << " node header would be out of bounds" );
@@ -1646,11 +1737,11 @@ static ecor::task< void > task_alloc_error_f( task_ctx&, bool& lambda_triggered 
 
 TEST_CASE( "task - allocation error" )
 {
-        std::array< uint8_t, 1 >                   buffer_storage;
-        std::span< uint8_t, 1 >                    buffer_span{ buffer_storage };
-        circular_buffer_memory< _index_type< 1 > > mem{ buffer_span };
-        task_ctx                                   ctx{ mem };
-        bool                                       lambda_triggered = false;
+        std::array< uint8_t, 1 >                           buffer_storage;
+        std::span< uint8_t, 1 >                            buffer_span{ buffer_storage };
+        circular_buffer_memory< smallest_index_type< 1 > > mem{ buffer_span };
+        task_ctx                                           ctx{ mem };
+        bool                                               lambda_triggered = false;
 
 
         task_error err = task_error::none;

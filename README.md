@@ -16,21 +16,6 @@ C++ has `std::execution` (P2300) for async operations, contains part of the impl
 
 `ecor` is a **single-header** implementation of P2300 sender/receiver model with coroutine support, designed specifically for embedded systems. It provides zero-allocation async primitives, custom memory management, and additional abstractions missing from the standard.
 
----
-
-**Contents:**
-- [Quick Start](#quick-start)
-- [Tasks - Coroutine-based Async](#tasks---coroutine-based-async)
-- [Broadcast Source - One-to-Many Events](#broadcast-source---one-to-many-events)
-- [Sequential Source - Ordered Event Processing](#sequential-source---ordered-event-processing)
-- [Stop Tokens - Cancellation](#stop-tokens---cancellation)
-- [Memory Management](#memory-management)
-- [Timer Example - Multiple Tasks Sleeping](#timer-example---multiple-tasks-sleeping)
-- [Sender Combinators](#sender-combinators)
-- [Status](#status)
-
----
-
 ## Quick Start
 
 ```cpp
@@ -167,6 +152,9 @@ ecor::task<void> wait_for_event(
 ## Broadcast Source - One-to-Many Events
 
 `broadcast_source` allows **one producer** to send events to **multiple subscribers**.
+After event is emitted, all waiting tasks receive the event. If no tasks are waiting, the event is dropped. After task receives the event, it must re-register to receive future events.
+
+The template parameter defines the event signature (e.g., `set_value_t(Args...)`), see rest of the documentation for details.
 
 ```cpp
 #include <ecor/ecor.hpp>
@@ -233,11 +221,33 @@ ecor::task<void> sensor_monitor(ecor::task_ctx& ctx, sensor_events& events)
 }
 ```
 
+### Custom error types
+
+Broadcast sources can also have custom error signatures:
+
+```cpp
+using error_events = ecor::broadcast_source<
+    ecor::set_value_t(int),
+    ecor::set_error_t(std::string)  // Custom error type
+>;
+```
+
+This allows you to send error events to all waiting tasks, which can be useful for broadcasting system-wide errors or status updates. However, this is not compatible with standard configuration of `ecor::task` which expects only `set_error_t(ecor::task_error)` - broadcast source with any extra error can't be directly awaited. You have to use one of the sender combinators to handle this, e.g., `sink_err` to convert errors into optional.
+
+### Stoppable signature
+
+You can also add a stoppable signature to allow waiting tasks to be cancelled:
+
+```cpp
+using stoppable_events = ecor::broadcast_source<
+    ecor::set_value_t(int),
+    ecor::set_stopped_t()  // Stoppable signature
+>;
+```
+
 ## FIFO Source - Point-to-Point Events
 
-While `broadcast_source` delivers events to all waiting tasks, `fifo_source` delivers **each event to exactly one waiting task** (the one that has been waiting the longest). Note that like `broadcast_source`, `fifo_source` queues *waiters*, not *values*. If no tasks are waiting when an event is emitted, the event is immediately dropped.
-
-This pattern is highly useful for load-balancing work across multiple worker tasks where each job or signal should only be processed once by the first available worker.
+While `broadcast_source` delivers events to all waiting tasks, `fifo_source` delivers **each event to exactly one waiting task** (the one that has been waiting the longest). If no tasks are waiting when an event is emitted, the event is immediately dropped.
 
 ```cpp
 #include <ecor/ecor.hpp>
@@ -269,6 +279,13 @@ ecor::task<void> producer_task(ecor::task_ctx& ctx, job_queue& q)
 ## Sequential Source - Ordered Event Processing
 
 `seq_source` provides **ordered, keyed event processing**. Events with keys are processed in order of the keys.
+
+```cpp
+using seq_source = ecor::seq_source<
+    uint64_t,  // Key: timestamp or priority
+    ecor::set_value_t(int)  // Value: event payload
+>;
+```
 
 ### Timer Implementation Example
 
@@ -531,6 +548,8 @@ ecor provides P2300-style sender combinators for composing async operations.
 
 ### or - Race Multiple Senders
 
+Passess calls to the first sender that completes (value, error, or stopped), other is ignored.
+
 ```cpp
 ecor::task<void> example(ecor::task_ctx& ctx, auto sender1, auto sender2) {
     // Race two async operations
@@ -541,6 +560,8 @@ ecor::task<void> example(ecor::task_ctx& ctx, auto sender1, auto sender2) {
 ```
 
 ### as_variant - Handle Multiple Completions
+
+If a sender has multiple `set_value` signatures, `as_variant` converts them into a single `std::variant` - combining multiple value types into one.
 
 ```cpp
 ecor::task<void> example(ecor::task_ctx& ctx) {
@@ -585,126 +606,21 @@ ecor::task<void> example_sink(ecor::task_ctx& ctx) {
 }
 ```
 
-## Complete Example - Embedded Device
+## Assert customization
 
-Putting it all together:
+By default, ecor uses `assert` for internal checks. You can customize this by defining `ECOR_ASSERT` before including the header:
 
 ```cpp
+#define ECOR_ASSERT(expr) my_custom_assert(expr)
 #include <ecor/ecor.hpp>
-
-// System state shared between ISRs and main loop
-struct system_state {
-    volatile bool button_pressed = false;
-    volatile int button_id = 0;
-    volatile uint64_t current_time_ms = 0;
-};
-
-system_state g_state;
-
-// Button handler task
-ecor::task<void> handle_buttons(
-    ecor::task_ctx& ctx,
-    ecor::broadcast_source<ecor::set_value_t(int)>& button_events)
-{
-    while (true) {
-        int button = co_await button_events.schedule();
-
-        if (button == 1) {
-            turn_on_led();
-        } else {
-            turn_off_led();
-        }
-    }
-}
-
-// Periodic sensor reading task with timer
-ecor::task<void> read_sensors(
-    ecor::task_ctx& ctx,
-    ecor::seq_source<uint64_t, ecor::set_value_t(int)>& timer)
-{
-    while (true) {
-        uint64_t wake_time = g_state.current_time_ms + 1000;
-
-        // Wait for timer event
-        co_await timer.schedule(wake_time);
-
-        int temp = read_temperature();
-        process_temperature(temp);
-    }
-}
-
-// Main system task
-ecor::task<void> system_main(ecor::task_ctx& ctx,
-    ecor::broadcast_source<ecor::set_value_t(int)>& button_events,
-    ecor::seq_source<uint64_t, ecor::set_value_t(int)>& timer)
-{
-    // Start sub-tasks
-    auto button_task = handle_buttons(ctx, button_events);
-    auto sensor_task = read_sensors(ctx, timer);
-
-    // Wait for both (they run concurrently)
-    co_await (std::move(button_task) || std::move(sensor_task));
-}
-
-// Simple receiver for the main task
-struct simple_receiver {
-    using receiver_concept = ecor::receiver_t;
-    void set_value() noexcept {}
-    template<typename E>
-    void set_error(E&&) noexcept {}
-    void set_stopped() noexcept {}
-    auto get_env() const noexcept { return ecor::empty_env{}; }
-};
-
-int my_main() {
-    // Allocate memory for tasks
-    alignas(std::max_align_t) uint8_t buffer[16384];
-    ecor::circular_buffer_memory<uint16_t> mem{std::span{buffer}};
-    ecor::task_ctx ctx{mem};
-
-    // Create event sources
-    ecor::broadcast_source<ecor::set_value_t(int)> button_events;
-    ecor::seq_source<uint64_t, ecor::set_value_t(int)> timer;
-
-    // Create and connect main task
-    auto main_sender = system_main(ctx, button_events, timer);
-    auto op = std::move(main_sender).connect(simple_receiver{});
-    op.start();
-
-    // Main event loop
-    while (true) {
-        // Process button events from ISR
-        if (g_state.button_pressed) {
-            g_state.button_pressed = false;
-            button_events.set_value(g_state.button_id);
-        }
-
-        // Process timer events - fire all due timers
-        while (!timer.empty() && timer.front().key <= g_state.current_time_ms) {
-            timer.set_value(0);  // Fire timer with ID 0
-        }
-
-        // Run tasks until no more work
-        while (ctx.core.run_once()) { }
-
-        // Sleep or wait for interrupt
-        __WFI();  // Wait for interrupt (ARM Cortex-M)
-    }
-
-    return 0;
-}
-
-// Hardware interrupt handlers - set flags, don't call sources directly
-extern "C" void button_isr() {
-    g_state.button_pressed = true;
-    g_state.button_id = read_button_id();
-}
-
-extern "C" void systick_isr() {
-    g_state.current_time_ms++;
-}
 ```
 
+Or use default `assert` by defining `ECOR_USE_DEFAULT_ASSERT`:
+
+```cpp
+#define ECOR_USE_DEFAULT_ASSERT
+#include <ecor/ecor.hpp>
+```
 
 ## Credits
 

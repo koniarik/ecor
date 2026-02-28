@@ -23,10 +23,35 @@
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 /// SOFTWARE.
 
+#include "ecor/ecor.hpp"
+
 #include <cstdint>
 
 namespace ecor
 {
+
+struct _dummy_receiver
+{
+        using receiver_concept = receiver_t;
+
+        template < typename... Args >
+        void set_value( Args&&... ) noexcept
+        {
+        }
+        template < typename Err >
+        void set_error( Err&& ) noexcept
+        {
+        }
+
+        void set_stopped() noexcept
+        {
+        }
+
+        [[nodiscard]] empty_env get_env() const noexcept
+        {
+                return {};
+        }
+};
 
 struct nd_mem
 {

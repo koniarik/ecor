@@ -40,6 +40,7 @@
 #include <zll.hpp>
 
 #ifdef ECOR_DEFAULT_ASSERT
+
 #include <cassert>
 #define ECOR_ASSERT( expr ) assert( expr )
 
@@ -81,81 +82,35 @@ struct _contains_type< T >
         static constexpr bool value = false;
 };
 
+/// Sender concept tag, used for marking types as senders.
 struct sender_t
 {
 };
 
+/// Receiver concept tag, used for marking types as receivers.
 struct receiver_t
 {
 };
 
+/// Operation state concept tag, used for marking types as operation states.
 struct operation_state_t
 {
 };
 
+/// Standard empty environment.
 struct empty_env
 {
 };
 
-
-struct _allocate_t
+/// Empty base class for base-class customization point.
+struct noop_base
 {
-        template < typename T >
-                requires( requires( T x ) { x.allocate( std::size_t{}, std::size_t{} ); } )
-        void* operator()( T& x, std::size_t bytes, std::size_t align ) const
-            noexcept( noexcept( x.allocate( bytes, align ) ) )
-        {
-                return x.allocate( bytes, align );
-        }
 };
-static constexpr _allocate_t allocate{};
 
-
-struct _deallocate_t
-{
-        template < typename T >
-                requires( requires( T x, void* p, std::size_t b, std::size_t a ) {
-                        x.deallocate( p, b, a );
-                } )
-        void operator()( T& x, void* p, std::size_t bytes, std::size_t align ) const
-            noexcept( noexcept( x.deallocate( p, bytes, align ) ) )
-        {
-                x.deallocate( p, bytes, align );
-        }
-};
-static constexpr _deallocate_t deallocate{};
+// ------------------------------------------------------------------------------
 
 template < typename T >
-concept memory_resource = requires( T a, std::size_t bytes, std::size_t align, void* p ) {
-        { allocate( a, bytes, align ) } -> std::same_as< void* >;
-        { deallocate( a, p, bytes, align ) } -> std::same_as< void >;
-};
-
-struct _dummy_receiver
-{
-        using receiver_concept = receiver_t;
-
-        template < typename... Args >
-        void set_value( Args&&... ) noexcept
-        {
-        }
-        template < typename Err >
-        void set_error( Err&& ) noexcept
-        {
-        }
-
-        void set_stopped() noexcept
-        {
-        }
-
-        [[nodiscard]] empty_env get_env() const noexcept
-        {
-                return {};
-        }
-};
-
-template < typename T >
-T _align_idx( uint8_t const* buff, T idx, std::size_t align ) noexcept
+constexpr T _align_idx( uint8_t const* buff, T idx, std::size_t align ) noexcept
 {
         auto* p = buff + idx;
         auto  a = ( (uintptr_t) p ) % align;
@@ -177,9 +132,51 @@ constexpr auto _pick_index_type() noexcept
                 return;
 }
 
+/// Helper to select the smallest unsigned integer type that can index a buffer of size N.
 template < std::size_t N >
-using _index_type = decltype( _pick_index_type< N >() );
+using smallest_index_type = decltype( _pick_index_type< N >() );
 
+
+struct _allocate_t
+{
+        template < typename T >
+                requires( requires( T x ) { x.allocate( std::size_t{}, std::size_t{} ); } )
+        void* operator()( T& x, std::size_t bytes, std::size_t align ) const
+            noexcept( noexcept( x.allocate( bytes, align ) ) )
+        {
+                return x.allocate( bytes, align );
+        }
+};
+/// Allocate CPO for memory resources.
+static constexpr _allocate_t allocate{};
+
+
+struct _deallocate_t
+{
+        template < typename T >
+                requires( requires( T x, void* p, std::size_t b, std::size_t a ) {
+                        x.deallocate( p, b, a );
+                } )
+        void operator()( T& x, void* p, std::size_t bytes, std::size_t align ) const
+            noexcept( noexcept( x.deallocate( p, bytes, align ) ) )
+        {
+                x.deallocate( p, bytes, align );
+        }
+};
+/// Deallocate CPO for memory resources.
+static constexpr _deallocate_t deallocate{};
+
+/// Type is memory resource if it can be used with allocate and deallocate CPOs.
+template < typename T >
+concept memory_resource = requires( T a, std::size_t bytes, std::size_t align, void* p ) {
+        { allocate( a, bytes, align ) } -> std::same_as< void* >;
+        { deallocate( a, p, bytes, align ) } -> std::same_as< void >;
+};
+
+
+/// Unique span with custom deleter, useful for managing memory from custom memory resources.
+/// Combines the semantics of std::unique_ptr and std::span.
+///
 template <
     typename T,
     std::size_t Extent = std::dynamic_extent,
@@ -188,7 +185,11 @@ struct unique_span : std::span< T, Extent >
 {
         using span_type = std::span< T, Extent >;
 
-        unique_span( T* data, std::size_t size, Deleter deleter ) noexcept
+        unique_span() noexcept = default;
+
+        /// Construct a unique_span with given data, size, and deleter.
+        unique_span( T* data, std::size_t size, Deleter deleter = Deleter{} ) noexcept(
+            std::is_nothrow_move_constructible_v< Deleter > )
           : span_type( data, size )
           , _deleter( std::move( deleter ) )
         {
@@ -197,6 +198,7 @@ struct unique_span : std::span< T, Extent >
         unique_span( unique_span const& )            = delete;
         unique_span& operator=( unique_span const& ) = delete;
 
+        /// Move constructor - transfers ownership from other to this unique_span.
         unique_span( unique_span&& other ) noexcept
           : span_type( other.data(), other.size() )
           , _deleter( std::move( other._deleter ) )
@@ -204,6 +206,7 @@ struct unique_span : std::span< T, Extent >
                 *(span_type*) &other = span_type{};
         }
 
+        /// Move assignment operator - transfers ownership from other to this unique_span.
         unique_span& operator=( unique_span&& other ) noexcept
         {
                 if ( this != &other ) {
@@ -216,15 +219,17 @@ struct unique_span : std::span< T, Extent >
                 return *this;
         }
 
+        /// Release ownership of the managed span and return it. After this call, the unique_span is
+        /// empty.
         std::span< T, Extent > release() noexcept
         {
                 T*          data   = this->data();
                 std::size_t size   = this->size();
-                *(span_type*) this = span_type( data, size );
-                _deleter           = Deleter{};
+                *(span_type*) this = span_type{};
                 return span_type( data, size );
         }
 
+        /// Destructor - calls the deleter on the managed span if it is not empty.
         ~unique_span()
         {
                 if ( this->data() )
@@ -235,14 +240,33 @@ private:
         [[no_unique_address]] Deleter _deleter;
 };
 
-struct noop_base
-{
-};
-
+/// Circular buffer memory resource, manages a provided memory block as a circular buffer for
+/// dynamic allocations. Uses an index-based linked list to track allocated blocks.
+///
+/// The buffer is treated as a circular space, and allocations are made by finding a suitable space
+/// after the last allocated block. Deallocations mark blocks as free, and the allocator can reuse
+/// freed space for future allocations. The internal linked list structure allows for efficient
+/// tracking of allocated blocks and free space.
+///
+/// Note that if first block is allocated and is not freed, the buffer is considered full, even if
+/// there is free space between first block and the last block.
+///
+/// The template parameters are:
+/// - `IndexType`: An unsigned integer type used for indexing into the buffer. The maximum
+///   capacity of the buffer is limited by the maximum value of this type. The implementation
+///   provides a helper to automatically select an appropriate index type based on the buffer size.
+/// - `Base`: An optional base class that can be used for customization. This allows the
+///    user to pick an interface used for the memory resource.
+///
 template < typename IndexType, typename Base = noop_base >
 struct circular_buffer_memory : Base
 {
-        std::span< uint8_t > _buff;
+        static_assert(
+            std::is_unsigned< IndexType >::value,
+            "IndexType must be an unsigned integer type" );
+
+        /// Type of the index used for tracking allocations.
+        using index_type = IndexType;
 
         template < std::size_t N >
                 requires( std::numeric_limits< IndexType >::max() >= N )
@@ -271,9 +295,18 @@ struct circular_buffer_memory : Base
                 }
         };
 
+        /// Unique pointer type for objects allocated from this memory resource, with automatic
+        /// deallocation.
         template < typename T >
         using uptr = std::unique_ptr< T, _deleter >;
 
+        /// Allocate and construct an object of type T with given arguments, returning a unique
+        /// pointer that manages the allocated object. The memory for the object is allocated from
+        /// this memory resource, and will be automatically deallocated when the unique pointer is
+        /// destroyed.
+        ///
+        /// Undefined behavior if circular_buffer_memory ends lifetime before the unique pointer.
+        ///
         template < typename T, typename... Args >
         uptr< T > make( Args&&... args )
         {
@@ -284,9 +317,17 @@ struct circular_buffer_memory : Base
                 return { t, _deleter{ this } };
         }
 
+        /// Unique span type for arrays allocated from this memory resource, with automatic
+        /// deallocation.
         template < typename T, std::size_t Extent = std::dynamic_extent >
         using uspan = unique_span< T, Extent, _deleter >;
 
+        /// Allocate and construct an array of type T with given size, returning a unique span that
+        /// manages the allocated array. The memory for the array is allocated from this memory
+        /// resource, and will be automatically deallocated when the unique span is destroyed.
+        ///
+        /// Undefined behavior if circular_buffer_memory ends lifetime before the unique span.
+        ///
         template < typename T >
         uspan< T > make_span( std::size_t n )
         {
@@ -297,6 +338,8 @@ struct circular_buffer_memory : Base
                 return uspan< T >{ pp, n, _deleter{ this } };
         }
 
+        /// Overload for fixed-size arrays, deduces the size from the template parameter. Rest is
+        /// same as for the other make_span.
         template < typename T, std::size_t Extent >
         uspan< T, Extent > make_span()
         {
@@ -305,14 +348,19 @@ struct circular_buffer_memory : Base
                 return sp;
         }
 
-        // Allocate `bytes` with `align`, returns nullptr if no space is available
+        /// Allocate `bytes` with `align`, returns nullptr if no space is available.
+        /// The returned pointer is valid until the memory resource is destroyed or the memory is
+        /// deallocated.
+        ///
+        /// User is expected to call deallocate with the same size and alignment when the memory is
+        /// no longer needed.
         [[nodiscard]] void* allocate( std::size_t bytes, std::size_t align ) noexcept
         {
                 auto* p = _allocate( _buff, bytes, align );
                 return p;
         }
 
-        // Deallocate pointer previously allocated by allocate()
+        /// Deallocate pointer previously allocated by allocate()
         void deallocate( void* p, std::size_t bytes, std::size_t align ) noexcept
         {
                 std::ignore = bytes;
@@ -320,16 +368,20 @@ struct circular_buffer_memory : Base
                 _deallocate( _buff.data(), (uint8_t*) p );
         }
 
+        /// Deallocate pointer previously allocated by allocate(), overload without size and
+        /// alignment. This is provided for convenience.
         void deallocate( void* p ) noexcept
         {
                 _deallocate( _buff.data(), (uint8_t*) p );
         }
 
+        /// Get total capacity of the buffer in bytes.
         [[nodiscard]] std::size_t capacity() const noexcept
         {
                 return _buff.size();
         }
 
+        /// Get total used bytes in the buffer.
         [[nodiscard]] std::size_t used_bytes() const noexcept
         {
                 if ( _first == npos )
@@ -339,22 +391,23 @@ struct circular_buffer_memory : Base
                 return ( _buff.size() - _first ) + _next;
         }
 
-        using index_type = IndexType;
-
+        /// Special value indicating no position.
         static constexpr index_type npos = std::numeric_limits< index_type >::max();
 
-        struct node
+        /// Internal node structure for tracking allocated blocks. Each node represents an allocated
+        /// block and contains indices to the next and previous nodes in the linked list. The actual
+        /// data for the block starts immediately after the node header in the buffer.
+        ///
+        /// Public for testing purposes, but not intended for external use.
+        struct _node
         {
                 index_type next_idx = npos;
                 index_type prev_idx = npos;
         };
 
-        // Index of first node in the list, npos if empty
-        index_type _first = npos;
-        // Index of last node in the list, npos if empty
-        index_type _last = npos;
-        // Index of first free byte after _last, npos if empty
-        index_type _next = npos;
+private:
+        /// XXX: verify that test case scenarion in which we use this as a "stack" exists, it is
+        /// expected to behave well in that case
 
         // Pick index where to allocate `bytes` with `align`, returns npos if no space
         // is available. The returned index points to the node header, the actual data
@@ -369,42 +422,35 @@ struct circular_buffer_memory : Base
                 if ( _last == npos ) {
                         // Empty buffer
                         ECOR_ASSERT( _first == npos && _last == npos );
-                        idx      = _align_idx( buff.data(), sizeof( node ), align );
+                        idx      = _align_idx( buff.data(), sizeof( _node ), align );
                         capacity = buff.size() - idx;
                 } else if ( _first <= _next ) {
                         // Non-overflow state: [ ][x][x][x][ ][ ]
                         {
-                                idx      = _align_idx( buff.data(), _next + sizeof( node ), align );
+                                idx = _align_idx( buff.data(), _next + sizeof( _node ), align );
                                 capacity = buff.size() - idx;
                                 if ( idx < buff.size() && capacity >= (int) bytes )
-                                        return idx - sizeof( node );
+                                        return idx - sizeof( _node );
                         }
                         // Non-overflow state, but overflow triggered: [ ][ ][ ][x][x][x]
                         {
-                                idx      = _align_idx( buff.data(), sizeof( node ), align );
+                                idx      = _align_idx( buff.data(), sizeof( _node ), align );
                                 capacity = idx - _first;
                         }
 
                 } else {  // _first > _next
                           // Overflow state: [x][x][ ][ ][x][x]
-                        idx      = _align_idx( buff.data(), _next + sizeof( node ), align );
+                        idx      = _align_idx( buff.data(), _next + sizeof( _node ), align );
                         capacity = _first - idx;
                 }
                 if ( idx < buff.size() && capacity >= (int) bytes )
-                        return idx - sizeof( node );
+                        return idx - sizeof( _node );
                 return npos;
         }
 
-        node _get_node( uint8_t* buff, index_type idx ) const noexcept
+        void _set_node( uint8_t* buff, index_type idx, _node const& n ) noexcept
         {
-                node n;
-                std::memcpy( &n, buff + idx, sizeof( node ) );
-                return n;
-        }
-
-        void _set_node( uint8_t* buff, index_type idx, node const& n ) noexcept
-        {
-                std::memcpy( buff + idx, &n, sizeof( node ) );
+                std::memcpy( buff + idx, &n, sizeof( _node ) );
         }
 
         void* _allocate( std::span< uint8_t > buff, std::size_t bytes, std::size_t align ) noexcept
@@ -420,21 +466,21 @@ struct circular_buffer_memory : Base
                         nn.next_idx = idx;
                         _set_node( buff.data(), _last, nn );
                 }
-                node const n{
+                _node const n{
                     .next_idx = npos,
                     .prev_idx = _last,
                 };
                 _last = idx;
-                _next = idx + sizeof( node ) + bytes;
+                _next = idx + sizeof( _node ) + bytes;
                 _set_node( buff.data(), idx, n );
-                return p + sizeof( node );
+                return p + sizeof( _node );
         }
 
         void _deallocate( uint8_t* buff, void* p ) noexcept
         {
-                auto*            pp  = (uint8_t*) p - sizeof( node );
+                auto*            pp  = (uint8_t*) p - sizeof( _node );
                 index_type const idx = pp - buff;
-                node const       n   = _get_node( buff, idx );
+                _node const      n   = _get_node( buff, idx );
 
                 if ( _first == idx ) {
                         _first = n.next_idx;
@@ -457,10 +503,44 @@ struct circular_buffer_memory : Base
                 if ( _first == npos && _last == npos )
                         _next = npos;
 
-                _set_node( buff, idx, node{ .next_idx = 0, .prev_idx = 0 } );
+                _set_node( buff, idx, _node{ .next_idx = 0, .prev_idx = 0 } );
         }
+
+public:
+        /// Get the node header for the block at given index. The returned node contains the next
+        /// and previous indices for the linked list. The actual data for the block starts
+        /// immediately after the node header in the buffer. This is provided for testing purposes
+        /// to verify the internal structure of the buffer, but is not intended for external use.
+        _node _get_node( uint8_t* buff, index_type idx ) const noexcept
+        {
+                _node n;
+                std::memcpy( &n, buff + idx, sizeof( _node ) );
+                return n;
+        }
+
+        /// Index of first node in the list, npos if empty. Public for testing purposes, but not
+        /// intended for external use.
+        index_type _first = npos;
+        /// Index of last node in the list, npos if empty. Public for testing purposes, but not
+        /// intended for external use.
+        index_type _last = npos;
+        /// Index of first free byte after _last, npos if empty. Public for testing purposes, but
+        /// not intended for external use.
+        index_type _next = npos;
+
+private:
+        std::span< uint8_t > _buff;
 };
 
+/// Allocator that uses reference to circular_buffer_memory for allocating memory. This can be used
+/// to create standard library containers that use circular_buffer_memory for their allocations.
+///
+/// The template parameters are:
+/// - `T`: The type of objects to allocate.
+/// - `IndexType`: The index type used by the circular_buffer_memory.
+/// - `Base`: The base class used by the circular_buffer_memory, included here for compatibility
+///   with circular_buffer_memory's template parameters.
+///
 template < typename T, typename IndexType, typename Base >
 struct circular_buffer_allocator
 {
@@ -475,18 +555,19 @@ struct circular_buffer_allocator
                 using other = circular_buffer_allocator< U, IndexType, Base >;
         };
 
-private:
-        circular_buffer_memory< IndexType, Base >* _buffer;
-
-public:
+        /// Construct an allocator that uses the given circular_buffer_memory for allocations.
         explicit circular_buffer_allocator(
             circular_buffer_memory< IndexType, Base >& buffer ) noexcept
           : _buffer( &buffer )
         {
         }
 
+        /// Copy constructor, allows copying the allocator. The copied allocator will refer to the
+        /// same circular_buffer_memory.
         circular_buffer_allocator( circular_buffer_allocator const& ) noexcept = default;
 
+        /// Template copy constructor, allows copying from an allocator of a different type. The
+        /// copied allocator will refer to the same circular_buffer_memory.
         template < typename U >
         circular_buffer_allocator(
             circular_buffer_allocator< U, IndexType, Base > const& other ) noexcept
@@ -494,6 +575,13 @@ public:
         {
         }
 
+        /// Allocate memory for n objects of type T, returns pointer to the allocated memory. The
+        /// memory is allocated from the circular_buffer_memory associated with this allocator. The
+        /// returned pointer is valid until the memory resource is destroyed or the memory is
+        /// deallocated.
+        ///
+        /// Throws std::bad_alloc if allocation fails.
+        ///
         T* allocate( std::size_t n )
         {
                 if ( n == 0 )
@@ -508,28 +596,39 @@ public:
                 return static_cast< T* >( ptr );
         }
 
+        /// Deallocate memory previously allocated by allocate(). The pointer must have been
+        /// returned by a previous call to allocate() on this allocator, and the size n must match
+        /// the size used in that call. The memory is deallocated back to the circular_buffer_memory
+        /// associated with this allocator.
         void deallocate( T* ptr, std::size_t n )
         {
                 if ( ptr )
                         _buffer->deallocate( ptr, n * sizeof( T ), alignof( T ) );
         }
 
+        /// Equality comparison operators, allocators are equal if they refer to the same
+        /// circular_buffer_memory.
         bool operator==( circular_buffer_allocator const& other ) const noexcept
         {
                 return _buffer == other._buffer;
         }
 
+        /// Inequality comparison operator, defined in terms of operator==.
         bool operator!=( circular_buffer_allocator const& other ) const noexcept
         {
                 return !( *this == other );
         }
 
+        /// Grant access to other allocator types for copying. This allows allocators of different
+        /// types to access each other's internal buffer pointer when copying.
         template < typename U, typename IdxType, typename Base2 >
         friend struct circular_buffer_allocator;
+
+private:
+        circular_buffer_memory< IndexType, Base >* _buffer;
 };
 
-// XXX: cecursive circual buffer allocator, for when the allocator itself needs to allocate memory
-// from the circular buffer
+// ------------------------------------------------------------------------------
 
 struct get_env_t
 {
@@ -1286,7 +1385,7 @@ struct broadcast_source
         }
 
         template < typename... Args >
-        void set_value( Args... args )
+        void set_value( Args&&... args )
         {
                 static_assert(
                     vtable_can_call_value< _sig_vtable< S... >, Args... >,
@@ -1351,7 +1450,7 @@ struct fifo_source
                     vtable_can_call_value< _sig_vtable< S... >, V... >,
                     "Completion signatures do not contain set_value_t(Args...)" );
                 do_f( [&]( auto& n ) {
-                        n._set_value( value... );
+                        n._set_value( (V&&) value... );
                 } );
         }
 
@@ -1362,7 +1461,7 @@ struct fifo_source
                     vtable_can_call_error< _sig_vtable< S... >, E1 >,
                     "Completion signatures do not contain set_error_t(E1)" );
                 do_f( [&]( auto& n ) {
-                        n._set_error( err );
+                        n._set_error( (E1&&) err );
                 } );
         }
 
@@ -1546,9 +1645,7 @@ private:
 template < typename T >
 struct _expected
 {
-        _expected() noexcept
-        {
-        }
+        _expected() noexcept {};
 
         _awaitable_state_e state = _awaitable_state_e::empty;
         union
@@ -2721,7 +2818,7 @@ struct transaction_entry : _transaction_vtable_mixin_t< T >, zll::ll_base< trans
 template < typename T, typename R >
 struct transaction_op : transaction_entry< T >, R
 {
-        using _vtable                       = transaction_entry< T >::_vtable;
+        using _vtable                       = typename transaction_entry< T >::_vtable;
         static constexpr bool _has_stop_sig = transaction_entry< T >::_has_stop_sig;
 
         transaction_op( T data, R r, zll::ll_list< transaction_entry< T > >& pending )

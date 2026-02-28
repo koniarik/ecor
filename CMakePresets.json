@@ -8,7 +8,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "ECOR_TESTS_ENABLED": "ON"
+        "ECOR_TESTS_ENABLED": "ON",
+        "ECOR_DEFAULT_ASSERT": "ON"
       }
     },
     {
@@ -90,6 +91,23 @@
         },
         {
           "name": "debug",
+          "type": "test"
+        }
+      ]
+    },
+    {
+      "name": "asan",
+      "steps": [
+        {
+          "name": "asan",
+          "type": "configure"
+        },
+        {
+          "name": "asan",
+          "type": "build"
+        },
+        {
+          "name": "asan",
           "type": "test"
         }
       ]
