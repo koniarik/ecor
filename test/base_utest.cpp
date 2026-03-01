@@ -3428,6 +3428,13 @@ static ecor::task< void > th_cancel_task(
         co_return;
 }
 
+/// Immediately sets flag to true and returns — used to detect whether the factory was called.
+static ecor::task< void > th_flag_task( task_ctx&, bool& flag )
+{
+        flag = true;
+        co_return;
+}
+
 TEST_CASE( "task_holder - basic operations" )
 {
         SUBCASE( "restarts on set_value" )
@@ -3522,9 +3529,8 @@ TEST_CASE( "task_holder - basic operations" )
                 bool     factory_called = false;
                 bool     done           = false;
 
-                task_holder h{ ctx, [&]( task_ctx& ) -> ecor::task< void > {
-                                      factory_called = true;
-                                      co_return;
+                task_holder h{ ctx, [&]( task_ctx& c ) {
+                                      return th_flag_task( c, factory_called );
                               } };
 
                 h.start();
