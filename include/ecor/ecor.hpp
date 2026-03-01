@@ -1695,7 +1695,6 @@ private:
                 if ( l.empty() )
                         return;
 
-                for_each_node( l.front(), f );
                 auto& n   = l.front();
                 using Acc = typename _ll_entry< S... >::access;
                 for ( _ll_entry< S... >* m = &n; m; m = _node( Acc::get( *m ).next ) )

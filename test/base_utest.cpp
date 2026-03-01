@@ -1771,6 +1771,70 @@ TEST_CASE( "broadcast - multiple set_value" )
         ctx.core.run_n( 10 );
 }
 
+namespace
+{
+        struct _broadcast_counting_receiver
+        {
+                using receiver_concept = ecor::receiver_t;
+
+                int* count;
+
+                void set_value( std::string ) noexcept
+                {
+                        ++( *count );
+                }
+
+                void set_error( task_error ) noexcept
+                {
+                }
+
+                void set_stopped() noexcept
+                {
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+}  // namespace
+
+TEST_CASE( "broadcast_source::set_value calls each subscriber exactly once" )
+{
+        // Regression test: broadcast_source::for_each previously called for_each_node
+        // (which visits all nodes) AND then ran a second manual loop over the same
+        // nodes. Every subscriber was therefore invoked twice per set_value / set_error
+        // / set_stopped call. The second invocation caused a placement-new on an already
+        // constructed value inside _awaitable_expected, leaking the first allocation.
+
+        broadcast_source< set_value_t( std::string ) > src;
+
+        SUBCASE( "single subscriber" )
+        {
+                int  count = 0;
+                auto op    = src.schedule().connect( _broadcast_counting_receiver{ &count } );
+                op.start();
+
+                src.set_value( std::string( "hello" ) );
+
+                CHECK( count == 1 );
+        }
+
+        SUBCASE( "two subscribers" )
+        {
+                int  count_a = 0, count_b = 0;
+                auto op_a = src.schedule().connect( _broadcast_counting_receiver{ &count_a } );
+                op_a.start();
+                auto op_b = src.schedule().connect( _broadcast_counting_receiver{ &count_b } );
+                op_b.start();
+
+                src.set_value( std::string( "hello" ) );
+
+                CHECK( count_a == 1 );
+                CHECK( count_b == 1 );
+        }
+}
+
 struct _check_error_receiver
 {
         using receiver_concept = ecor::receiver_t;
