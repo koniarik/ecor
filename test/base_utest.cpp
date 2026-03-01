@@ -2719,6 +2719,53 @@ TEST_CASE( "task cleanup on destruction before start" )
         CHECK( destructed_count == 2 );
 }
 
+static task< void > task_frame_free_helper( task_ctx& )
+{
+        co_return;
+}
+
+TEST_CASE( "~_task_op frees frame after normal completion" )
+{
+        // Regression test: _task_op must destroy the coroutine handle even when
+        // the coroutine has already reached final_suspend (h.done() == true).
+        // final_suspend returns suspend_always, so the frame is NOT freed by the
+        // runtime — whoever holds the last handle (i.e. _task_op) is responsible.
+
+        struct tracking_mem
+        {
+                std::size_t allocated   = 0;
+                std::size_t deallocated = 0;
+
+                void* allocate( std::size_t bytes, std::size_t align )
+                {
+                        allocated += bytes;
+                        return ::operator new( bytes, std::align_val_t( align ) );
+                }
+                void deallocate( void* p, std::size_t bytes, std::size_t align )
+                {
+                        deallocated += bytes;
+                        ::operator delete( p, std::align_val_t( align ) );
+                }
+        };
+
+        tracking_mem mem;
+        {
+                task_ctx ctx{ mem };
+
+                {
+                        auto op = task_frame_free_helper( ctx ).connect( _dummy_receiver{} );
+                        op.start();
+                        // Drive the coroutine to co_return (reaches final_suspend, done()==true)
+                        while ( ctx.core.run_once() )
+                                ;
+                        // op destroyed here — must call h.destroy() despite h.done()==true
+                }
+        }
+
+        CHECK( mem.allocated > 0 );
+        CHECK( mem.allocated == mem.deallocated );
+}
+
 TEST_CASE( "all_value_signatures_singular concept" )
 {
         // Basic singular signatures

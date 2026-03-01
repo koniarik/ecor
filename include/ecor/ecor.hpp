@@ -2585,13 +2585,14 @@ struct _task_op
                 return this->_h && !this->_h.done();
         }
 
-        /// Destroy the task operation. If the task coroutine is still active, then it is destroyed
-        /// without resuming it, and the task calls set_stopped on the receiver to signal that the
-        /// task was stopped before it could complete.
+        /// Destroy the task operation. Destroys the coroutine handle if valid, covering both
+        /// coroutines still suspended mid-execution and coroutines parked at final_suspend
+        /// (done() == true). Because final_suspend returns suspend_always the runtime does not
+        /// free the frame automatically — the holder of the handle is responsible in all cases.
         ///
         ~_task_op()
         {
-                if ( this->_h && !this->_h.done() )
+                if ( this->_h )
                         this->_h.destroy();
         }
 
