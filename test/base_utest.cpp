@@ -141,6 +141,77 @@ TEST_CASE( "unique_span - basic operations" )
         }
 }
 
+TEST_CASE( "circular_buffer_allocator - std::allocator requirements" )
+{
+        using index_t = uint16_t;
+        uint8_t                           buffer[1024 * 16];
+        circular_buffer_memory< index_t > mem( buffer );
+        using alloc_int_t = circular_buffer_allocator< int, index_t, noop_base >;
+        alloc_int_t alloc( mem );
+
+        SUBCASE( "basic allocation/deallocation" )
+        {
+                int* ptr = alloc.allocate( 5 );
+                CHECK( ptr != nullptr );
+
+                // Write some values to ensure memory is usable
+                for ( int i = 0; i < 5; ++i )
+                        ptr[i] = i * 10;
+                CHECK( ptr[4] == 40 );
+
+                alloc.deallocate( ptr, 5 );
+        }
+
+        SUBCASE( "std::vector usage" )
+        {
+                std::vector< int, alloc_int_t > vec( alloc );
+
+                for ( int i = 0; i < 100; ++i )
+                        vec.push_back( i );
+
+                CHECK( vec.size() == 100 );
+                CHECK( vec[50] == 50 );
+                CHECK( vec[99] == 99 );
+
+                // Trigger a reallocation explicitly via reserve to test rebind and movement
+                vec.reserve( 200 );
+                CHECK( vec.capacity() >= 200 );
+                CHECK( vec[99] == 99 );
+        }
+
+        SUBCASE( "std::list usage (tests rebind)" )
+        {
+                std::list< int, alloc_int_t > lst( alloc );
+
+                for ( int i = 0; i < 50; ++i )
+                        lst.push_back( i );
+
+                CHECK( lst.size() == 50 );
+                CHECK( lst.front() == 0 );
+                CHECK( lst.back() == 49 );
+        }
+
+        SUBCASE( "allocator equality" )
+        {
+                alloc_int_t alloc_copy( alloc );
+                CHECK( alloc == alloc_copy );
+                CHECK( !( alloc != alloc_copy ) );
+
+                uint8_t                           other_buffer[1024];
+                circular_buffer_memory< index_t > other_mem( other_buffer );
+                alloc_int_t                       other_alloc( other_mem );
+
+                CHECK( alloc != other_alloc );
+                CHECK( !( alloc == other_alloc ) );
+        }
+
+        SUBCASE( "allocate(0) behavior" )
+        {
+                int* ptr = alloc.allocate( 0 );
+                CHECK( ptr == nullptr );
+        }
+}
+
 static void test_simple_broadcast_source( task_ctx& ctx, auto& es, auto& val )
 {
         int value = 42;

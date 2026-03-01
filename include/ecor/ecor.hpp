@@ -97,6 +97,33 @@ struct operation_state_t
 {
 };
 
+/// Type tag for set_value completion signal.
+struct set_value_t
+{
+};
+
+/// Type tag for set_error completion signal.
+struct set_error_t
+{
+};
+
+/// Type tag for set_stopped completion signal.
+struct set_stopped_t
+{
+};
+
+/// Type tag for get_stopped query, private for ecor. Not intended for public use.
+struct _get_stopped_t
+{
+};
+
+/// Type container for completion signatures, used to specify the set of possible completion
+/// signals.
+template < typename... S >
+struct completion_signatures
+{
+};
+
 /// Standard empty environment.
 struct empty_env
 {
@@ -106,6 +133,11 @@ struct empty_env
 struct noop_base
 {
 };
+
+/// Operation state type of a sender-receiver connection. The type returned by connecting a sender
+/// to a receiver.
+template < typename S, typename R >
+using connect_type = decltype( std::move( std::declval< S >() ).connect( std::declval< R >() ) );
 
 // ------------------------------------------------------------------------------
 
@@ -644,11 +676,44 @@ struct get_env_t
                         return empty_env{};
         }
 };
+/// CPO for getting the environment from senders and receivers. If the type does not have a get_env
+/// member function, returns empty_env.
 inline constexpr get_env_t get_env{};
 
+struct get_completion_signatures_t
+{
+        template < typename S, typename E >
+        decltype( auto ) operator()( S& s, E& e ) const noexcept
+        {
+                static constexpr bool has_member = requires( S& s, E& e ) {
+                        { s.get_completion_signatures( e ) };
+                };
+                if constexpr ( has_member )
+                        return s.get_completion_signatures( e );
+                else
+                        return typename S::completion_signatures{};
+        }
+};
+/// CPO for getting the completion signatures from a sender. If the sender has a
+/// get_completion_signatures member function, it is called with the environment to get the
+/// completion signatures. Otherwise, it returns the sender's completion_signatures member type.
+///
+inline constexpr get_completion_signatures_t get_completion_signatures{};
+
+/// Helper to get the completion signatures of a sender (or similar) with a given environment.
+template < typename S, typename Env >
+using _sender_completions_t =
+    decltype( get_completion_signatures( std::declval< S& >(), std::declval< Env& >() ) );
+
+/// Concept for types that can be used as queryable objects in the environment. A type is queryable
+/// if it is an object type (i.e., not a reference, function, or void type) and contains query
+/// member functions for appropriate query types.
 template < typename T >
 concept queryable = std::is_object_v< T >;
 
+/// Concept for senders, requires that the member type sneder_concept derives from sender_t, has a
+/// get_env member function that returns a queryable type, and is move constructible and
+/// constructible from itself.
 template < typename T >
 concept sender = std::derived_from< typename std::remove_cvref_t< T >::sender_concept, sender_t > &&
                  requires( T const& s ) {
@@ -656,6 +721,9 @@ concept sender = std::derived_from< typename std::remove_cvref_t< T >::sender_co
                  } && std::move_constructible< std::remove_cvref_t< T > > &&
                  std::constructible_from< std::remove_cvref_t< T >, T >;
 
+/// Concept for receivers, requires that the member type receiver_concept derives from receiver_t,
+/// has a get_env member function that returns a queryable type, and is move constructible and
+/// constructible from itself.
 template < typename T >
 concept receiver =
     std::derived_from< typename std::remove_cvref_t< T >::receiver_concept, receiver_t > &&
@@ -664,36 +732,6 @@ concept receiver =
     } && std::move_constructible< std::remove_cvref_t< T > > &&
     std::constructible_from< std::remove_cvref_t< T >, T >;
 
-
-struct set_value_t
-{
-};
-
-template < typename T >
-struct _value_setter
-{
-        using type = set_value_t( T );
-};
-
-template <>
-struct _value_setter< void >
-{
-        using type = set_value_t();
-};
-
-template < typename T >
-using _value_setter_t = typename _value_setter< T >::type;
-
-struct set_error_t
-{
-};
-
-struct set_stopped_t
-{
-};
-struct _get_stopped_t
-{
-};
 
 template < typename T >
 struct _is_signature : std::false_type
@@ -717,14 +755,36 @@ struct _is_signature< _get_stopped_t() > : std::true_type
 {
 };
 
+/// Type is isgnature if it is one of the valid completion signatures (set_value, set_error,
+/// set_stopped, or _get_stopped). This is used to validate the types used in
+/// completion_signatures.
 template < typename T >
 concept signature = _is_signature< T >::value;
 
-template < typename... S >
-struct completion_signatures
+template < typename T >
+struct _value_setter
 {
+        using type = set_value_t( T );
 };
 
+template <>
+struct _value_setter< void >
+{
+        using type = set_value_t();
+};
+
+/// Helper to get the set_value signature for a given type T. If T is void, the signature is
+/// set_value_t(), otherwise it is set_value_t( T ).
+template < typename T >
+using _value_setter_t = typename _value_setter< T >::type;
+
+/// Single row of vtable for a specific completion signature. This contains the function pointer for
+/// invoking the corresponding completion signal on derived class, and a constructor that
+/// initializes the function pointer based on the derived and base types.
+///
+/// Any row shall have an invoke function that takes the signature tag, a pointer to the derived
+/// object, and the arguments for the completion signal, and invokes the corresponding member
+/// function on the derived object.
 template < signature S >
 struct _sig_vtable_row;
 
@@ -743,7 +803,7 @@ struct _sig_vtable_row< set_value_t( Args... ) >
         {
         }
 
-        void set( set_value_t, void* self, Args... args ) const
+        void invoke( set_value_t, void* self, Args... args ) const
         {
                 _set_value( self, (Args&&) args... );
         }
@@ -763,7 +823,7 @@ struct _sig_vtable_row< set_error_t( Args... ) >
         {
         }
 
-        void set( set_error_t, void* self, Args... args ) const
+        void invoke( set_error_t, void* self, Args... args ) const
         {
                 _set_error( self, (Args&&) args... );
         }
@@ -783,7 +843,7 @@ struct _sig_vtable_row< set_stopped_t() >
         {
         }
 
-        void set( set_stopped_t, void* self ) const
+        void invoke( set_stopped_t, void* self ) const
         {
                 _set_stopped( self );
         }
@@ -803,12 +863,15 @@ struct _sig_vtable_row< _get_stopped_t() >
         {
         }
 
-        bool set( _get_stopped_t, void* self ) const
+        bool invoke( _get_stopped_t, void* self ) const
         {
                 return _get_stopped( self );
         }
 };
 
+/// Vtable containing rows for all completion signatures in the signature list. This is used as a
+/// custom implementation of virtual table for the completion signals, allowing for dynamic dispatch
+/// of the completion signal handlers based on the actual type of the receiver.
 template < signature... S >
 struct _sig_vtable : _sig_vtable_row< S >...
 {
@@ -818,25 +881,34 @@ struct _sig_vtable : _sig_vtable_row< S >...
         {
         }
 
-        using _sig_vtable_row< S >::set...;
+        using _sig_vtable_row< S >::invoke...;
 };
 
+/// Helper to construct a vtable for a given derived type D, with base type B, and signature list
+/// VTable.
 template < typename D, typename B, typename VTable >
 static constexpr VTable _vtable_of = { _tag< D >{}, _tag< B >{} };
 
+/// Concept to check if a vtable can invoke set_value with given arguments.
 template < typename VTable, typename... Args >
-concept vtable_can_call_value = requires( VTable v, void* self, Args&&... args ) {
-        ( v.set( set_value_t{}, self, (Args&&) args... ) );
+concept _vtable_can_call_value = requires( VTable v, void* self, Args&&... args ) {
+        ( v.invoke( set_value_t{}, self, (Args&&) args... ) );
 };
 
+/// Concept to check if a vtable can invoke set_error with given arguments.
 template < typename VTable, typename Arg >
-concept vtable_can_call_error =
-    requires( VTable v, void* self, Arg&& arg ) { ( v.set( set_error_t{}, self, (Arg&&) arg ) ); };
+concept _vtable_can_call_error = requires( VTable v, void* self, Arg&& arg ) {
+        ( v.invoke( set_error_t{}, self, (Arg&&) arg ) );
+};
 
+/// Concept to check if a vtable can invoke set_stopped with no arguments.
 template < typename VTable >
-concept vtable_can_call_stopped =
-    requires( VTable v, void* self ) { ( v.set( set_stopped_t{}, self ) ); };
+concept _vtable_can_call_stopped =
+    requires( VTable v, void* self ) { ( v.invoke( set_stopped_t{}, self ) ); };
 
+/// Base class that provides the vtable for completion signal dispatch. This mixins a reference to
+/// appropiate vtable as a base class of the object.
+///
 template < signature... S >
 struct _vtable_mixin
 {
@@ -846,34 +918,39 @@ struct _vtable_mixin
         _vtable_mixin( _tag< D > ) noexcept
           : vtable( _vtable_of< D, _vtable_mixin< S... >, _vtable > )
         {
+                static_assert(
+                    std::derived_from< D, _vtable_mixin< S... > >,
+                    "Derived type must derive from _vtable_mixin with the same signature list" );
         }
 
         template < typename... Args >
         void _set_value( Args... args )
         {
-                vtable.set( set_value_t{}, this, (Args&&) args... );
+                vtable.invoke( set_value_t{}, this, (Args&&) args... );
         }
 
         template < typename... Args >
         void _set_error( Args... args )
         {
-                vtable.set( set_error_t{}, this, (Args&&) args... );
+                vtable.invoke( set_error_t{}, this, (Args&&) args... );
         }
 
         void _set_stopped()
         {
-                vtable.set( set_stopped_t{}, this );
+                vtable.invoke( set_stopped_t{}, this );
         }
 
         bool _get_stopped() noexcept
         {
-                return vtable.set( _get_stopped_t{}, this );
+                return vtable.invoke( _get_stopped_t{}, this );
         }
 
 private:
         _vtable const& vtable;
 };
 
+/// Applies the _vtable_mixin to a list of completion signatures, creating a mixin that provides the
+/// vtable for those signatures.
 template < typename Sigs >
 struct _vtable_of_sigs;
 
@@ -884,6 +961,21 @@ struct _vtable_of_sigs< completion_signatures< S... > >
 };
 
 
+/// Helper to filter and map completion signatures based on a given tag (set_value, set_error, or
+/// set_stopped). This is used to extract the relevant signatures for a specific completion signal
+/// from a list of completion signatures, and to transform them into a different form (e.g., mapping
+/// set_value( T ) to T or to set_value( T ) depending on the user's needs).
+///
+/// The template parameters are:
+/// - `TL`: The current list of mapped signatures, accumulated during the recursion. Serves as the
+///     output of the metafunction, and is typically initialized as an empty variant.
+/// - `Tag`: The tag to filter the signatures by (e.g., set_value_t, set_error_t, or set_stopped_t),
+///     ignores any non-matching signatures.
+/// - `Sigs`: The list of completion signatures to filter and map.
+/// - `Tuple`: A template template parameter that is used to construct the mapped signatures. For
+///   example, this could be std::tuple to map set_value( T ) to std::tuple< T >, or
+///   _type_identity_t to map set_value( T ) to T
+///
 template < typename TL, typename Tag, typename Sigs, template < class... > class Tuple >
 struct _filter_map_tag;
 
@@ -930,19 +1022,21 @@ struct _filter_map_tag< Variant< S... >, Tag, completion_signatures< T, Ts... >,
 template < typename T >
 using _type_identity_t = T;
 
+/// Helper to generate a signature type for a given tag. For example, _sig_generator_t< set_value_t
+/// >::type< T, U > will generate the signature type set_value_t( T, U ).
 template < typename Tag >
-struct _tag_identity_t
+struct _sig_generator_t
 {
         template < typename... Args >
         using type = Tag( Args... );
 };
 
 template < typename Sigs >
-using _map_values_of_t =
+using _filter_values_as_variant_tuple_t =
     typename _filter_map_tag< std::variant<>, set_value_t, Sigs, std::tuple >::type;
 
 template < typename Sigs >
-using _map_errors_of_t =
+using _filter_erros_as_variant_t =
     typename _filter_map_tag< std::variant<>, set_error_t, Sigs, _type_identity_t >::type;
 
 template < typename Sigs >
@@ -950,21 +1044,21 @@ using _filter_values_of_t = typename _filter_map_tag<
     completion_signatures<>,
     set_value_t,
     Sigs,
-    _tag_identity_t< set_value_t >::type >::type;
+    _sig_generator_t< set_value_t >::type >::type;
 
 template < typename Sigs >
 using _filter_errors_of_t = typename _filter_map_tag<
     completion_signatures<>,
     set_error_t,
     Sigs,
-    _tag_identity_t< set_error_t >::type >::type;
+    _sig_generator_t< set_error_t >::type >::type;
 
 template < typename Sigs >
 using _filter_stopped_of_t = typename _filter_map_tag<
     completion_signatures<>,
     set_stopped_t,
     Sigs,
-    _tag_identity_t< set_stopped_t >::type >::type;
+    _sig_generator_t< set_stopped_t >::type >::type;
 
 template < typename T, typename U >
 struct _sigs_contains_type;
@@ -974,57 +1068,65 @@ struct _sigs_contains_type< T, completion_signatures< Ts... > > : _contains_type
 {
 };
 
+/// Concept to check if a list of completion signatures contains a set_stopped signature.
 template < typename U >
 concept _sigs_contains_set_stopped = _sigs_contains_type< set_stopped_t(), U >::value;
 
 template < typename Sigs1, typename Sigs2 >
-struct _check_compatible_sigs;
+struct _sig_is_underset_of_impl;
 
-template < typename... Ts, typename Sigs2 >
-struct _check_compatible_sigs< completion_signatures< Ts... >, Sigs2 >
+template < typename... S1, typename... S2 >
+struct _sig_is_underset_of_impl< completion_signatures< S1... >, completion_signatures< S2... > >
 {
-        static_assert(
-            ( _sigs_contains_type< Ts, Sigs2 >::value && ... ),
-            "Completion signatures are not compatible" );
+        static constexpr bool value = ( _contains_type< S1, S2... >::value && ... && true );
 };
 
+/// Sigs1 is compatible with Sigs2 if every signature in Sigs1 is also present in Sigs2.
+template < typename Sigs1, typename Sigs2 >
+concept _sig_is_underset_of = _sig_is_underset_of_impl< Sigs1, Sigs2 >::value;
+
+
 template < typename O, typename... Ts >
-struct _type_merge_impl;
+struct _sigs_merge_impl;
 
 template < typename... S1, typename S, typename... S2, typename... Ts >
         requires( !_contains_type< S, S1... >::value )
-struct _type_merge_impl< completion_signatures< S1... >, completion_signatures< S, S2... >, Ts... >
-  : _type_merge_impl< completion_signatures< S1..., S >, completion_signatures< S2... >, Ts... >
+struct _sigs_merge_impl< completion_signatures< S1... >, completion_signatures< S, S2... >, Ts... >
+  : _sigs_merge_impl< completion_signatures< S1..., S >, completion_signatures< S2... >, Ts... >
 {
 };
 
 template < typename... S1, typename S, typename... S2, typename... Ts >
         requires( _contains_type< S, S1... >::value )
-struct _type_merge_impl< completion_signatures< S1... >, completion_signatures< S, S2... >, Ts... >
-  : _type_merge_impl< completion_signatures< S1... >, completion_signatures< S2... >, Ts... >
+struct _sigs_merge_impl< completion_signatures< S1... >, completion_signatures< S, S2... >, Ts... >
+  : _sigs_merge_impl< completion_signatures< S1... >, completion_signatures< S2... >, Ts... >
 {
 };
 
 template < typename... S1, typename... Ts >
-struct _type_merge_impl< completion_signatures< S1... >, completion_signatures<>, Ts... >
-  : _type_merge_impl< completion_signatures< S1... >, Ts... >
+struct _sigs_merge_impl< completion_signatures< S1... >, completion_signatures<>, Ts... >
+  : _sigs_merge_impl< completion_signatures< S1... >, Ts... >
 {
 };
 template < typename... S1 >
-struct _type_merge_impl< completion_signatures< S1... > >
+struct _sigs_merge_impl< completion_signatures< S1... > >
 {
         using type = completion_signatures< S1... >;
 };
 
+/// Helper to merge multiple lists of completion signatures into a single list that contains all
+/// unique signatures from the input lists.
 template < typename... S >
-struct _type_merge : _type_merge_impl< completion_signatures<>, S... >
-{
-};
+using _sigs_merge_t = typename _sigs_merge_impl< completion_signatures<>, S... >::type;
 
-template < typename... S >
-using _type_merge_t = typename _type_merge< S... >::type;
+/// ------------------------------------------------------------------------------
 
-// XXX: copy-pasta-festival from standard library concepts
+/// Concept for stoppable tokens, requires that the type has stop_requested and stop_possible member
+/// functions that return bool, is copyable, equality comparable, and swappable.
+///
+/// Stop tokens provide an API for checking if a stop has been requested, and if stopping is
+/// possible. They are used in the environment to allow senders and receivers to cooperatively
+/// handle cancellation of asynchronous operations.
 template < class Token >
 concept stoppable_token = requires( Token const tok ) {
         { tok.stop_requested() } noexcept -> std::same_as< bool >;
@@ -1032,10 +1134,17 @@ concept stoppable_token = requires( Token const tok ) {
         { Token( tok ) } noexcept;
 } && std::copyable< Token > && std::equality_comparable< Token > && std::swappable< Token >;
 
+/// Concept for unstoppable tokens, which are a special case of stoppable tokens that cannot be
+/// stopped.
 template < class Token >
 concept unstoppable_token =
     stoppable_token< Token > && requires { requires( !Token{}.stop_possible() ); };
 
+/// Concept for stoppable sources, requires that the type has get_token, stop_possible,
+/// stop_requested, and request_stop member functions with appropriate signatures, and that the
+/// token returned by get_token satisfies the stoppable_token concept.
+///
+/// Stop source provides stop_tokens and the source is used to signal that stop was requested.
 template < class Source >
 concept stoppable_source = requires( Source& src, Source const csrc ) {
         { csrc.get_token() } -> stoppable_token;
@@ -1044,8 +1153,13 @@ concept stoppable_source = requires( Source& src, Source const csrc ) {
         { src.request_stop() } -> std::same_as< bool >;
 };
 
+/// In-place stop token, which is a simple implementation of a stoppable token that is designed to
+/// be used in-place without dynamic memory allocation.
 struct inplace_stop_token;
 
+/// In-place stop callback, which is a callback that can be registered with an inplace_stop_token to
+/// be invoked when a stop is requested. This allows for cooperative cancellation of asynchronous
+/// operations without the need for dynamic memory allocation.
 template < typename CallbackFn >
 struct inplace_stop_callback;
 
@@ -1056,25 +1170,39 @@ struct _inplace_stop_callback_base : zll::ll_base< _inplace_stop_callback_base >
         virtual ~_inplace_stop_callback_base() = default;
 };
 
+/// In-place stop source, which is a simple implementation of a stoppable source that is designed to
+/// be used in-place without dynamic memory allocation. It maintains a list of registered callbacks
+/// that are invoked when a stop is requested, allowing for cooperative cancellation of asynchronous
+/// operations without the need for dynamic memory allocation.
 struct inplace_stop_source
 {
-        inplace_stop_source() = default;
+        inplace_stop_source() noexcept = default;
 
         inplace_stop_source( inplace_stop_source const& )            = delete;
         inplace_stop_source& operator=( inplace_stop_source const& ) = delete;
 
+        /// Get the stop token associated with this stop source. The returned token can be used to
+        /// check if a stop has been requested, and to register callbacks that will be invoked when
+        /// a stop is requested.
         inplace_stop_token get_token() const noexcept;
 
+        /// Check if stopping is possible. For inplace_stop_source, this always returns true since
+        /// it can always be stopped.
         bool stop_possible() const noexcept
         {
                 return true;
         }
 
+        /// Check if a stop has been requested. This returns true if request_stop() has been called
+        /// on this stop source, and false otherwise.
         bool stop_requested() const noexcept
         {
                 return _stopped;
         }
 
+        /// Request a stop. This sets the internal state to indicate that a stop has been requested,
+        /// and invokes all registered callbacks. Returns true if this call successfully requested a
+        /// stop, or false if a stop had already been requested.
         bool request_stop()
         {
                 if ( _stopped )
@@ -1105,21 +1233,31 @@ struct inplace_stop_token
 {
         inplace_stop_token() noexcept = default;
 
+        /// Check if a stop has been requested. This returns true if the associated stop source has
+        /// had request_stop() called on it, and false otherwise. If this token is not associated
+        /// with a stop source, this returns false.
         [[nodiscard]] bool stop_requested() const noexcept
         {
                 return _source && _source->stop_requested();
         }
+
+        /// Check if stopping is possible. This returns true if this token is associated with a stop
+        /// source, and false otherwise. If this token is not associated with a stop source, this
+        /// returns false since there is no source to request a stop from.
         [[nodiscard]] constexpr bool stop_possible() const noexcept
         {
                 return _source != nullptr;
         }
 
+        /// Equality comparison operators, two inplace_stop_tokens are equal if they are associated
+        /// with the same stop source (or both are not associated with any stop source).
         friend bool
         operator==( inplace_stop_token const& lhs, inplace_stop_token const& rhs ) noexcept
         {
                 return lhs._source == rhs._source;
         }
 
+        /// Inequality comparison operator, defined in terms of operator==.
         friend bool
         operator!=( inplace_stop_token const& lhs, inplace_stop_token const& rhs ) noexcept
         {
@@ -1148,6 +1286,16 @@ inline inplace_stop_token inplace_stop_source::get_token() const noexcept
         return inplace_stop_token{ this };
 }
 
+/// In-place stop callback, which is a callback that can be registered with an inplace_stop_token to
+/// be invoked when a stop is requested. This allows for cooperative cancellation of asynchronous
+/// operations without the need for dynamic memory allocation. The callback is constructed with a
+/// stop token and an initializer for the callback function. If the stop token is already in a
+/// stopped state when the callback is constructed, the callback function is invoked immediately.
+///
+/// The callback is automatically unlinked from the stop source when it is destroyed, ensuring that
+/// it will not be invoked after it has been destroyed. The callback function is stored in-place
+/// within the callback object, allowing for efficient storage without dynamic memory allocation.
+///
 template < typename CallbackFn >
 struct inplace_stop_callback : _inplace_stop_callback_base
 {
@@ -1184,12 +1332,14 @@ private:
 template < typename CallbackFn >
 inplace_stop_callback( inplace_stop_token, CallbackFn ) -> inplace_stop_callback< CallbackFn >;
 
+/// Never stop token, which is a simple implementation of an unstoppable token that can be used as a
+/// default stop token in environments where stopping is not supported or needed. This token always
+/// reports that stopping is not possible and that a stop has not been requested, and its callback
+/// type is a no-op callback that does nothing when invoked.
 struct never_stop_token
 {
         struct cb_type
         {
-                // exposition only
-
                 explicit cb_type( never_stop_token, auto&& ) noexcept
                 {
                 }
@@ -1218,112 +1368,108 @@ struct get_stop_token_t
         {
                 static constexpr bool v = requires( get_stop_token_t t ) {
                         { env.query( t ) };
-                };
+                };  // namespace ecor
                 if constexpr ( v )
                         return env.query( *this );
                 else
                         return never_stop_token{};
         }
 };
+/// CPO for getting the stop token from the environment. If the environment does not have a stop
+/// token, returns a never_stop_token that cannot be stopped.
 inline constexpr get_stop_token_t get_stop_token{};
 
-struct get_completion_signatures_t
-{
-        template < typename S, typename E >
-        decltype( auto ) operator()( S& s, E& e ) const noexcept
-        {
-                static constexpr bool has_member = requires( S& s, E& e ) {
-                        { s.get_completion_signatures( e ) };
-                };
-                if constexpr ( has_member )
-                        return s.get_completion_signatures( e );
-                else
-                        return typename S::completion_signatures{};
-        }
-};
-inline constexpr get_completion_signatures_t get_completion_signatures{};
+/// ------------------------------------------------------------------------------
 
-template < typename S, typename Env >
-using _sender_completions_t =
-    decltype( get_completion_signatures( std::declval< S& >(), std::declval< Env& >() ) );
-
+/// Base class for linked list entries which can be invoked with the completion signals.
 template < signature... S >
-struct event_entry : _vtable_mixin< S... >, zll::ll_base< event_entry< S... > >
+struct _ll_entry : _vtable_mixin< S... >, zll::ll_base< _ll_entry< S... > >
 {
         template < typename D >
-        event_entry( _tag< D > ) noexcept
+        _ll_entry( _tag< D > ) noexcept
           : _vtable_mixin< S... >( _tag< D >{} )
         {
         }
 };
 
+/// Operation state for list-based senders. This is the type of the object that is linked into the
+/// list of the scheduler, and contains the receiver and the vtable for dispatching the completion
+/// signals to the receiver.
 template < typename R, signature... S >
-struct _list_op : event_entry< S... >, R
+struct _ll_op : _ll_entry< S... >, R
 {
         using operation_state_concept = operation_state_t;
 
-        _list_op( auto& list, R receiver )
-          : event_entry< S... >( _tag< _list_op >{} )
+        _ll_op( auto& list, R receiver ) noexcept( std::is_nothrow_move_constructible_v< R > )
+          : _ll_entry< S... >( _tag< _ll_op >{} )
           , R( std::move( receiver ) )
           , _list( list )
         {
         }
 
-        void start()
+        void start() noexcept
         {
                 _list.link_back( *this );
         }
 
 private:
-        zll::ll_list< event_entry< S... > >& _list;
+        zll::ll_list< _ll_entry< S... > >& _list;
 };
 
+/// Base class for skew heap entries which can be invoked with the completion signals.
 template < typename K, signature... S >
-struct kval_entry : _vtable_mixin< S... >, zll::sh_base< kval_entry< K, S... > >
+struct _sh_entry : _vtable_mixin< S... >, zll::sh_base< _sh_entry< K, S... > >
 {
         K key;
 
         template < typename D >
-        kval_entry( K k, _tag< D > )
+        _sh_entry( K k, _tag< D > ) noexcept( std::is_nothrow_move_constructible_v< K > )
           : _vtable_mixin< S... >{ _tag< D >{} }
           , key( std::move( k ) )
         {
         }
 
-        constexpr bool operator<( kval_entry const& o ) const
+        constexpr bool operator<( _sh_entry const& o ) const
+            noexcept( noexcept( std::declval< K const& >() < std::declval< K const& >() ) )
         {
                 return key < o.key;
         }
 };
 
-
+/// Operation state for skew heap-based senders. This is the type of the object that is linked into
+/// the skew heap of the scheduler, and contains the receiver, the key for ordering in the heap, and
+/// the vtable for dispatching the completion signals to the receiver.
 template < typename R, typename K, signature... S >
-struct _heap_op : kval_entry< K, S... >, R
+struct _sh_op : _sh_entry< K, S... >, R
 {
         using operation_state_concept = operation_state_t;
 
-        _heap_op( auto& heap, K key, R receiver )
-          : kval_entry< K, S... >( key, _tag< _heap_op >{} )
+        _sh_op( auto& heap, K key, R receiver ) noexcept(
+            std::is_nothrow_move_constructible_v< R > && std::is_nothrow_move_constructible_v< K > )
+          : _sh_entry< K, S... >( key, _tag< _sh_op >{} )
           , R( std::move( receiver ) )
           , _heap( heap )
         {
         }
 
-        void start()
+        void start() noexcept
         {
                 _heap.link( *this );
         }
 
 private:
-        zll::sh_heap< kval_entry< K, S... > >& _heap;
+        zll::sh_heap< _sh_entry< K, S... > >& _heap;
 };
 
+/// Sender type for linked-list-based schedulers. This is the type returned by the schedule()
+/// function of a linked-list-based scheduler, and contains a reference to the list of the
+/// scheduler.
 template < signature... S >
 struct _ll_sender
 {
         using sender_concept = sender_t;
 
-        _ll_sender( zll::ll_list< event_entry< S... > >& ll )
+        _ll_sender( zll::ll_list< _ll_entry< S... > >& ll ) noexcept
           : _ll( ll )
         {
         }
@@ -1336,23 +1482,28 @@ struct _ll_sender
         }
 
         template < receiver R >
-        _list_op< R, S... > connect( R receiver )
+        _ll_op< R, S... > connect( R receiver ) noexcept(
+            noexcept( _ll_op< R, S... >{ _ll, std::move( receiver ) } ) )
         {
                 return { _ll, std::move( receiver ) };
         }
 
 private:
-        zll::ll_list< event_entry< S... > >& _ll;
+        zll::ll_list< _ll_entry< S... > >& _ll;
 };
 
+/// Sender type for skew-heap-based schedulers. This is the type returned by the schedule() function
+/// of a skew-heap-based scheduler, and contains a reference to the heap of the scheduler and the
+/// key for ordering in the heap.
 template < typename K, signature... S >
 struct _sh_sender
 {
         using sender_concept = sender_t;
 
-        _sh_sender( K key, zll::sh_heap< kval_entry< K, S... > >& sh )
-          : key( key )
-          , sh( sh )
+        _sh_sender( K key, zll::sh_heap< _sh_entry< K, S... > >& sh ) noexcept(
+            std::is_nothrow_move_constructible_v< K > )
+          : _key( key )
+          , _sh( sh )
         {
         }
 
@@ -1364,52 +1515,83 @@ struct _sh_sender
         }
 
         template < receiver R >
-        _heap_op< R, K, S... > connect( R receiver ) &&
+        _sh_op< R, K, S... > connect( R receiver ) && noexcept(
+            noexcept( _sh_op< R, K, S... >{ _sh, std::move( _key ), std::move( receiver ) } ) )
         {
-                return { sh, std::move( key ), std::move( receiver ) };
+                return { _sh, std::move( _key ), std::move( receiver ) };
         }
 
-        K                                      key;
-        zll::sh_heap< kval_entry< K, S... > >& sh;
+        template < receiver R >
+        _sh_op< R, K, S... > connect( R receiver ) const& noexcept(
+            noexcept( _sh_op< R, K, S... >{ _sh, _key, std::move( receiver ) } ) )
+        {
+                return { _sh, _key, std::move( receiver ) };
+        }
+
+private:
+        K                                     _key;
+        zll::sh_heap< _sh_entry< K, S... > >& _sh;
 };
 
 
+/// Broadcast source that implements a scheduler that allows multiple receivers to be scheduled with
+/// the same completion signatures, and when a completion signal is sent, it is broadcast to all
+/// scheduled receivers. These are unregistered before they are completed, so they will only receive
+/// the first completion signal sent after they are scheduled.
+///
 template < signature... S >
 struct broadcast_source
 {
         using sender_type = _ll_sender< S... >;
 
-        _ll_sender< S... > schedule()
+        /// Schedule a new receiver with this source.
+        _ll_sender< S... > schedule() noexcept
         {
                 return ( _list );
         }
 
+        /// Send a set_value signal to all scheduled receivers. These are unregistered before the
+        /// signal is sent, so they will only receive the first set_value signal sent after they are
+        /// scheduled.
+        ///
+        /// Passes the arguments as non-const reference.
+        ///
         template < typename... Args >
         void set_value( Args&&... args )
         {
                 static_assert(
-                    vtable_can_call_value< _sig_vtable< S... >, Args... >,
+                    _vtable_can_call_value< _sig_vtable< S... >, Args... >,
                     "Completion signatures do not contain set_value_t(Args...)" );
                 for_each( [&]( auto& n ) {
                         n._set_value( args... );
                 } );
         }
 
+        /// Send a set_error signal to all scheduled receivers. These are unregistered before the
+        /// signal is sent, so they will only receive the first set_error signal sent after they are
+        /// scheduled.
+        ///
+        /// Passes the error as non-const reference.
+        ///
         template < typename E >
         void set_error( E&& err )
         {
                 static_assert(
-                    vtable_can_call_error< _sig_vtable< S... >, E >,
+                    _vtable_can_call_error< _sig_vtable< S... >, E >,
                     "Completion signatures do not contain set_error_t(E)" );
                 for_each( [&]( auto& n ) {
                         n._set_error( err );
                 } );
         }
 
+        /// Send a set_stopped signal to all scheduled receivers. These are unregistered before the
+        /// signal is sent, so they will only receive the first set_stopped signal sent after they
+        /// are scheduled.
+        ///
         void set_stopped()
         {
                 static_assert(
-                    vtable_can_call_stopped< _sig_vtable< S... > >,
+                    _vtable_can_call_stopped< _sig_vtable< S... > >,
                     "Completion signatures do not contain set_stopped_t()" );
                 for_each( [&]( auto& n ) {
                         n._set_stopped();
@@ -1419,56 +1601,82 @@ struct broadcast_source
 private:
         void for_each( auto&& f )
         {
-                auto l    = std::move( _list );
-                auto iter = l.begin();
-                auto e    = l.end();
-                while ( iter != e ) {
-                        auto n = iter++;
-                        f( *n );
-                }
+                auto l = std::move( _list );
+                if ( l.empty() )
+                        return;
+
+                for_each_node( l.front(), f );
+                auto& n   = l.front();
+                using Acc = typename _ll_entry< S... >::access;
+                for ( _ll_entry< S... >* m = &n; m; m = _node( Acc::get( *m ).next ) )
+                        f( *m );
         }
 
-        zll::ll_list< event_entry< S... > > _list;
+        zll::ll_list< _ll_entry< S... > > _list;
 };
 
 
+/// FIFO source that implements a scheduler that allows multiple receivers to be scheduled with the
+/// same completion signatures, and processes them in FIFO order.
+///
+/// Any completion signal sent to the source is delivered to the front receiver in the queue, and
+/// that receiver is unregistered before the signal is sent, so it will only receive the first
+/// completion signal sent after it is scheduled.
+///
 template < signature... S >
 struct fifo_source
 {
         using completion_sigs = completion_signatures< S... >;
         using sender_type     = _ll_sender< S... >;
 
-        _ll_sender< S... > schedule()
+        /// Schedule a new sender with this scheduler.
+        _ll_sender< S... > schedule() noexcept
         {
                 return ( _ll );
         }
 
+        /// Send a set_value signal to the front scheduled receiver. The receiver is unregistered
+        /// before the signal is sent, so it will only receive the first set_value signal sent after
+        /// it is scheduled.
+        ///
+        /// Arguments are perfectly forwarded.
+        ///
         template < typename... V >
         void set_value( V&&... value )
         {
                 static_assert(
-                    vtable_can_call_value< _sig_vtable< S... >, V... >,
+                    _vtable_can_call_value< _sig_vtable< S... >, V... >,
                     "Completion signatures do not contain set_value_t(Args...)" );
                 do_f( [&]( auto& n ) {
                         n._set_value( (V&&) value... );
                 } );
         }
 
+        /// Send a set_error signal to the front scheduled receiver. The receiver is unregistered
+        /// before the signal is sent, so it will only receive the first set_error signal sent after
+        /// it is scheduled.
+        ///
+        /// The error is perfectly forwarded.
+        ///
         template < typename E1 >
         void set_error( E1&& err )
         {
                 static_assert(
-                    vtable_can_call_error< _sig_vtable< S... >, E1 >,
+                    _vtable_can_call_error< _sig_vtable< S... >, E1 >,
                     "Completion signatures do not contain set_error_t(E1)" );
                 do_f( [&]( auto& n ) {
                         n._set_error( (E1&&) err );
                 } );
         }
 
+        /// Send a set_stopped signal to the front scheduled receiver. The receiver is unregistered
+        /// before the signal is sent, so it will only receive the first set_stopped signal sent
+        /// after it is scheduled.
+        ///
         void set_stopped()
         {
                 static_assert(
-                    vtable_can_call_stopped< _sig_vtable< S... > >,
+                    _vtable_can_call_stopped< _sig_vtable< S... > >,
                     "Completion signatures do not contain set_stopped_t()" );
                 do_f( [&]( auto& n ) {
                         n._set_stopped();
@@ -1486,80 +1694,108 @@ private:
         }
 
 
-        zll::ll_list< event_entry< S... > > _ll;
+        zll::ll_list< _ll_entry< S... > > _ll;
 };
 
+/// Keyed source that implements a scheduler that allows multiple receivers to be scheduled with the
+/// same completion signatures, and processes them in order based on a key provided at scheduling
+/// time. The key is used to order the scheduled receivers in a heap, and completion signals are
+/// delivered to the receiver with the smallest key.
+///
 template < typename K, signature... S >
 struct seq_source
 {
         using sender_type = _sh_sender< K, S... >;
 
-        // TODO: technically this is not spec-conforming
-        _sh_sender< K, S... > schedule( K key )
+        /// Schedule a new sender with this scheduler, using the provided key for ordering. The
+        /// sender is returned with the key and a reference to the heap of the scheduler, and when
+        /// connected and started, it will be linked into the heap based on the key.
+        _sh_sender< K, S... >
+        schedule( K key ) noexcept( noexcept( _sh_sender< K, S... >{ key, _sh } ) )
         {
-                return { key, h };
+                return { key, _sh };
         }
 
+        /// Send a set_value signal to the scheduled receiver with the smallest key. The receiver is
+        /// unregistered before the signal is sent, so it will only receive the first set_value
+        /// signal sent after it is scheduled.
+        ///
+        /// Arguments are perfectly forwarded.
+        ///
         template < typename... V >
         void set_value( V&&... value )
         {
                 static_assert(
-                    vtable_can_call_value< _sig_vtable< S... >, V... >,
+                    _vtable_can_call_value< _sig_vtable< S... >, V... >,
                     "Completion signatures do not contain set_value_t(V)" );
                 do_f( [&]( auto& n ) {
-                        n._set_value( (V&&) value... );
+                        _sn._set_value( (V&&) value... );
                 } );
         }
 
+        /// Send a set_error signal to the scheduled receiver with the smallest key. The receiver is
+        /// unregistered before the signal is sent, so it will only receive the first set_error
+        /// signal sent after it is scheduled.
+        ///
+        /// The error is perfectly forwarded.
+        ///
         template < typename E1 >
         void set_error( E1&& err )
         {
                 static_assert(
-                    vtable_can_call_error< _sig_vtable< S... >, E1 >,
+                    _vtable_can_call_error< _sig_vtable< S... >, E1 >,
                     "Completion signatures do not contain set_error_t(E1)" );
                 // XXX: should this treat all entries or just the front one?
                 do_f( [&]( auto& n ) {
-                        n._set_error( (E1&&) err );
+                        _sn._set_error( (E1&&) err );
                 } );
         }
 
-        void _set_stopped()
+        /// Send a set_stopped signal to the scheduled receiver with the smallest key. The receiver
+        /// is unregistered before the signal is sent, so it will only receive the first set_stopped
+        /// signal sent after it is scheduled.
+        ///
+        void set_stopped()
         {
                 static_assert(
-                    vtable_can_call_stopped< _sig_vtable< S... > >,
+                    _vtable_can_call_stopped< _sig_vtable< S... > >,
                     "Completion signatures do not contain set_stopped_t()" );
                 // XXX: should this treat all entries or just the front one?
                 do_f( [&]( auto& n ) {
-                        n._set_stopped();
+                        _sn._set_stopped();
                 } );
         }
 
+        /// Check if there are any scheduled receivers. This returns true if there are no scheduled
+        /// receivers, and false otherwise.
+        ///
         [[nodiscard]] bool empty() const
         {
-                return h.empty();
+                return _sh.empty();
         }
 
-        [[nodiscard]] kval_entry< K, S... > const& front() const
+        /// Get a reference to the scheduled receiver with the smallest key. This does not modify
+        /// the heap, so the receiver remains scheduled and will receive the next completion signal
+        /// sent to the source. The behavior is undefined if there are no scheduled receivers.
+        ///
+        [[nodiscard]] _sh_entry< K, S... > const& front() const
         {
-                return *h.top;
+                return *_sh.top;
         }
 
 private:
         void do_f( auto f )
         {
-                if ( h.empty() )
+                if ( _sh.empty() )
                         return;
 
-                auto& n = h.take();
+                auto& n = _sh.take();
                 f( n );
         }
 
-        zll::sh_heap< kval_entry< K, S... > > h;
+        zll::sh_heap< _sh_entry< K, S... > > _sh;
 };
 
-
-template < typename S, typename R >
-using connect_type = decltype( std::move( std::declval< S >() ).connect( std::declval< R >() ) );
 
 template < typename T >
 struct _just_error
@@ -1583,7 +1819,8 @@ struct _just_error
         };
 
         template < receiver R >
-        auto connect( R receiver ) &&
+        auto connect( R receiver ) && noexcept(
+            std::is_nothrow_move_constructible_v< T > && std::is_nothrow_move_constructible_v< R > )
         {
                 return _op{ std::move( err ), std::move( receiver ) };
         }
@@ -1596,6 +1833,10 @@ struct _just_error
         }
 };
 
+/// Returns a sender that completes with the given error. The sender returned by this function has a
+/// single completion signature of set_error_t( T ), where T is the type of the error passed to the
+/// function. When connected to a receiver and started, the sender will immediately complete by
+/// calling set_error on the receiver with the error passed to this function.
 template < typename T >
 _just_error< T > just_error( T err )
 {
@@ -1747,8 +1988,8 @@ struct _awaitable
 
         using _env         = decltype( std::declval< PromiseType >().get_env() );
         using _completions = _sender_completions_t< std::remove_cvref_t< S >, _env >;
-        using _values      = _map_values_of_t< _completions >;
-        using _errors      = _map_errors_of_t< _completions >;
+        using _values      = _filter_values_as_variant_tuple_t< _completions >;
+        using _errors      = _filter_erros_as_variant_t< _completions >;
         static_assert(
             std::variant_size_v< _values > <= 1,
             "Multiple set_value completions not supported" );
@@ -1900,7 +2141,7 @@ struct _task_finish_guard
                 ECOR_ASSERT( this->_recv );
                 if ( this->_recv ) {
                         auto* r = std::exchange( this->_recv, nullptr );
-                        r->set( set_error_t{}, _obj, (U&&) err );
+                        r->invoke( set_error_t{}, _obj, (U&&) err );
                 }
         }
 
@@ -1910,7 +2151,7 @@ struct _task_finish_guard
                 ECOR_ASSERT( this->_recv );
                 if ( this->_recv ) {
                         auto* r = std::exchange( this->_recv, nullptr );
-                        r->set( set_value_t{}, this->_obj, (U&&) v... );
+                        r->invoke( set_value_t{}, this->_obj, (U&&) v... );
                 }
         }
 
@@ -1919,7 +2160,7 @@ struct _task_finish_guard
                 ECOR_ASSERT( this->_recv );
                 if ( this->_recv ) {
                         auto* r = std::exchange( this->_recv, nullptr );
-                        r->set( set_stopped_t{}, this->_obj );
+                        r->invoke( set_stopped_t{}, this->_obj );
                 }
         }
 
@@ -1927,7 +2168,7 @@ struct _task_finish_guard
         {
                 if ( _recv ) {
                         auto* r = std::exchange( this->_recv, nullptr );
-                        r->set( set_error_t{}, _obj, task_error::task_unfinished );
+                        r->invoke( set_error_t{}, _obj, task_error::task_unfinished );
                 }
         }
 
@@ -2107,8 +2348,10 @@ struct _promise_type : _promise_base, _promise_type_value< Task >
                         // XXX: leaky implementation detail
                         using compls = _sender_completions_t< U, typename _promise_base::_env >;
                         using errs   = _filter_errors_of_t< compls >;
-                        _check_compatible_sigs< errs, typename Task::_error_completions > const _{};
-                        using vals = _map_values_of_t< compls >;
+                        static_assert(
+                            _sig_is_underset_of< errs, typename Task::_error_completions >,
+                            "Error signatures are not compatible" );
+                        using vals = _filter_values_as_variant_tuple_t< compls >;
                         static_assert(
                             std::variant_size_v< vals > <= 1,
                             "Sender used in co_await must only complete with a single set_value signature" );
@@ -2208,12 +2451,12 @@ struct task
         using promise_type   = _promise_type< task >;
 
         // XXX: append?
-        using _error_completions = _type_merge_t<
+        using _error_completions = _sigs_merge_t<
             ecor::completion_signatures< set_error_t( task_error ) >,
             typename CFG::extra_error_signatures >;
 
         // XXX: convert to simple concat instead of merge
-        using completion_signatures = _type_merge_t<
+        using completion_signatures = _sigs_merge_t<
             ecor::completion_signatures< _value_setter_t< T >, set_stopped_t() >,
             _error_completions >;
         static_assert(
@@ -2348,9 +2591,8 @@ struct _or_sender
         }
 
         template < typename Env >
-        using _completions = typename _type_merge<
-            _sender_completions_t< S1, Env >,
-            _sender_completions_t< S2, Env > >::type;
+        using _completions =
+            _sigs_merge_t< _sender_completions_t< S1, Env >, _sender_completions_t< S2, Env > >;
 
         template < typename Env >
         _completions< Env > get_completion_signatures( Env&& )
@@ -2402,7 +2644,7 @@ struct _as_variant
         using _stopped = _filter_stopped_of_t< _s_completions< Env > >;
 
         template < typename Env >
-        using _completions = _type_merge_t<
+        using _completions = _sigs_merge_t<
             completion_signatures< set_value_t( _values< Env > ) >,
             _error< Env >,
             _stopped< Env > >;
@@ -2486,11 +2728,11 @@ struct _err_to_val
             completion_signatures<>,
             set_error_t,
             _s_completions< Env >,
-            _tag_identity_t< set_value_t >::type >::type;
+            _sig_generator_t< set_value_t >::type >::type;
 
         template < typename Env >
         using _completions =
-            _type_merge_t< _s_values< Env >, _s_errors_as_val< Env >, _stopped< Env > >;
+            _sigs_merge_t< _s_values< Env >, _s_errors_as_val< Env >, _stopped< Env > >;
 
         template < typename Env >
         _completions< Env > get_completion_signatures( Env&& )
@@ -2567,7 +2809,7 @@ struct _sink_err
         using _s_stopped = _filter_stopped_of_t< _s_completions< Env > >;
 
         template < typename Env >
-        using _completions = _type_merge_t<
+        using _completions = _sigs_merge_t<
             completion_signatures< set_value_t( _s_errors_as_val< Env > ) >,
             _s_stopped< Env > >;
 
