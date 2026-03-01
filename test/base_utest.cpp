@@ -2546,5 +2546,206 @@ TEST_CASE( "fifo_source - cancellation" )
         CHECK( results[1] == 20 );
 }
 
+struct test_exception : std::exception
+{
+        char const* what() const noexcept override
+        {
+                return "test_exception";
+        }
+};
+
+static ecor::task< void > throwing_task( task_ctx& ctx )
+{
+        throw test_exception{};
+        co_return;
+}
+
+TEST_CASE( "unhandled_exception" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        bool exception_caught = false;
+
+        struct exception_receiver
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _caught;
+
+                void set_value() noexcept
+                {
+                }
+
+                void set_error( task_error e ) noexcept
+                {
+                        if ( e == task_error::task_unhandled_exception )
+                                *_caught = true;
+                }
+
+                void set_stopped() noexcept
+                {
+                }
+
+                empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        auto h = throwing_task( ctx ).connect( exception_receiver{ ._caught = &exception_caught } );
+        h.start();
+
+        while ( ctx.core.run_once() )
+                ;
+
+        CHECK( exception_caught );
+}
+
+struct custom_error
+{
+};
+
+struct custom_config
+{
+        using extra_error_signatures = completion_signatures< set_error_t( custom_error ) >;
+};
+
+static ecor::task< void, custom_config > yielding_task( task_ctx& )
+{
+        co_yield with_error( custom_error{} );
+}
+
+TEST_CASE( "yield_value with error" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        bool error_caught = false;
+
+        struct error_receiver
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _caught;
+
+                void set_value() noexcept
+                {
+                }
+
+                void set_error( custom_error ) noexcept
+                {
+                        *_caught = true;
+                }
+
+                void set_error( task_error ) noexcept
+                {
+                }
+
+                void set_stopped() noexcept
+                {
+                }
+
+                empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        auto h = yielding_task( ctx ).connect( error_receiver{ ._caught = &error_caught } );
+        h.start();
+
+        while ( ctx.core.run_once() )
+                ;
+
+        CHECK( error_caught );
+}
+
+static task< void > set_stopped_helper( task_ctx&, broadcast_source< set_value_t() >& src )
+{
+        co_await src.schedule();
+}
+
+TEST_CASE( "~_task_op calls set_stopped" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        bool stopped = false;
+
+        struct stopped_receiver
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _stopped;
+
+                void set_value() noexcept
+                {
+                }
+
+                void set_stopped() noexcept
+                {
+                        *_stopped = true;
+                }
+
+                void set_error( task_error ) noexcept
+                {
+                }
+
+                empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        broadcast_source< set_value_t() > src;
+
+
+        {
+                auto op = set_stopped_helper( ctx, src )
+                              .connect( stopped_receiver{ ._stopped = &stopped } );
+                op.start();
+                ctx.core.run_once();  // Task suspends on src.schedule()
+        }
+        // op destroyed -> should trigger set_stopped
+
+        CHECK( stopped );
+}
+
+TEST_CASE( "task cleanup on destruction before start" )
+{
+        struct tracker
+        {
+                int* _destructed_count;
+                tracker( int* count )
+                  : _destructed_count( count )
+                {
+                }
+                tracker( tracker const& ) = default;
+                tracker( tracker&& )      = default;
+                ~tracker()
+                {
+                        if ( _destructed_count )
+                                ( *_destructed_count )++;
+                }
+        };
+
+        struct Coro
+        {
+                static task< void > run( task_ctx&, tracker )
+                {
+                        co_return;
+                }
+        };
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        int destructed_count = 0;
+        {
+                auto t = Coro::run( ctx, tracker{ &destructed_count } );
+                // tracker temporary destroyed here after call returns
+                CHECK( destructed_count == 1 );
+        }
+        // task 't' destroyed here -> frame destroyed -> argument inside frame destroyed
+        CHECK( destructed_count == 2 );
+}
 
 }  // namespace ecor

@@ -62,19 +62,47 @@
   "testPresets": [
     {
       "name": "debug",
-      "configurePreset": "debug"
+      "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "stopOnFailure": true
+      }
     },
     {
       "name": "asan",
-      "configurePreset": "asan"
+      "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "stopOnFailure": true
+      }
     },
     {
       "name": "ubsan",
-      "configurePreset": "ubsan"
+      "configurePreset": "ubsan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "stopOnFailure": true
+      }
     },
     {
       "name": "release",
-      "configurePreset": "release"
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "stopOnFailure": true
+      }
     }
   ],
   "workflowPresets": [

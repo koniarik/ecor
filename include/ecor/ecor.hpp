@@ -124,6 +124,19 @@ struct completion_signatures
 {
 };
 
+/// Helper to apply a template C to the signatures in a completion_signatures type.
+template < template < typename... > class C, typename T >
+struct _apply_to_sigs;
+
+template < template < typename... > class C, typename... Ts >
+struct _apply_to_sigs< C, completion_signatures< Ts... > >
+{
+        using type = C< Ts... >;
+};
+
+template < template < typename... > class C, typename T >
+using _apply_to_sigs_t = typename _apply_to_sigs< C, T >::type;
+
 /// Standard empty environment.
 struct empty_env
 {
@@ -138,6 +151,21 @@ struct noop_base
 /// to a receiver.
 template < typename S, typename R >
 using connect_type = decltype( std::move( std::declval< S >() ).connect( std::declval< R >() ) );
+
+
+/// Thin wrapper over error value, used to tag value as an error for ecor library.
+template < typename E >
+struct with_error
+{
+        using type = std::remove_cvref_t< E >;
+        E error;
+
+        explicit with_error( E e )
+          : error( std::move( e ) )
+        {
+        }
+};
+
 
 // ------------------------------------------------------------------------------
 
@@ -662,12 +690,12 @@ private:
 
 // ------------------------------------------------------------------------------
 
-struct get_env_t
+struct _get_env_t
 {
         template < typename T >
         decltype( auto ) operator()( T const& o ) const noexcept
         {
-                static constexpr bool v = requires( get_env_t t ) {
+                static constexpr bool v = requires( T const& o ) {
                         { o.get_env() };
                 };
                 if constexpr ( v )
@@ -678,9 +706,9 @@ struct get_env_t
 };
 /// CPO for getting the environment from senders and receivers. If the type does not have a get_env
 /// member function, returns empty_env.
-inline constexpr get_env_t get_env{};
+inline constexpr _get_env_t get_env{};
 
-struct get_completion_signatures_t
+struct _get_completion_signatures_t
 {
         template < typename S, typename E >
         decltype( auto ) operator()( S& s, E& e ) const noexcept
@@ -698,7 +726,7 @@ struct get_completion_signatures_t
 /// get_completion_signatures member function, it is called with the environment to get the
 /// completion signatures. Otherwise, it returns the sender's completion_signatures member type.
 ///
-inline constexpr get_completion_signatures_t get_completion_signatures{};
+inline constexpr _get_completion_signatures_t get_completion_signatures{};
 
 /// Helper to get the completion signatures of a sender (or similar) with a given environment.
 template < typename S, typename Env >
@@ -949,16 +977,7 @@ private:
         _vtable const& vtable;
 };
 
-/// Applies the _vtable_mixin to a list of completion signatures, creating a mixin that provides the
-/// vtable for those signatures.
-template < typename Sigs >
-struct _vtable_of_sigs;
-
-template < signature... S >
-struct _vtable_of_sigs< completion_signatures< S... > >
-{
-        using type = _sig_vtable< S... >;
-};
+/// ------------------------------------------------------------------------------
 
 
 /// Helper to filter and map completion signatures based on a given tag (set_value, set_error, or
@@ -1118,6 +1137,19 @@ struct _sigs_merge_impl< completion_signatures< S1... > >
 /// unique signatures from the input lists.
 template < typename... S >
 using _sigs_merge_t = typename _sigs_merge_impl< completion_signatures<>, S... >::type;
+
+template < typename S, typename... Ts >
+struct _sigs_append_impl;
+
+template < typename... S, typename... Ts >
+struct _sigs_append_impl< completion_signatures< S... >, Ts... >
+{
+        using type = completion_signatures< S..., Ts... >;
+};
+
+/// Helper to append a list of signatures to an existing list of completion signatures.
+template < typename Sigs, typename... Ts >
+using _sigs_append_t = _sigs_append_impl< Sigs, Ts... >::type;
 
 /// ------------------------------------------------------------------------------
 
@@ -1729,7 +1761,7 @@ struct seq_source
                     _vtable_can_call_value< _sig_vtable< S... >, V... >,
                     "Completion signatures do not contain set_value_t(V)" );
                 do_f( [&]( auto& n ) {
-                        _sn._set_value( (V&&) value... );
+                        n._set_value( (V&&) value... );
                 } );
         }
 
@@ -1747,7 +1779,7 @@ struct seq_source
                     "Completion signatures do not contain set_error_t(E1)" );
                 // XXX: should this treat all entries or just the front one?
                 do_f( [&]( auto& n ) {
-                        _sn._set_error( (E1&&) err );
+                        n._set_error( (E1&&) err );
                 } );
         }
 
@@ -1762,7 +1794,7 @@ struct seq_source
                     "Completion signatures do not contain set_stopped_t()" );
                 // XXX: should this treat all entries or just the front one?
                 do_f( [&]( auto& n ) {
-                        _sn._set_stopped();
+                        n._set_stopped();
                 } );
         }
 
@@ -1795,6 +1827,8 @@ private:
 
         zll::sh_heap< _sh_entry< K, S... > > _sh;
 };
+
+// ------------------------------------------------------------------------------
 
 
 template < typename T >
@@ -1843,6 +1877,7 @@ _just_error< T > just_error( T err )
         return _just_error< T >{ std::move( err ) };
 }
 
+// ------------------------------------------------------------------------------
 
 enum class _awaitable_state_e : uint8_t
 {
@@ -1850,13 +1885,21 @@ enum class _awaitable_state_e : uint8_t
         value
 };
 
-struct _itask_op : zll::ll_base< _itask_op >
+/// Base class for task promises that can be resumed by the task scheduler.
+struct _i_task_promise : zll::ll_base< _i_task_promise >
 {
         virtual void resume() = 0;
 };
 
+/// Maintains a list of ready tasks that can be resumed. Used by the library to re-schedule woken-up
+/// tasks. Has to be periodically polled by the user to run the ready tasks, either by calling
+/// run_once() to run a single task, or run_n() to run multiple tasks.
+///
 struct task_core
 {
+        /// Run a single ready task if there is one. This removes the task from the list of ready
+        /// tasks and resumes it. Returns true if a task was run, or false if there were no ready
+        /// tasks to run.
         bool run_once()
         {
                 if ( _ready_tasks.empty() )
@@ -1867,6 +1910,8 @@ struct task_core
                 return true;
         }
 
+        /// Run up to n ready tasks. This repeatedly calls run_once() until either n tasks have been
+        /// run or there are no more ready tasks to run.
         void run_n( std::size_t n )
         {
                 for ( std::size_t i = 0; i < n; ++i )
@@ -1874,19 +1919,21 @@ struct task_core
                                 break;
         }
 
-        void reschedule( _itask_op& op )
+        /// Reschedule a task by adding it's promise to the list of ready tasks. The task will be
+        /// resumed the next time run_once() or run_n() is called.
+        void reschedule( _i_task_promise& op ) noexcept
         {
                 _ready_tasks.link_back( op );
         }
 
 private:
-        zll::ll_list< _itask_op > _ready_tasks;
+        zll::ll_list< _i_task_promise > _ready_tasks;
 };
 
 template < typename T >
-struct _expected
+struct _awaitable_expected
 {
-        _expected() noexcept {};
+        _awaitable_expected() noexcept {};
 
         _awaitable_state_e state = _awaitable_state_e::empty;
         union
@@ -1895,13 +1942,13 @@ struct _expected
         };
 
         template < typename... Args >
-        void set_value( Args&&... args ) noexcept
+        void set_value( Args&&... args ) noexcept( std::is_nothrow_constructible_v< T, Args... > )
         {
                 new ( (void*) &val ) T( (Args&&) args... );
                 state = _awaitable_state_e::value;
         }
 
-        ~_expected() noexcept
+        ~_awaitable_expected() noexcept
         {
                 if ( state == _awaitable_state_e::value )
                         val.~T();
@@ -1909,9 +1956,10 @@ struct _expected
 };
 
 template <>
-struct _expected< void >
+struct _awaitable_expected< void >
 {
-        _expected() noexcept     = default;
+        _awaitable_expected() noexcept = default;
+
         _awaitable_state_e state = _awaitable_state_e::empty;
 
         void set_value() noexcept
@@ -1920,6 +1968,9 @@ struct _expected< void >
         }
 };
 
+/// Helper to extract the value type from the completion signatures of a sender, for use in the
+/// awaitable implementation. This is used to determine the type that the awaitable will return when
+/// co_awaited.
 template < typename T >
 struct _awaitable_extract_type;
 
@@ -1947,93 +1998,95 @@ struct _awaitable_extract_type< std::variant<> >
         using type = void;
 };
 
+/// Awaitable type for co_awaiting on senders. This is the type returned by the operator co_await of
+/// senders, and contains the state for the awaitable operation, including the expected result of
+/// the operation and the operation state for the sender.
+///
+/// Awaitable resumes coroutine only on on_value signal.
+///
 template < typename PromiseType, typename S >
-struct _awaitable
+struct _task_awaitable
 {
-        _awaitable( S sender, std::coroutine_handle< PromiseType > h )
+        _task_awaitable( S sender )
           : _exp()
-          , _op( std::move( sender ).connect( _receiver{ ._exp = &_exp, ._cont = h } ) )
+          , _op( std::move( sender ).connect( _receiver{ ._self = this } ) )
         {
         }
 
+        /// Awaitable is never ready
         [[nodiscard]] bool await_ready() const noexcept
         {
                 return false;
         }
 
-        void await_suspend( std::coroutine_handle< PromiseType > ) noexcept
+        /// Starts the operation state on awaiter suspension.
+        void await_suspend( std::coroutine_handle< PromiseType > ch ) noexcept
         {
+                _promise = &ch.promise();
                 _op.start();
         }
 
-        auto await_resume() noexcept
+        /// Resumes the coroutine when the operation completes. This assumes that the operation
+        /// completed with a value, and returns the value if there is one. Undefined behavior if the
+        /// operation completed with an error or was stopped.
+        decltype( auto ) await_resume() noexcept
         {
+                ECOR_ASSERT( _exp.state == _awaitable_state_e::value );
                 if constexpr ( std::same_as< value_type, void > )
-                        switch ( _exp.state ) {
-                        case _awaitable_state_e::empty:
-                                ECOR_ASSERT( false );
-                        case _awaitable_state_e::value:
-                                return;
-                        }
-                else {
-                        switch ( _exp.state ) {
-                        case _awaitable_state_e::empty:
-                                ECOR_ASSERT( false );
-                        case _awaitable_state_e::value:
-                                break;
-                        }
+                        return;
+                else
                         return std::move( _exp.val );
-                }
         }
 
         using _env         = decltype( std::declval< PromiseType >().get_env() );
         using _completions = _sender_completions_t< std::remove_cvref_t< S >, _env >;
         using _values      = _filter_values_as_variant_tuple_t< _completions >;
-        using _errors      = _filter_erros_as_variant_t< _completions >;
         static_assert(
             std::variant_size_v< _values > <= 1,
-            "Multiple set_value completions not supported" );
+            "Multiple set_value completions in awaitable not supported" );
 
+        /// Type of value returned by the awaitable when co_awaited.
         using value_type = typename _awaitable_extract_type< _values >::type;
-
-        using _aw_tp = _expected< value_type >;
 
         struct _receiver
         {
                 using receiver_concept = receiver_t;
 
-                _aw_tp*                              _exp;
-                std::coroutine_handle< PromiseType > _cont;
+                _task_awaitable* _self;
 
                 template < typename... Ts >
-                void set_value( Ts&&... vals ) noexcept
+                void set_value( Ts&&... vals ) noexcept(
+                    std::is_nothrow_constructible_v< value_type, Ts... > ||
+                    std::same_as< value_type, void > )
                 {
-                        _exp->set_value( (Ts&&) vals... );
-                        _cont.promise().reschedule();
+                        _self->_exp.set_value( (Ts&&) vals... );
+                        _self->_promise->core.reschedule( *_self->_promise );
                 }
 
-                template < typename... Es >
-                void set_error( Es&&... errs ) noexcept
+                template < typename E >
+                void set_error( E&& err )
                 {
-                        _cont.promise()._g.set_error( (Es&&) errs... );
+                        _self->_promise->invoke_set_error( (E&&) err );
                 }
 
-                void set_stopped() noexcept
+                void set_stopped()
                 {
-                        _cont.promise()._g.set_stopped();
+                        _self->_promise->invoke_set_stopped();
                 }
 
-                [[nodiscard]] auto
-                get_env() const noexcept -> decltype( std::declval< PromiseType >().get_env() )
+                [[nodiscard]] decltype( auto ) get_env() const noexcept
                 {
-                        return _cont.promise().get_env();
+                        return _self->_promise->get_env();
                 }
         };
 
-        using _op_t = connect_type< S, _receiver >;
 
-        _aw_tp _exp;
-        _op_t  _op;
+private:
+        PromiseType*                      _promise;
+        _awaitable_expected< value_type > _exp;
+
+        using _op_t = connect_type< S, _receiver >;
+        _op_t _op;
 };
 
 template < class Alloc >
@@ -2043,10 +2096,19 @@ concept simple_allocator = requires( Alloc alloc, size_t n ) {
 } && std::copy_constructible< Alloc > && std::equality_comparable< Alloc >;
 
 
+/// Task memory resource that provides allocation and deallocation functions for tasks. This is used
+/// by the task implementation to allocate memory for the task state, and can be customized by the
+/// user to use different allocation strategies.
+///
+/// Type erasure is used to allow the task implementation to use the memory resource without knowing
+/// its type, and the memory resource is stored as a pointer to the user-provided allocator along
+/// with function pointers for allocation and deallocation that operate on the user-provided
+/// allocator.
+///
 struct task_memory_resource
 {
         template < typename M >
-        task_memory_resource( M& m )
+        task_memory_resource( M& m ) noexcept
           : mem( &m )
         {
                 alloc = +[]( void* mem, std::size_t const sz, std::size_t const align ) {
@@ -2057,12 +2119,12 @@ struct task_memory_resource
                 };
         }
 
-        [[nodiscard]] void* allocate( std::size_t const sz, std::size_t const align ) const noexcept
+        [[nodiscard]] void* allocate( std::size_t const sz, std::size_t const align ) const
         {
                 return alloc( mem, sz, align );
         }
 
-        void deallocate( void* p, std::size_t const sz, std::size_t const align ) const noexcept
+        void deallocate( void* p, std::size_t const sz, std::size_t const align ) const
         {
                 dealloc( mem, p, sz, align );
         }
@@ -2080,6 +2142,7 @@ struct get_task_core_t
                 return t.query( get_task_core_t{} );
         }
 };
+/// CPO for getting the task core from the context argument.
 inline constexpr get_task_core_t get_task_core{};
 
 struct get_memory_resource_t
@@ -2090,8 +2153,15 @@ struct get_memory_resource_t
                 return t.query( get_memory_resource_t{} );
         }
 };
+/// CPO for getting the memory resource from the context argument.
 inline constexpr get_memory_resource_t get_memory_resource{};
 
+/// Basic task context that provides the task with necessary resources: task_core and
+/// task_memory_resource.
+///
+/// Users can customize the context by providing their own type that contains these resources and
+/// implements the query functions.
+///
 struct task_ctx
 {
         task_memory_resource alloc;
@@ -2113,132 +2183,101 @@ struct task_ctx
         }
 };
 
+/// Concept for the task context. A type satisfies this concept if it provides a task core and a
+/// task memory resource that can be accessed through the get_task_core and get_memory_resource
+/// CPOs.
+template < typename T >
+concept task_context = requires( T t ) {
+        { get_task_core( t ) } -> std::same_as< task_core& >;
+        { get_memory_resource( t ) } -> std::same_as< task_memory_resource& >;
+};
+
+/// Task can be configured by passing type with configuration information. This is default value.
 struct task_default_cfg
 {
         using extra_error_signatures = completion_signatures<>;
 };
 
+/// Concept for the task configuration. A type is task configuration if:
+/// - It has a nested type `extra_error_signatures` that is a `completion_signatures` type, which
+///   specifies the additional error signatures that the task can complete with, in addition to the
+///   default set of error signatures defined by the library. This allows the user to customize the
+///   error handling of the task.
 template < typename T >
 concept task_config = requires() { typename T::extra_error_signatures; };
 
 template < typename T, task_config CFG = task_default_cfg >
 struct task;
 
+/// Errors that can be emitted by the task implementation.
 enum class task_error : uint8_t
 {
-        none,
-        task_unfinished,
-        task_allocation_failure,
-        task_already_done,
+        none                     = 1,  ///< No error
+        task_unfinished          = 2,  ///< Task was destructed without signal.
+        task_allocation_failure  = 3,  ///< Task memory allocation failed.
+        task_already_started     = 4,  ///< Task was already started.
+        task_unhandled_exception = 5,  ///< Task threw an exception that was not caught.
+        task_missing             = 6,  ///< Coroutine task handle is empty.
 };
 
-template < typename Task >
-struct _task_finish_guard
-{
-        template < typename U >
-        void set_error( U&& err ) noexcept
-        {
-                ECOR_ASSERT( this->_recv );
-                if ( this->_recv ) {
-                        auto* r = std::exchange( this->_recv, nullptr );
-                        r->invoke( set_error_t{}, _obj, (U&&) err );
-                }
-        }
-
-        template < typename... U >
-        void set_value( U&&... v ) noexcept
-        {
-                ECOR_ASSERT( this->_recv );
-                if ( this->_recv ) {
-                        auto* r = std::exchange( this->_recv, nullptr );
-                        r->invoke( set_value_t{}, this->_obj, (U&&) v... );
-                }
-        }
-
-        void set_stopped() noexcept
-        {
-                ECOR_ASSERT( this->_recv );
-                if ( this->_recv ) {
-                        auto* r = std::exchange( this->_recv, nullptr );
-                        r->invoke( set_stopped_t{}, this->_obj );
-                }
-        }
-
-        void on_final_suspend() noexcept
-        {
-                if ( _recv ) {
-                        auto* r = std::exchange( this->_recv, nullptr );
-                        r->invoke( set_error_t{}, _obj, task_error::task_unfinished );
-                }
-        }
-
-        template < typename U >
-        void setup_continuable( U& p )
-        {
-                this->_recv = &_vtable_of< U, U, vtable >;
-                this->_obj  = static_cast< void* >( &p );
-        }
-
-protected:
-        using sigs          = typename Task::completion_signatures;
-        using vtable        = typename _vtable_of_sigs< sigs >::type;
-        vtable const* _recv = nullptr;
-        void*         _obj  = nullptr;
-};
-
-struct _promise_base : _itask_op
+/// Base class for task promises. This implements the common functionality for all task promises,
+/// such as memory allocation and deallocation, and provides the interface for rescheduling the task
+/// when it is resumed by the task scheduler.
+struct _promise_base : _i_task_promise
 {
         static constexpr std::size_t align = alignof( std::max_align_t );
-        struct vtable
-        {
-                task_memory_resource* mem = nullptr;
-        };
-        static constexpr std::size_t spacing = align > sizeof( vtable ) ? align : sizeof( vtable );
+        static constexpr std::size_t spacing =
+            align > sizeof( task_memory_resource* ) ? align : sizeof( task_memory_resource* );
 
-        // XXX: check the noexcept thing
-
-        static void* alloc( std::size_t sz, task_memory_resource& mem ) noexcept
+        /// Allocate memory for the task promise using the task memory resource, and store a pointer
+        /// to the memory resource in the allocated memory for later use in deallocation.
+        static void* _alloc( std::size_t sz, task_memory_resource& mem )
         {
                 sz += spacing;
                 void* const vp = allocate( mem, sz, align );
                 if ( !vp )
                         return nullptr;
-                vtable vt{
-                    .mem = &mem,
-                };
-                std::memcpy( vp, (void const*) &vt, sizeof( vt ) );
+                auto* pmem = &mem;
+                std::memcpy( vp, (void const*) &pmem, sizeof( task_memory_resource* ) );
                 return ( (char*) vp ) + spacing;
         }
 
-        static void dealloc( void* const ptr, std::size_t const sz ) noexcept
+        /// Deallocate memory for the task promise using the task memory resource. This retrieves
+        /// the pointer to the memory resource that was stored in the allocated memory during
+        /// allocation, and uses it to deallocate the memory for the task promise.
+        static void _dealloc( void* const ptr, std::size_t const sz )
         {
-                void*  beg = ( (char*) ptr ) - spacing;
-                vtable vt;
-                std::memcpy( (void*) &vt, beg, sizeof( vt ) );
-                deallocate( *vt.mem, beg, sz + spacing, align );
+                void*                 beg = ( (char*) ptr ) - spacing;
+                task_memory_resource* mem = nullptr;
+                std::memcpy( (void*) &mem, beg, sizeof( task_memory_resource* ) );
+                deallocate( *mem, beg, sz + spacing, align );
         }
 
-        void* operator new( std::size_t const sz, auto&& ctx, auto&&... ) noexcept
+        void* operator new( std::size_t const sz, task_context auto&& ctx, auto&&... ) noexcept
         {
+                /// XXX: we can't guarantee noexcept of the subcalls - try/catch?
                 task_memory_resource& a = get_memory_resource( ctx );
-                return alloc( sz, a );
+                return _alloc( sz, a );
         }
 
         void operator delete( void* const ptr, std::size_t const sz ) noexcept
         {
-                dealloc( ptr, sz );
+                /// XXX: we can't guarantee noexcept of the subcalls - try/catch?
+                _dealloc( ptr, sz );
         }
 
-        _promise_base( auto&& ctx, auto&&... )
+        _promise_base( _promise_base const& )            = delete;
+        _promise_base& operator=( _promise_base const& ) = delete;
+
+        /// Construct the promise base by extracting the task core from the context argument and
+        /// initializing the token.
+        _promise_base( task_context auto&& ctx, auto&&... )
           : core( get_task_core( ctx ) )
           , token()
         {
         }
 
-        void unhandled_exception()
-        {
-        }
-
+        /// Task always starts suspended.
         std::suspend_always initial_suspend() noexcept
         {
                 return {};
@@ -2252,7 +2291,7 @@ struct _promise_base : _itask_op
                 inplace_stop_token& token;
 
                 [[nodiscard]]
-                auto query( get_stop_token_t ) const noexcept
+                inplace_stop_token& query( get_stop_token_t ) const noexcept
                 {
                         return token;
                 }
@@ -2262,65 +2301,56 @@ struct _promise_base : _itask_op
         {
                 return { token };
         }
-
-        void reschedule()
-        {
-                core.reschedule( *this );
-        }
 };
 
+template < typename Task, typename CFG >
+struct _promise_type;
 
-template < typename T >
-struct _promise_type_value
+/// Promise type subset that implements value_type specific behavior of the task.
+template < typename Task, typename CFG, typename Val = typename Task::value_type >
+struct _promise_return_mixin
 {
-        _task_finish_guard< T > _g;
-
-        void return_value( typename T::value_type v ) noexcept
+        void return_value( Val v )
         {
-                _g.set_value( std::move( v ) );
-        }
-
-        std::suspend_always final_suspend() noexcept
-        {
-                _g.on_final_suspend();
-                return {};
+                static_cast< _promise_type< Task, CFG >* >( this )->invoke_set_value(
+                    std::move( v ) );
         }
 };
 
-template < typename T >
-        requires( std::same_as< typename T::value_type, void > )
-struct _promise_type_value< T >
+template < typename Task, typename CFG >
+struct _promise_return_mixin< Task, CFG, void >
 {
-        _task_finish_guard< T > _g;
-
-        void return_void() noexcept
+        void return_void()
         {
-                _g.set_value();
-        }
-
-        std::suspend_always final_suspend() noexcept
-        {
-                _g.on_final_suspend();
-                return {};
+                static_cast< _promise_type< Task, CFG >* >( this )->invoke_set_value();
         }
 };
 
-template < typename E >
-struct with_error
-{
-        using type = std::remove_cvref_t< E >;
-        E error;
-};
-
-template < typename Task >
-struct _promise_type : _promise_base, _promise_type_value< Task >
+/// Promise type for the task. This implements the promise interface required for C++ coroutines,
+/// and inherits from the promise base and the value mixin to provide the necessary functionality
+/// for the task promise.
+///
+/// - Suspends on initial_suspend, is expected to run after start() is called on the operation state
+///   returned by connect().
+/// - Provides API for library to signal sender completions to the task's receiver, by invoking the
+///   appropriate set_value, set_error, or set_stopped signals on the stored continuable object.
+/// - Allows yielding errors that are compatible with the task's error signatures, by implementing
+///   yield_value that forwards to the awaitable transformation of just_error sender.
+/// - Provides the await_transform function that wraps any sender into _task_awaitable, which allows
+///   co_awaiting on senders from the task coroutine.
+///
+template < typename Task, typename CFG >
+struct _promise_type : _promise_base, _promise_return_mixin< Task, CFG, typename Task::value_type >
 {
         using value_type = typename Task::value_type;
         using _promise_base::_promise_base;
+        using vtable = _apply_to_sigs_t< _sig_vtable, typename Task::completion_signatures >;
+
+        _promise_type( _promise_type const& )            = delete;
+        _promise_type& operator=( _promise_type const& ) = delete;
 
         static Task get_return_object_on_allocation_failure()
         {
-                // write test cases for this
                 return {
                     std::coroutine_handle< _promise_type >{}, task_error::task_allocation_failure };
         }
@@ -2331,21 +2361,17 @@ struct _promise_type : _promise_base, _promise_type_value< Task >
         }
 
         template < typename E >
-                requires( _sigs_contains_type<
-                          set_error_t( E ),
-                          typename Task::_error_completions >::value )
+                requires( _vtable_can_call_error< vtable, E > )
         auto yield_value( with_error< E > error )
         {
                 return await_transform( just_error( std::move( error.error ) ) );
         }
-
 
         template < typename T >
         decltype( auto ) await_transform( T&& x ) noexcept
         {
                 using U = std::remove_cvref_t< T >;
                 if constexpr ( sender< U > ) {
-                        // XXX: leaky implementation detail
                         using compls = _sender_completions_t< U, typename _promise_base::_env >;
                         using errs   = _filter_errors_of_t< compls >;
                         static_assert(
@@ -2355,28 +2381,93 @@ struct _promise_type : _promise_base, _promise_type_value< Task >
                         static_assert(
                             std::variant_size_v< vals > <= 1,
                             "Sender used in co_await must only complete with a single set_value signature" );
-                        return _awaitable< _promise_type, T >{
-                            (T&&) x,
-                            std::coroutine_handle< _promise_type >::from_promise( *this ) };
+                        return _task_awaitable< _promise_type, T >{ (T&&) x };
                 } else {
                         return (T&&) x;
                 }
         }
 
+        void unhandled_exception() noexcept
+        {
+                this->invoke_set_error( task_error::task_unhandled_exception );
+        }
 
         void resume() override
         {
                 auto h = std::coroutine_handle< _promise_type >::from_promise( *this );
                 h.resume();
         }
+
+        template < typename U >
+        void invoke_set_error( U&& err )
+        {
+                ECOR_ASSERT( this->_recv );
+                if ( this->_recv ) {
+                        auto* r = std::exchange( this->_recv, nullptr );
+                        r->invoke( set_error_t{}, _obj, (U&&) err );
+                }
+        }
+
+        template < typename... U >
+        void invoke_set_value( U&&... v )
+        {
+                ECOR_ASSERT( this->_recv );
+                if ( this->_recv ) {
+                        auto* r = std::exchange( this->_recv, nullptr );
+                        r->invoke( set_value_t{}, this->_obj, (U&&) v... );
+                }
+        }
+
+        void invoke_set_stopped()
+        {
+                ECOR_ASSERT( this->_recv );
+                if ( this->_recv ) {
+                        auto* r = std::exchange( this->_recv, nullptr );
+                        r->invoke( set_stopped_t{}, this->_obj );
+                }
+        }
+
+        std::suspend_always final_suspend() noexcept
+        {
+                if ( _recv ) {
+                        auto* r = std::exchange( this->_recv, nullptr );
+                        r->invoke( set_error_t{}, _obj, task_error::task_unfinished );
+                }
+                return {};
+        }
+
+        template < typename U >
+        void setup_continuable( U& p )
+        {
+                this->_recv = &_vtable_of< U, U, vtable >;
+                this->_obj  = static_cast< void* >( &p );
+        }
+
+        ~_promise_type() noexcept
+        {
+                if ( _recv )
+                        this->_recv->invoke( set_stopped_t{}, _obj );
+        }
+
+        vtable const* _recv = nullptr;
+        void*         _obj  = nullptr;
 };
+
+/// Operation state for the task sender. This is the type returned by the connect() function of the
+/// task sender, and it contains the state for the operation of starting the task, including the
+/// coroutine handle for the task promise, the receiver to which the task will send its completion
+/// signals, and any error that occurred during the setup of the operation. The start() function of
+/// this type is called to start the task, which will resume the task coroutine and begin its
+/// execution.
 template < typename T, task_config CFG, typename R >
 struct _task_op
 {
+        using promise_type            = _promise_type< task< T, CFG >, CFG >;
         using operation_state_concept = operation_state_t;
 
         _task_op() noexcept = default;
-        _task_op( task_error err, std::coroutine_handle< _promise_type< task< T, CFG > > > h, R r )
+        _task_op( task_error err, std::coroutine_handle< promise_type > h, R r ) noexcept(
+            std::is_nothrow_move_constructible_v< R > )
           : _h( h )
           , _recv( std::move( r ) )
           , _error( err )
@@ -2388,11 +2479,14 @@ struct _task_op
         _task_op( _task_op&& other ) noexcept
           : _h( std::exchange( other._h, nullptr ) )
           , _recv( std::move( other._recv ) )
-          , _error( other._error )
+          , _error( std::exchange( other._error, task_error::none ) )
         {
         }
+
         _task_op& operator=( _task_op&& other ) noexcept
         {
+                if ( this == &other )
+                        return *this;
                 _task_op cpy{ std::move( other ) };
                 std::swap( _h, cpy._h );
                 std::swap( _recv, cpy._recv );
@@ -2400,21 +2494,36 @@ struct _task_op
                 return *this;
         }
 
+        /// Start the task by resuming the task coroutine. If there was an error during the setup of
+        /// the operation, such as an allocation failure or the task being already started, then the
+        /// error is sent to the receiver instead of starting the task.
+        ///
+        /// If the task was successfully started, then the task coroutine will be resumed and will
+        /// begin its execution, and the completion signals from the task will be sent to the
+        /// receiver when the task completes.
+        ///
+        /// Coroutine is not resumed in this call, but rather scheduled to be resumed by the task
+        /// core.
+        ///
         void start()
         {
                 if ( _error != task_error::none ) {
                         _recv.set_error( _error );
                         return;
                 }
-                if ( !_h || _h.done() ) {
-                        _recv.set_error( task_error::task_already_done );
+                if ( !_h ) {
+                        _recv.set_error( task_error::task_missing );
+                        return;
+                }
+                if ( _h.done() ) {
+                        _recv.set_error( task_error::task_already_started );
                         return;
                 }
                 if constexpr ( !std::same_as<
                                    decltype( get_stop_token( _recv.get_env() ) ),
                                    never_stop_token > )
                         _h.promise().token = get_stop_token( _recv.get_env() );
-                _h.promise()._g.setup_continuable( _recv );
+                _h.promise().setup_continuable( _recv );
                 _h.promise().core.reschedule( _h.promise() );
         }
 
@@ -2432,37 +2541,78 @@ struct _task_op
                 return this->_h && !this->_h.done();
         }
 
+        /// Destroy the task operation. If the task coroutine is still active, then it is destroyed
+        /// without resuming it, and the task calls set_stopped on the receiver to signal that the
+        /// task was stopped before it could complete.
+        ///
         ~_task_op()
         {
                 if ( this->_h && !this->_h.done() )
                         this->_h.destroy();
         }
 
-        std::coroutine_handle< _promise_type< task< T, CFG > > > _h;
-        R                                                        _recv;
-        task_error                                               _error = task_error::none;
+        std::coroutine_handle< promise_type > _h;
+        R                                     _recv;
+        task_error                            _error = task_error::none;
 };
 
+/// Task type that represents an asynchronous operation that is implemented as a coroutine and is a
+/// sender.
+///
+/// The task type is parameterized by the value type it provides, and an optional configuration type
+/// that specifies additional behavior during compilation.
+///
+/// Task expectes argument satisfying task_context concept to be passed to the coroutine as first
+/// argument. This is used to provide the task with necessary runtime resources, such as the task
+/// core for scheduling and the task memory resource for dynamic memory allocation.
+///
+/// Task can be scheduled and processed as normal sender in the sender/receiver framework. The task
+/// has capability to co_await any sender as long as:
+///  - The sender has at most one set_value completion_signature.
+///  - The sender has only set_error completions that are compatible with the current task.
+///  - Note: The sender can have set_stopped completion signature.
+/// As a consequence of task being a sender and being able to await sender - tasks can await other
+/// tasks.
+///
+/// Task always starts suspended and only starts execution after start() was called on the operation
+/// state returned by connect().
+///
+/// When co_awaiting on a sender, the task will suspend until the sender completes, value signal
+/// of sender does not immediately resume the task, but instead the task is scheduled to be resumed
+/// by the task core. In case of an error or stop signal from the sender, the task will not be
+/// resumed, but instead the error or stop signal will be immediately propagated to the task's
+/// receiver, and the task will be considered completed and will be destructed.
+///
+/// Task completion signature is always fixed and independent of the content of the coroutine
+/// itself, or the receiver environment:
+///   - set_value_t( value_type ) where value_type is the type specified by the user as the first
+///     template parameter of the task. If the value type is void, then the set_value signature is
+///     set_value_t().
+///   - set_error_t( task_error ) - This is the default error signature that all tasks have, and it
+///     is used to report errors that occur during the execution of the task, such as allocation
+///     failures or unfinished
+///   - Additional error signatures specified by the user in the task configuration.
+///   - set_stopped_t() - This is used to report that the task was stopped before it could complete,
+///     either by the user or by the library.
+///
 template < typename T, task_config CFG >
 struct task
 {
         using sender_concept = sender_t;
         using value_type     = T;
-        using promise_type   = _promise_type< task >;
+        using promise_type   = _promise_type< task, CFG >;
 
-        // XXX: append?
-        using _error_completions = _sigs_merge_t<
-            ecor::completion_signatures< set_error_t( task_error ) >,
-            typename CFG::extra_error_signatures >;
+        using _error_completions =
+            _sigs_append_t< typename CFG::extra_error_signatures, set_error_t( task_error ) >;
 
-        // XXX: convert to simple concat instead of merge
-        using completion_signatures = _sigs_merge_t<
-            ecor::completion_signatures< _value_setter_t< T >, set_stopped_t() >,
-            _error_completions >;
+        using completion_signatures =
+            _sigs_append_t< _error_completions, _value_setter_t< T >, set_stopped_t() >;
+
         static_assert(
             alignof( promise_type ) <= alignof( std::max_align_t ),
             "Unsupported alignment" );
 
+        /// Constructor used by promise_type for coroutine creation.
         task(
             std::coroutine_handle< promise_type > handle,
             task_error                            error = task_error::none ) noexcept
@@ -2475,7 +2625,7 @@ struct task
         task& operator=( task const& ) = delete;
         task( task&& other ) noexcept
           : _h( std::exchange( other._h, nullptr ) )
-          , _error( other._error )
+          , _error( std::exchange( other._error, task_error::none ) )
         {
         }
 
@@ -2484,16 +2634,22 @@ struct task
                 if ( this != &other ) {
                         task tmp = std::move( other );
                         std::swap( _h, tmp._h );
+                        std::swap( _error, tmp._error );
                 }
                 return *this;
         }
-
 
         [[nodiscard]] empty_env get_env() const noexcept
         {
                 return {};
         }
 
+        /// Connect the task to a receiver. This returns an operation state that can be started to
+        /// begin the execution of the task.
+        ///
+        /// The operation is expected to be destructive, the task can't be connected again after
+        /// connect call.
+        ///
         template < receiver R >
         auto connect( R receiver ) &&
         {
@@ -2513,6 +2669,8 @@ private:
         task_error                            _error = task_error::none;
 };
 
+/// -------------------------------------------------------------------------------
+
 template < typename S1, typename S2, typename R >
 struct _or_op
 {
@@ -2525,7 +2683,7 @@ struct _or_op
         {
         }
 
-        // XXX: cancel of the other one shall be used isntead
+        // XXX: cancel of the other one shall be used instead
         void start()
         {
                 _op1.start();
