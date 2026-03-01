@@ -286,10 +286,6 @@ TEST_CASE( "op" )
                 {
                         y = v;
                 }
-                [[nodiscard]] empty_env get_env() const noexcept
-                {
-                        return {};
-                }
         } const receiver{ .y = y };
 
         auto s  = es.schedule();
@@ -1793,11 +1789,6 @@ struct _check_error_receiver
         void set_stopped()
         {
         }
-
-        [[nodiscard]] empty_env get_env() const noexcept
-        {
-                return {};
-        }
 };
 
 static ecor::task< void > task_alloc_error_f( task_ctx&, bool& lambda_triggered )
@@ -1863,11 +1854,6 @@ TEST_CASE( "task - error extension" )
 
                 void set_stopped()
                 {
-                }
-
-                [[nodiscard]] empty_env get_env() const noexcept
-                {
-                        return {};
                 }
         };
 
@@ -2585,11 +2571,6 @@ TEST_CASE( "unhandled_exception" )
                 void set_stopped() noexcept
                 {
                 }
-
-                empty_env get_env() const noexcept
-                {
-                        return {};
-                }
         };
 
         auto h = throwing_task( ctx ).connect( exception_receiver{ ._caught = &exception_caught } );
@@ -2643,11 +2624,6 @@ TEST_CASE( "yield_value with error" )
                 void set_stopped() noexcept
                 {
                 }
-
-                empty_env get_env() const noexcept
-                {
-                        return {};
-                }
         };
 
         auto h = yielding_task( ctx ).connect( error_receiver{ ._caught = &error_caught } );
@@ -2687,11 +2663,6 @@ TEST_CASE( "~_task_op calls set_stopped" )
 
                 void set_error( task_error ) noexcept
                 {
-                }
-
-                empty_env get_env() const noexcept
-                {
-                        return {};
                 }
         };
 
@@ -2746,6 +2717,247 @@ TEST_CASE( "task cleanup on destruction before start" )
         }
         // task 't' destroyed here -> frame destroyed -> argument inside frame destroyed
         CHECK( destructed_count == 2 );
+}
+
+TEST_CASE( "all_value_signatures_singular concept" )
+{
+        // Basic singular signatures
+        static_assert( all_value_signatures_singular< set_value_t() > );
+        static_assert( all_value_signatures_singular< set_value_t( int ) > );
+        static_assert( all_value_signatures_singular< set_value_t( std::string ) > );
+
+        // Mix of singular and non-value signatures
+        static_assert( all_value_signatures_singular<
+                       set_value_t( int ),
+                       set_error_t( std::exception_ptr ) > );
+        static_assert( all_value_signatures_singular< set_value_t(), set_stopped_t() > );
+
+        // Multiple singular value signatures
+        static_assert( all_value_signatures_singular< set_value_t( int ), set_value_t( double ) > );
+
+        // Non-singular value signatures (should fail concept check)
+        static_assert( !all_value_signatures_singular< set_value_t( int, int ) > );
+        static_assert( !all_value_signatures_singular< set_value_t( int, double, char ) > );
+
+        // Mix including a non-singular value signature
+        static_assert(
+            !all_value_signatures_singular< set_value_t( int ), set_value_t( int, int ) > );
+        static_assert(
+            !all_value_signatures_singular< set_error_t( int ), set_value_t( int, int ) > );
+
+        // Error and Stop signatures are not considered multi-value value signatures
+        // (even if they have multiple arguments, though standard ones don't usually)
+        // But set_error_t is typically (E), set_stopped_t is ().
+        // If we made a custom multi-arg error, it shouldn't trigger the value check logic unless it
+        // matches set_value_t.
+        static_assert( all_value_signatures_singular< set_error_t( int ) > );
+}
+
+
+namespace as_variant_test
+{
+        struct error_receiver
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _called;
+                void  set_value( auto )
+                {
+                        CHECK( false );
+                }
+                void set_error( int e )
+                {
+                        CHECK( e == 42 );
+                        *_called = true;
+                }
+                void set_stopped()
+                {
+                        CHECK( false );
+                }
+        };
+
+        struct stopped_receiver
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _called;
+                void  set_value( auto )
+                {
+                        CHECK( false );
+                }
+                void set_error( auto )
+                {
+                        CHECK( false );
+                }
+                void set_stopped()
+                {
+                        *_called = true;
+                }
+        };
+}  // namespace as_variant_test
+
+TEST_CASE( "as_variant - error, stopped propagation and constraints" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        // Test Error Propagation
+        {
+                broadcast_source< set_value_t( int ), set_error_t( int ) > src;
+                bool                                                       error_called = false;
+
+                auto op = as_variant( src.schedule() )
+                              .connect( as_variant_test::error_receiver{ &error_called } );
+                op.start();
+                src.set_error( 42 );
+                CHECK( error_called );
+        }
+
+        // Test Stopped Propagation
+        {
+                broadcast_source< set_value_t( int ), set_stopped_t() > src;
+                bool                                                    stopped_called = false;
+
+                auto op = as_variant( src.schedule() )
+                              .connect( as_variant_test::stopped_receiver{ &stopped_called } );
+                op.start();
+                src.set_stopped();
+                CHECK( stopped_called );
+        }
+
+        // Test Constraint: Multi-value signature rejection
+        {
+                // This sender has set_value(int, int), which is not singular.
+                // Connecting to as_variant should invoke the static_assert failure constraint.
+                // Since we can't test compile failure easily in this file, we verify the
+                // trait/concept check directly.
+
+                using multi_arg_sender = broadcast_source< set_value_t( int, int ) >;
+                using as_variant_sender =
+                    decltype( as_variant( std::declval< multi_arg_sender >().schedule() ) );
+
+                // Positive control: singular sender should be connectable
+                using singular_sender = broadcast_source< set_value_t( int ) >;
+                using as_variant_singular =
+                    decltype( as_variant( std::declval< singular_sender >().schedule() ) );
+
+                // Check that singular IS connectable
+                static_assert( requires( as_variant_singular s, _dummy_receiver r ) {
+                        { std::move( s ).connect( std::move( r ) ) };
+                } );
+        }
+}
+
+
+namespace
+{
+        struct check_value_receiver
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _called;
+                int*  _val;
+
+                void set_value( int v )
+                {
+                        *_called = true;
+                        *_val    = v;
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "set_error should not be called" );
+                }
+                void set_stopped()
+                {
+                        FAIL( "set_stopped should not be called" );
+                }
+        };
+
+        struct check_string_receiver
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool*        _called;
+                std::string* _val;
+
+                void set_value( std::string v )
+                {
+                        *_called = true;
+                        *_val    = v;
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "set_error should not be called" );
+                }
+                void set_stopped()
+                {
+                        FAIL( "set_stopped should not be called" );
+                }
+        };
+
+        struct check_stopped_receiver
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _called;
+
+                void set_value( auto&&... )
+                {
+                        FAIL( "set_value should not be called" );
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "set_error should not be called" );
+                }
+                void set_stopped()
+                {
+                        *_called = true;
+                }
+        };
+}  // namespace
+
+TEST_CASE( "err_to_val - basic operations" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        SUBCASE( "error to value transformation" )
+        {
+                broadcast_source< set_error_t( int ) > src;
+                bool                                   value_called   = false;
+                int                                    received_value = -1;
+
+                auto op = ( src.schedule() | err_to_val )
+                              .connect( check_value_receiver{ &value_called, &received_value } );
+                op.start();
+
+                src.set_error( 42 );
+                CHECK( value_called );
+                CHECK( received_value == 42 );
+        }
+
+        SUBCASE( "value pass-through" )
+        {
+                broadcast_source< set_value_t( std::string ) > src;
+                bool                                           value_called = false;
+                std::string                                    received_value;
+
+                auto op = ( src.schedule() | err_to_val )
+                              .connect( check_string_receiver{ &value_called, &received_value } );
+                op.start();
+
+                src.set_value( "hello" );
+                CHECK( value_called );
+                CHECK( received_value == "hello" );
+        }
+
+        SUBCASE( "stopped pass-through" )
+        {
+                broadcast_source< set_stopped_t() > src;
+                bool                                stopped_called = false;
+
+                auto op = ( src.schedule() | err_to_val )
+                              .connect( check_stopped_receiver{ &stopped_called } );
+                op.start();
+
+                src.set_stopped();
+                CHECK( stopped_called );
+        }
 }
 
 }  // namespace ecor

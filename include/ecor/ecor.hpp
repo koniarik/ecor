@@ -166,6 +166,80 @@ struct with_error
         }
 };
 
+template < typename T >
+struct _is_signature : std::false_type
+{
+};
+
+template < typename... Args >
+struct _is_signature< set_value_t( Args... ) > : std::true_type
+{
+};
+template < typename Err >
+struct _is_signature< set_error_t( Err ) > : std::true_type
+{
+};
+template <>
+struct _is_signature< set_stopped_t() > : std::true_type
+{
+};
+template <>
+struct _is_signature< _get_stopped_t() > : std::true_type
+{
+};
+
+/// Type is isgnature if it is one of the valid completion signatures (set_value, set_error,
+/// set_stopped, or _get_stopped). This is used to validate the types used in
+/// completion_signatures.
+template < typename T >
+concept signature = _is_signature< T >::value;
+
+template < typename T >
+struct _value_setter
+{
+        using type = set_value_t( T );
+};
+
+template <>
+struct _value_setter< void >
+{
+        using type = set_value_t();
+};
+
+/// Helper to get the set_value signature for a given type T. If T is void, the signature is
+/// set_value_t(), otherwise it is set_value_t( T ).
+template < typename T >
+using _value_setter_t = typename _value_setter< T >::type;
+
+template < typename... S >
+struct _multivalue_value_signature : std::false_type
+{
+};
+
+template < typename T, typename U, typename... Ts >
+struct _multivalue_value_signature< set_value_t( T, U, Ts... ) > : std::true_type
+{
+};
+
+/// Helper concept to check if all set_value signatures in a sender's completion signatures are
+/// singular, i.e. they have at exactly one argument.
+template < typename... S >
+concept all_value_signatures_singular = ( ... && !_multivalue_value_signature< S >::value );
+
+template < typename T >
+struct _is_all_singular;
+
+template < typename... S >
+struct _is_all_singular< completion_signatures< S... > >
+{
+        static constexpr bool value = all_value_signatures_singular< S... >;
+};
+
+/// Helper variable template for checking if all set_value signatures in completion signatures are
+/// singular.
+template < typename Sigs >
+static constexpr bool is_all_singular_v = _is_all_singular< Sigs >::value;
+
 
 // ------------------------------------------------------------------------------
 
@@ -708,10 +782,15 @@ struct _get_env_t
 /// member function, returns empty_env.
 inline constexpr _get_env_t get_env{};
 
+/// Helper to get the environment type of a sender or receiver. This is the type returned by get_env
+/// when called with an object of type T.
+template < typename T >
+using env_type = decltype( get_env( std::declval< T const& >() ) );
+
 struct _get_completion_signatures_t
 {
         template < typename S, typename E >
-        decltype( auto ) operator()( S& s, E& e ) const noexcept
+        decltype( auto ) operator()( S& s, E& e ) const
         {
                 static constexpr bool has_member = requires( S& s, E& e ) {
                         { s.get_completion_signatures( e ) };
@@ -760,51 +839,6 @@ concept receiver =
     } && std::move_constructible< std::remove_cvref_t< T > > &&
     std::constructible_from< std::remove_cvref_t< T >, T >;
 
-
-template < typename T >
-struct _is_signature : std::false_type
-{
-};
-
-template < typename... Args >
-struct _is_signature< set_value_t( Args... ) > : std::true_type
-{
-};
-template < typename Err >
-struct _is_signature< set_error_t( Err ) > : std::true_type
-{
-};
-template <>
-struct _is_signature< set_stopped_t() > : std::true_type
-{
-};
-template <>
-struct _is_signature< _get_stopped_t() > : std::true_type
-{
-};
-
-/// Type is isgnature if it is one of the valid completion signatures (set_value, set_error,
-/// set_stopped, or _get_stopped). This is used to validate the types used in
-/// completion_signatures.
-template < typename T >
-concept signature = _is_signature< T >::value;
-
-template < typename T >
-struct _value_setter
-{
-        using type = set_value_t( T );
-};
-
-template <>
-struct _value_setter< void >
-{
-        using type = set_value_t();
-};
-
-/// Helper to get the set_value signature for a given type T. If T is void, the signature is
-/// set_value_t(), otherwise it is set_value_t( T ).
-template < typename T >
-using _value_setter_t = typename _value_setter< T >::type;
 
 /// Single row of vtable for a specific completion signature. This contains the function pointer for
 /// invoking the corresponding completion signal on derived class, and a constructor that
@@ -1150,6 +1184,26 @@ struct _sigs_append_impl< completion_signatures< S... >, Ts... >
 /// Helper to append a list of signatures to an existing list of completion signatures.
 template < typename Sigs, typename... Ts >
 using _sigs_append_t = _sigs_append_impl< Sigs, Ts... >::type;
+
+template < typename S, typename... Ts >
+struct _sigs_concat_impl;
+
+template < typename... S >
+struct _sigs_concat_impl< completion_signatures< S... > >
+{
+        using type = completion_signatures< S... >;
+};
+
+template < typename... S1, typename... S2, typename... Ts >
+struct _sigs_concat_impl< completion_signatures< S1... >, completion_signatures< S2... >, Ts... >
+  : _sigs_concat_impl< completion_signatures< S1..., S2... >, Ts... >
+{
+};
+
+/// Helper to concatenate multiple lists of completion signatures into a single list that contains
+/// all signatures from the input lists.
+template < typename... Sigs >
+using _sigs_concat_t = _sigs_concat_impl< completion_signatures<>, Sigs... >::type;
 
 /// ------------------------------------------------------------------------------
 
@@ -1508,11 +1562,6 @@ struct _ll_sender
 
         using completion_signatures = ecor::completion_signatures< S... >;
 
-        [[nodiscard]] empty_env get_env() const noexcept
-        {
-                return {};
-        }
-
         template < receiver R >
         _ll_op< R, S... > connect( R receiver ) noexcept(
             noexcept( _ll_op< R, S... >{ _ll, std::move( receiver ) } ) )
@@ -1540,11 +1589,6 @@ struct _sh_sender
         }
 
         using completion_signatures = ecor::completion_signatures< S... >;
-
-        [[nodiscard]] empty_env get_env() const noexcept
-        {
-                return {};
-        }
 
         template < receiver R >
         _sh_op< R, K, S... > connect( R receiver ) && noexcept(
@@ -1860,11 +1904,6 @@ struct _just_error
         }
 
         using completion_signatures = ecor::completion_signatures< set_error_t( T ) >;
-
-        [[nodiscard]] empty_env get_env() const noexcept
-        {
-                return {};
-        }
 };
 
 /// Returns a sender that completes with the given error. The sender returned by this function has a
@@ -2038,7 +2077,7 @@ struct _task_awaitable
                         return std::move( _exp.val );
         }
 
-        using _env         = decltype( std::declval< PromiseType >().get_env() );
+        using _env         = env_type< PromiseType >;
         using _completions = _sender_completions_t< std::remove_cvref_t< S >, _env >;
         using _values      = _filter_values_as_variant_tuple_t< _completions >;
         static_assert(
@@ -2520,9 +2559,9 @@ struct _task_op
                         return;
                 }
                 if constexpr ( !std::same_as<
-                                   decltype( get_stop_token( _recv.get_env() ) ),
+                                   decltype( ecor::get_stop_token( ecor::get_env( _recv ) ) ),
                                    never_stop_token > )
-                        _h.promise().token = get_stop_token( _recv.get_env() );
+                        _h.promise().token = ecor::get_stop_token( ecor::get_env( _recv ) );
                 _h.promise().setup_continuable( _recv );
                 _h.promise().core.reschedule( _h.promise() );
         }
@@ -2639,11 +2678,6 @@ struct task
                 return *this;
         }
 
-        [[nodiscard]] empty_env get_env() const noexcept
-        {
-                return {};
-        }
-
         /// Connect the task to a receiver. This returns an operation state that can be started to
         /// begin the execution of the task.
         ///
@@ -2726,7 +2760,7 @@ struct _or_op
 
                 decltype( auto ) get_env() noexcept
                 {
-                        return _recv.get_env();
+                        return ecor::get_env( _recv );
                 }
         };
 
@@ -2753,15 +2787,11 @@ struct _or_sender
             _sigs_merge_t< _sender_completions_t< S1, Env >, _sender_completions_t< S2, Env > >;
 
         template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& )
+        _completions< Env > get_completion_signatures( Env&& ) noexcept
         {
                 return {};
         }
 
-        [[nodiscard]] empty_env get_env() const noexcept
-        {
-                return {};
-        }
 
         template < receiver R >
         _or_op< S1, S2, R > connect( R receiver )
@@ -2774,11 +2804,17 @@ private:
         S2 _s2;
 };
 
+/// XXX: not recommended for production use, is not safe - lifetime of the senders is not managed in
+/// any way, and it's on the user to ensure that they are valid until the completion of the
+/// operation. This is mostly intended for testing and demonstration purposes, and should be used
+/// with caution in production code.
 template < typename S1, typename S2 >
 _or_sender< S1, S2 > operator||( S1 s1, S2 s2 )
 {
         return { std::move( s1 ), std::move( s2 ) };
 }
+
+/// -------------------------------------------------------------------------------
 
 template < sender S >
 struct _as_variant
@@ -2788,6 +2824,8 @@ struct _as_variant
         template < typename Env >
         using _s_completions = _sender_completions_t< S, Env >;
 
+        /// All set_value completions of the sender, transformed to have their value types wrapped
+        /// in a std::variant.
         template < typename Env >
         using _values = typename _filter_map_tag<
             std::variant<>,
@@ -2802,21 +2840,22 @@ struct _as_variant
         using _stopped = _filter_stopped_of_t< _s_completions< Env > >;
 
         template < typename Env >
-        using _completions = _sigs_merge_t<
+        using _completions = _sigs_concat_t<
             completion_signatures< set_value_t( _values< Env > ) >,
             _error< Env >,
             _stopped< Env > >;
 
+        _as_variant( S s )
+          : _s( std::move( s ) )
+        {
+        }
+
         template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& )
+        _completions< Env > get_completion_signatures( Env&& ) noexcept
         {
                 return {};
         }
 
-        [[nodiscard]] empty_env get_env() const noexcept
-        {
-                return {};
-        }
 
         template < typename R >
         struct _recv : R
@@ -2828,44 +2867,56 @@ struct _as_variant
                 {
                 }
 
-                using value_t = _values< decltype( std::declval< R >().get_env() ) >;
+                using _env       = env_type< R >;
+                using value_type = _values< _env >;
 
                 template < typename T >
                 void set_value( T&& val ) noexcept
                 {
-                        R::set_value( value_t{ (T&&) val } );
+                        R::set_value( value_type{ (T&&) val } );
                 }
         };
 
         template < receiver R >
         auto connect( R receiver ) &&
         {
+                static_assert(
+                    is_all_singular_v< _s_completions< env_type< R > > >,
+                    "All set_value signatures of sender must be singular (exactly one argument) to use as_variant" );
                 return std::move( _s ).connect( _recv< R >{ std::move( receiver ) } );
         }
 
-        _as_variant( S s )
-          : _s( std::move( s ) )
-        {
-        }
-
+private:
         S _s;
 };
 
+/// CPO for transforming a sender to have its set_value completions wrapped in a std::variant. This
+/// is useful for cases where a sender has multiple set_value completions with different value
+/// types, and the user wants to unify them into a single set_value completion with a std::variant
+/// of the value types.
+///
+/// Expects that all set_value completions of the sender have exactly one argument, and the
+/// resulting set_value completion of the transformed sender will have a single argument of type
+/// std::variant of the original value types.
+///
 [[maybe_unused]] static inline struct as_variant_t
 {
         template < sender S >
-        auto operator()( S s ) const noexcept
+        auto operator()( S s ) const
         {
                 return _as_variant< S >{ std::move( s ) };
         }
 
 } as_variant;
 
-auto operator|( auto s, as_variant_t ) noexcept
+/// Operator| overload for as_variant CPO. This allows using the pipe syntax to apply the as_variant
+/// transformation to a sender.
+auto operator|( auto s, as_variant_t )
 {
         return as_variant( std::move( s ) );
 }
 
+/// -------------------------------------------------------------------------------
 
 template < sender S >
 struct _err_to_val
@@ -2890,19 +2941,18 @@ struct _err_to_val
 
         template < typename Env >
         using _completions =
-            _sigs_merge_t< _s_values< Env >, _s_errors_as_val< Env >, _stopped< Env > >;
+            _sigs_concat_t< _s_values< Env >, _s_errors_as_val< Env >, _stopped< Env > >;
 
         template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& )
+        _completions< Env > get_completion_signatures( Env&& ) noexcept
         {
                 return {};
         }
 
-        [[nodiscard]] empty_env get_env() const noexcept
+        _err_to_val( S s )
+          : _s( std::move( s ) )
         {
-                return {};
         }
-
 
         template < typename R >
         struct _recv : R
@@ -2915,7 +2965,7 @@ struct _err_to_val
                 }
 
                 template < typename... Ts >
-                void set_error( Ts&&... errs ) noexcept
+                void set_error( Ts&&... errs )
                 {
                         R::set_value( (Ts&&) errs... );
                 }
@@ -2927,23 +2977,30 @@ struct _err_to_val
                 return std::move( _s ).connect( _recv< R >{ std::move( receiver ) } );
         }
 
+private:
         S _s;
 };
 
+/// CPO for transforming a sender to convert all its set_error completions into set_value
+/// completions.
 [[maybe_unused]] static inline struct err_to_val_t
 {
         template < sender S >
-        auto operator()( S s ) const noexcept
+        auto operator()( S s ) const
         {
                 return _err_to_val< S >{ std::move( s ) };
         }
 
 } err_to_val;
 
-auto operator|( auto s, err_to_val_t ) noexcept
+/// Operator| overload for err_to_val CPO. This allows using the pipe syntax to apply the err_to_val
+/// transformation to a sender.
+auto operator|( auto s, err_to_val_t )
 {
         return err_to_val( std::move( s ) );
 }
+
+/// -------------------------------------------------------------------------------
 
 template < sender S >
 struct _sink_err
@@ -2972,16 +3029,7 @@ struct _sink_err
             _s_stopped< Env > >;
 
         template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& )
-        {
-                static_assert(
-                    std::same_as< _s_values< Env >, completion_signatures<> > ||
-                        std::same_as< _s_values< Env >, completion_signatures< set_value_t() > >,
-                    "Sender used with sink_err must not complete with set_value, or there has to be only one set_value of shape set_value_t()" );
-                return {};
-        }
-
-        [[nodiscard]] empty_env get_env() const noexcept
+        _completions< Env > get_completion_signatures( Env&& ) noexcept
         {
                 return {};
         }
@@ -2996,7 +3044,8 @@ struct _sink_err
                 {
                 }
 
-                using value_t = _s_errors_as_val< decltype( std::declval< R >().get_env() ) >;
+                using _env    = env_type< R >;
+                using value_t = _s_errors_as_val< _env >;
 
                 template < typename T >
                 void set_error( T&& err ) noexcept
@@ -3008,12 +3057,22 @@ struct _sink_err
         template < receiver R >
         auto connect( R receiver ) &&
         {
+                using _env = env_type< R >;
+                static_assert(
+                    std::same_as< _s_values< _env >, completion_signatures<> > ||
+                        std::same_as< _s_values< _env >, completion_signatures< set_value_t() > >,
+                    "Sender used with sink_err must not complete with set_value, or there has to be only one set_value of shape set_value_t()" );
                 return std::move( _s ).connect( _recv< R >{ std::move( receiver ) } );
         }
 
         S _s;
 };
 
+/// CPO for transforming a sender to convert all its set_error completions into set_value
+/// completion, that returns std::optional of std::variant of errors. It expects that the sender
+/// does not have any set_value completions, or it has only one set_value completion with no
+/// arguments.
+///
 [[maybe_unused]] static inline struct sink_err_t
 {
 
@@ -3024,6 +3083,8 @@ struct _sink_err
 
 } sink_err;
 
+/// Operator| overload for sink_err CPO. This allows using the pipe syntax to apply the sink_err
+/// transformation to a sender.
 auto operator|( sender auto s, sink_err_t ) noexcept
 {
         return _sink_err{ std::move( s ) };
@@ -3101,12 +3162,6 @@ struct repeater
                 {
                         r->start();
                 }
-
-
-                [[nodiscard]] empty_env get_env() const noexcept
-                {
-                        return {};
-                }
         };
 
         void start()
@@ -3127,11 +3182,6 @@ struct _await_until_stopped
 
         using completion_signatures = ecor::completion_signatures< set_value_t() >;
 
-
-        [[nodiscard]] empty_env get_env() const noexcept
-        {
-                return {};
-        }
 
         template < typename R >
         struct _op
@@ -3258,10 +3308,6 @@ struct transaction_sender
                 return val.get_completion_signatures( (Env&&) e );
         }
 
-        [[nodiscard]] empty_env get_env() const noexcept
-        {
-                return {};
-        }
 
         template < receiver R >
         auto connect( R receiver ) &&
