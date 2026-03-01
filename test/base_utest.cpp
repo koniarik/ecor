@@ -3357,4 +3357,415 @@ TEST_CASE( "then - basic operations" )
         }
 }
 
+// ─── task_holder test helpers ─────────────────────────────────────────────────
+
+namespace
+{
+        /// Receiver for the sender returned by task_holder::stop(). Records when the loop has
+        /// exited.
+        struct th_done_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* done;
+                void  set_value() noexcept
+                {
+                        *done = true;
+                }
+                void set_error( auto&& ) noexcept
+                {
+                        FAIL( "unexpected error from stop() sender" );
+                }
+                void set_stopped() noexcept
+                {
+                        FAIL( "unexpected stopped from stop() sender" );
+                }
+        };
+}  // namespace
+
+/// Waits for a void trigger, increments a counter, then completes with set_value.
+static ecor::task< void >
+th_count_task( task_ctx& ctx, broadcast_source< set_value_t() >& trig, int& count )
+{
+        co_await trig.schedule();
+        ++count;
+        co_return;
+}
+
+/// Waits for a void trigger, increments a counter, then completes with set_error.
+static ecor::task< void >
+th_error_task( task_ctx& ctx, broadcast_source< set_value_t() >& trig, int& count )
+{
+        co_await trig.schedule();
+        ++count;
+        co_yield with_error( task_error::task_unfinished );
+}
+
+/// Waits for a void trigger, then throws — causes set_error(task_unhandled_exception).
+static ecor::task< void >
+th_throwing_task( task_ctx&, broadcast_source< set_value_t() >& trig, int& count )
+{
+        co_await trig.schedule();
+        ++count;
+        throw std::runtime_error( "intentional" );
+        co_return;
+}
+
+/// Suspends until the holder's stop token is signalled, then co_returns (set_value).
+static ecor::task< void > th_stop_aware_task( task_ctx& )
+{
+        co_await wait_until_stopped;
+        co_return;
+}
+
+/// Waits on a source that can deliver set_value or set_stopped. Increments counter on set_value.
+static ecor::task< void > th_cancel_task(
+    task_ctx&,
+    broadcast_source< set_value_t(), set_stopped_t() >& cancel_src,
+    int&                                                count )
+{
+        co_await cancel_src.schedule();
+        ++count;
+        co_return;
+}
+
+TEST_CASE( "task_holder - basic operations" )
+{
+        SUBCASE( "restarts on set_value" )
+        {
+                nd_mem                            mem;
+                task_ctx                          ctx{ mem };
+                broadcast_source< set_value_t() > trig;
+                int                               count = 0;
+
+                task_holder h{ ctx, [&]( task_ctx& c ) {
+                                      return th_count_task( c, trig, count );
+                              } };
+                h.start();
+                while ( ctx.core.run_once() )
+                        ;  // task suspended at co_await trig
+
+                CHECK( count == 0 );
+
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                CHECK( count == 1 );
+
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                CHECK( count == 2 );
+
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                CHECK( count == 3 );
+
+                // tear-down: stop wins on the next set_value
+                bool done = false;
+                auto d    = h.stop().connect( th_done_recv{ &done } );
+                d.start();
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                REQUIRE( done );
+        }
+
+        SUBCASE( "restarts on set_error" )
+        {
+                nd_mem                            mem;
+                task_ctx                          ctx{ mem };
+                broadcast_source< set_value_t() > trig;
+                int                               count = 0;
+
+                task_holder h{ ctx, [&]( task_ctx& c ) {
+                                      return th_error_task( c, trig, count );
+                              } };
+                h.start();
+                while ( ctx.core.run_once() )
+                        ;
+
+                CHECK( count == 0 );
+
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                CHECK( count == 1 );
+
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                CHECK( count == 2 );
+
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                CHECK( count == 3 );
+
+                // tear-down
+                bool done = false;
+                auto d    = h.stop().connect( th_done_recv{ &done } );
+                d.start();
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                REQUIRE( done );
+        }
+
+        SUBCASE( "stop exits before first task run" )
+        {
+                // stop() is called after start() but before the first task_core tick —
+                // the factory must never be called and the done sender must fire on the
+                // first run_once().
+                nd_mem   mem;
+                task_ctx ctx{ mem };
+                bool     factory_called = false;
+                bool     done           = false;
+
+                task_holder h{ ctx, [&]( task_ctx& ) -> ecor::task< void > {
+                                      factory_called = true;
+                                      co_return;
+                              } };
+
+                h.start();
+                auto d = h.stop().connect( th_done_recv{ &done } );
+                d.start();
+
+                while ( ctx.core.run_once() )
+                        ;
+
+                CHECK( done );
+                CHECK( !factory_called );
+        }
+
+        SUBCASE( "stop via stop token (wait_until_stopped)" )
+        {
+                // Task co_awaits wait_until_stopped. stop() fires the holder's stop source,
+                // the stop callback wakes the task, which co_returns (set_value),
+                // and the holder sees stop_requested → exits the loop.
+                nd_mem   mem;
+                task_ctx ctx{ mem };
+                bool     done = false;
+
+                task_holder h{ ctx, [&]( task_ctx& c ) {
+                                      return th_stop_aware_task( c );
+                              } };
+                h.start();
+                while ( ctx.core.run_once() )
+                        ;  // task suspended at wait_until_stopped
+
+                auto d = h.stop().connect( th_done_recv{ &done } );
+                d.start();
+                // request_stop() fires the stop callback synchronously,
+                // rescheduling the task — run_once() drives it to completion.
+                while ( ctx.core.run_once() )
+                        ;
+
+                CHECK( done );
+        }
+
+        SUBCASE( "stop wins on next set_value" )
+        {
+                // stop() is called while the task is waiting. The task then completes with
+                // set_value. Because stop was requested, the holder exits instead of restarting.
+                nd_mem                            mem;
+                task_ctx                          ctx{ mem };
+                broadcast_source< set_value_t() > trig;
+                int                               count = 0;
+                bool                              done  = false;
+
+                task_holder h{ ctx, [&]( task_ctx& c ) {
+                                      return th_count_task( c, trig, count );
+                              } };
+                h.start();
+                while ( ctx.core.run_once() )
+                        ;
+
+                auto d = h.stop().connect( th_done_recv{ &done } );
+                d.start();
+
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+
+                CHECK( done );
+                CHECK( count == 1 );
+
+                // no further restarts: another trigger does nothing
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                CHECK( count == 1 );
+        }
+
+        SUBCASE( "stop wins on next set_error" )
+        {
+                // Same as above but task exits via set_error.
+                nd_mem                            mem;
+                task_ctx                          ctx{ mem };
+                broadcast_source< set_value_t() > trig;
+                int                               count = 0;
+                bool                              done  = false;
+
+                task_holder h{ ctx, [&]( task_ctx& c ) {
+                                      return th_error_task( c, trig, count );
+                              } };
+                h.start();
+                while ( ctx.core.run_once() )
+                        ;
+
+                auto d = h.stop().connect( th_done_recv{ &done } );
+                d.start();
+
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+
+                CHECK( done );
+                CHECK( count == 1 );
+        }
+
+        SUBCASE( "set_stopped from inner sender causes restart (no stop())" )
+        {
+                // The inner source fires set_stopped, propagating set_stopped to the holder's
+                // _recv. Because stop() has NOT been called, the holder restarts the task
+                // rather than exiting.
+                nd_mem                                             mem;
+                task_ctx                                           ctx{ mem };
+                broadcast_source< set_value_t(), set_stopped_t() > cancel_src;
+                int                                                count = 0;
+
+                task_holder h{ ctx, [&]( task_ctx& c ) {
+                                      return th_cancel_task( c, cancel_src, count );
+                              } };
+                h.start();
+                while ( ctx.core.run_once() )
+                        ;  // task suspended at co_await cancel_src
+
+                cancel_src.set_stopped();  // propagates set_stopped → reschedule holder
+                while ( ctx.core.run_once() )
+                        ;  // holder restarts; new task suspended at co_await
+
+                // ++count was NOT reached (set_stopped fired before co_await returned)
+                CHECK( count == 0 );
+
+                // new task is running; deliver set_value → task completes → restart again
+                cancel_src.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                CHECK( count == 1 );
+
+                // tear-down
+                bool done = false;
+                auto d    = h.stop().connect( th_done_recv{ &done } );
+                d.start();
+                cancel_src.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                REQUIRE( done );
+        }
+
+        SUBCASE( "stop exits on set_stopped propagation from inner sender" )
+        {
+                // stop() is called, then the inner source fires set_stopped. The holder's
+                // _recv.set_stopped() reschedules the holder, and resume() sees stop_requested
+                // → exits the loop and fires the done sender.
+                nd_mem                                             mem;
+                task_ctx                                           ctx{ mem };
+                broadcast_source< set_value_t(), set_stopped_t() > cancel_src;
+                int                                                count = 0;
+                bool                                               done  = false;
+
+                task_holder h{ ctx, [&]( task_ctx& c ) {
+                                      return th_cancel_task( c, cancel_src, count );
+                              } };
+                h.start();
+                while ( ctx.core.run_once() )
+                        ;
+
+                auto d = h.stop().connect( th_done_recv{ &done } );
+                d.start();
+
+                cancel_src.set_stopped();
+                while ( ctx.core.run_once() )
+                        ;
+
+                CHECK( done );
+                CHECK( count == 0 );  // set_stopped fired before ++count
+        }
+
+        SUBCASE( "restarts after unhandled exception" )
+        {
+                // When the task throws, promise_type::unhandled_exception() calls
+                // invoke_set_error(task_error::task_unhandled_exception), which reaches
+                // _recv::set_error and reschedules the holder — verifying that an exception
+                // is treated as an error and the holder restarts transparently.
+                nd_mem                            mem;
+                task_ctx                          ctx{ mem };
+                broadcast_source< set_value_t() > trig;
+                int                               count = 0;
+
+                task_holder h{ ctx, [&]( task_ctx& c ) {
+                                      return th_throwing_task( c, trig, count );
+                              } };
+                h.start();
+                while ( ctx.core.run_once() )
+                        ;
+
+                CHECK( count == 0 );
+
+                // first run: task throws → set_error → restart
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                CHECK( count == 1 );
+
+                // second run: task throws again → restarted again
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                ;
+                CHECK( count == 2 );
+
+                // tear-down
+                bool done = false;
+                auto d    = h.stop().connect( th_done_recv{ &done } );
+                d.start();
+                trig.set_value();
+                while ( ctx.core.run_once() )
+                        ;
+                REQUIRE( done );
+        }
+
+        SUBCASE( "context forwarded to factory on every restart" )
+        {
+                // The factory must receive a reference to the exact ctx object passed to the
+                // constructor, on every invocation.
+                nd_mem    mem;
+                task_ctx  ctx{ mem };
+                task_ctx* received = nullptr;
+                int       calls    = 0;
+
+                task_holder h{ ctx, [&]( task_ctx& c ) {
+                                      received = &c;
+                                      ++calls;
+                                      return th_stop_aware_task( c );
+                              } };
+                h.start();
+                while ( ctx.core.run_once() )
+                        ;  // factory called once; task suspended
+
+                CHECK( received == &ctx );
+                CHECK( calls == 1 );
+
+                // tear-down via stop token
+                bool done = false;
+                auto d    = h.stop().connect( th_done_recv{ &done } );
+                d.start();
+                while ( ctx.core.run_once() )
+                        ;
+                REQUIRE( done );
+        }
+}
+
 }  // namespace ecor

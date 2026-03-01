@@ -606,6 +606,101 @@ ecor::task<void> example_sink(ecor::task_ctx& ctx) {
 }
 ```
 
+### then - Transform Values
+
+`then` applies a callable to each `set_value` completion, passing errors and stop signals through unchanged:
+
+```cpp
+ecor::task<void> example(ecor::task_ctx& ctx) {
+    ecor::broadcast_source<ecor::set_value_t(int)> source;
+
+    // Double every value; errors/stopped pass through as-is
+    int result = co_await (source.schedule() | ecor::then([](int v) { return v * 2; }));
+    co_return;
+}
+```
+
+If the callable returns `void`, the output sender emits `set_value_t()`.
+
+## Task Holder - Automatic Restart
+
+`task_holder` owns a `task<void, CFG>` and restarts it automatically every time it completes,
+providing a simple "never-stop service" abstraction with cooperative cancellation.
+
+```cpp
+ecor::broadcast_source<ecor::set_value_t()> some_event;
+
+ecor::task<void> my_service(ecor::task_ctx& ctx)
+{
+    // Do one unit of work, then return — task_holder will restart us
+    co_await some_event.schedule();
+    co_return;
+}
+
+void run()
+{
+    static uint8_t buffer[4096];
+    ecor::circular_buffer_memory<uint16_t> mem{std::span{buffer}};
+    ecor::task_ctx ctx{mem};
+
+    // CTAD deduces template parameters from ctx and the lambda
+    ecor::task_holder holder{ ctx, [](ecor::task_ctx& c) {
+        return my_service(c);
+    }};
+
+    holder.start();   // schedules first run on the next task_core tick
+
+    // ... event loop ...
+    while (ctx.core.run_once()) { }
+}
+```
+
+### Restart policy
+
+- Restarts on **any completion** (`set_value`, `set_error`, or `set_stopped` from the inner task).
+- Exits the loop only when `stop()` has been called **and** the next completion arrives —
+  regardless of which signal that is.
+- Exceptions thrown inside the task are converted to `set_error(task_error::task_unhandled_exception)` and also trigger a restart.
+
+### Stopping
+
+`stop()` signals the holder to exit after the current task completes. It returns a sender that
+fires once the loop has exited — safe to `co_await` from another task:
+
+```cpp
+ecor::broadcast_source<ecor::set_value_t()> shutdown_src;
+
+ecor::task<void> watchdog(ecor::task_ctx& ctx, ecor::_task_holder_base<>& holder)
+{
+    co_await shutdown_src.schedule();
+
+    // Signal stop and wait for the loop to exit cleanly
+    co_await holder.stop();
+}
+```
+
+### Custom configuration
+
+To use a custom task configuration (extra error signatures) or a custom context type, spell out
+the template parameters explicitly:
+
+```cpp
+struct my_error {};
+using my_ctx_type = ecor::task_ctx;
+
+struct my_cfg {
+    using extra_error_signatures = ecor::completion_signatures<ecor::set_error_t(my_error)>;
+};
+
+ecor::task<void, my_cfg> cfg_service(my_ctx_type& ctx) { co_return; }
+
+void run_with_custom_cfg(my_ctx_type& ctx) {
+    // Use a function pointer as the factory type to avoid decltype
+    using factory_t = ecor::task<void, my_cfg>(*)(my_ctx_type&);
+    ecor::task_holder<my_cfg, my_ctx_type, factory_t> holder{ ctx, cfg_service };
+}
+```
+
 ## Assert customization
 
 By default, ecor uses `assert` for internal checks. You can customize this by defining `ECOR_ASSERT` before including the header:

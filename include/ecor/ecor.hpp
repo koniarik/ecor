@@ -1465,6 +1465,20 @@ struct get_stop_token_t
 /// token, returns a never_stop_token that cannot be stopped.
 inline constexpr get_stop_token_t get_stop_token{};
 
+/// A minimal environment that carries a stop token and satisfies `get_stop_token` queries.
+/// `Token` may be a value type or a reference type — e.g. `inplace_stop_token` or
+/// `inplace_stop_token&`. Using a reference avoids copying and reflects live token state.
+template < typename Token = inplace_stop_token >
+struct stop_token_env
+{
+        Token _token;
+
+        [[nodiscard]] decltype( auto ) query( get_stop_token_t ) const noexcept
+        {
+                return _token;
+        }
+};
+
 /// ------------------------------------------------------------------------------
 
 /// Base class for linked list entries which can be invoked with the completion signals.
@@ -2325,16 +2339,7 @@ struct _promise_base : _i_task_promise
         task_core&         core;
         inplace_stop_token token;
 
-        struct _env
-        {
-                inplace_stop_token& token;
-
-                [[nodiscard]]
-                inplace_stop_token& query( get_stop_token_t ) const noexcept
-                {
-                        return token;
-                }
-        };
+        using _env = stop_token_env< inplace_stop_token& >;
 
         _env get_env() noexcept
         {
@@ -3218,60 +3223,151 @@ auto operator|( S s, _then_closure< F > c )
 
 /// -------------------------------------------------------------------------------
 
-// XXX: replace this iwth actually sender: repeat_until
-template < typename S >
-struct repeater
+/// Implementation base for `task_holder`. Templated only on `CFG` so all restart/stop logic is
+/// instantiated once per configuration, regardless of how many different factory or context types
+/// are in use. Not intended to be used directly — use `task_holder` instead.
+///
+template < task_config CFG = task_default_cfg >
+struct _task_holder_base : _i_task_promise
 {
-        static_assert( sender< S >, "S must be a sender" );
-        repeater( S s )
-          : _s( std::move( s ) )
+        using _task_t = task< void, CFG >;
+
+        _task_holder_base( _task_holder_base const& )            = delete;
+        _task_holder_base& operator=( _task_holder_base const& ) = delete;
+        _task_holder_base( _task_holder_base&& )                 = delete;
+        _task_holder_base& operator=( _task_holder_base&& )      = delete;
+
+        explicit _task_holder_base( task_core& core )
+          : _core( core )
         {
         }
 
+        /// Schedule the first task run. The task does not start immediately; it runs on the next
+        /// `task_core` tick.
+        void start()
+        {
+                _core.reschedule( *this );
+        }
 
-        // XXX: this is wrong, lifetimes will get broken
+        /// Signal the running task to stop and return a sender that completes with
+        /// `set_value_t()` once the loop exits.
+        _ll_sender< set_value_t() > stop()
+        {
+                _stop_src.request_stop();
+                return _done_src.schedule();
+        }
+
+protected:
+        /// Override in the concrete subclass to produce the next task instance.
+        virtual _task_t _make_task() = 0;
+
+private:
         struct _recv
         {
                 using receiver_concept = receiver_t;
 
-                repeater* r;
+                _task_holder_base* _holder;
 
-                template < typename... Ts >
-                void set_value( Ts&&... ) noexcept
+                template < typename... Args >
+                void set_value( Args&&... ) noexcept
                 {
-                        r->start();
+                        _holder->_core.reschedule( *_holder );
                 }
 
-                template < typename... Es >
-                void set_error( Es&&... ) noexcept
+                template < typename E >
+                void set_error( E&& ) noexcept
                 {
-                        r->start();
+                        _holder->_core.reschedule( *_holder );
                 }
 
                 void set_stopped() noexcept
                 {
-                        r->start();
+                        _holder->_core.reschedule( *_holder );
+                }
+
+                stop_token_env< inplace_stop_token > get_env() const noexcept
+                {
+                        return { _holder->_stop_src.get_token() };
                 }
         };
 
-        void start()
+        using _op_t = connect_type< _task_t, _recv >;
+
+        void resume() override
         {
-                _opop.emplace( _s.connect( _recv{ .r = this } ) );
-                _opop->start();
+                if ( _op.has_value() ) {
+                        _op->clear();  // explicitly free the done coroutine frame
+                        _op.reset();
+                }
+                if ( _stop_src.stop_requested() ) {
+                        _done_src.set_value();
+                } else {
+                        _op.emplace( _make_task().connect( _recv{ this } ) );
+                        _op->start();
+                }
         }
 
-        S _s;
-
-        std::optional< connect_type< S, _recv > > _opop;
+        task_core&                        _core;
+        inplace_stop_source               _stop_src;
+        broadcast_source< set_value_t() > _done_src;
+        std::optional< _op_t >            _op;
 };
 
-struct _await_until_stopped
+/// Owns a `task<void, CFG>` that restarts automatically, it is provided with a factory to create
+/// new task instances, and a context that is passed to the factory on each run.
+///
+/// Restart policy:
+/// - Restarts on `set_value`, `set_error`, or `set_stopped` from the inner task.
+/// - Exits the loop only when `stop()` has been called AND the next completion arrives
+///   (regardless of which signal it is).
+///
+/// Template parameters:
+/// - `CFG`     — task configuration, default `task_default_cfg`
+/// - `Ctx`     — task context type satisfying `task_context`, default `task_ctx`
+/// - `Factory` — callable `(Ctx&) -> task<void, CFG>`; deduced via CTAD
+///
+/// Precondition: must not be destructed before the sender returned by `stop()` completes.
+///
+template <
+    task_config  CFG = task_default_cfg,
+    task_context Ctx = task_ctx,
+    typename Factory = void >
+struct task_holder : _task_holder_base< CFG >
+{
+        using base = _task_holder_base< CFG >;
+
+        task_holder( Ctx& ctx, Factory factory )
+          : _task_holder_base< CFG >( get_task_core( ctx ) )
+          , _ctx( ctx )
+          , _factory( std::move( factory ) )
+        {
+        }
+
+        using base::start;
+        using base::stop;
+
+private:
+        task< void, CFG > _make_task() override
+        {
+                return _factory( _ctx );
+        }
+
+        Ctx&    _ctx;
+        Factory _factory;
+};
+
+/// Deduction guide: `task_holder h{ ctx, factory }` deduces `task_holder<task_default_cfg, Ctx,
+/// F>`.
+template < task_context Ctx, typename Factory >
+task_holder( Ctx&, Factory ) -> task_holder< task_default_cfg, Ctx, Factory >;
+
+/// -------------------------------------------------------------------------------
+
+struct _wait_until_stopped
 {
         using sender_concept = sender_t;
 
-
         using completion_signatures = ecor::completion_signatures< set_value_t() >;
-
 
         template < typename R >
         struct _op
@@ -3313,8 +3409,13 @@ struct _await_until_stopped
         }
 };
 
+/// CPO for creating a sender that completes when the stop token in the receiver's environment is
+/// triggered. The sender completes with set_value_t() when the stop token is triggered. If the
+/// stop token is never triggered, the sender will never complete.
 [[maybe_unused]]
-static inline _await_until_stopped wait_until_stopped;
+static inline _wait_until_stopped wait_until_stopped;
+
+/// -------------------------------------------------------------------------------
 
 template < typename T >
 struct _transaction_vtable_mixin;
@@ -3337,6 +3438,7 @@ template < typename T >
 using _transaction_vtable_mixin_t =
     typename _transaction_vtable_mixin< _sender_completions_t< T, empty_env > >::type;
 
+/// XXX: not finished, prototype
 template < typename T >
 struct transaction_entry : _transaction_vtable_mixin_t< T >, zll::ll_base< transaction_entry< T > >
 {
@@ -3355,6 +3457,7 @@ struct transaction_entry : _transaction_vtable_mixin_t< T >, zll::ll_base< trans
         }
 };
 
+/// XXX: not finished, prototype
 template < typename T, typename R >
 struct transaction_op : transaction_entry< T >, R
 {
@@ -3387,6 +3490,7 @@ private:
 };
 
 
+/// XXX: not finished, prototype
 template < typename T >
 struct transaction_sender
 {
@@ -3409,6 +3513,7 @@ struct transaction_sender
         zll::ll_list< transaction_entry< T > >& _pending;
 };
 
+/// XXX: not finished, prototype
 template < typename T, size_t N >
 struct transaction_circular_buffer
 {
@@ -3446,6 +3551,7 @@ private:
 /// XXX: write explicit tests about proper semantics of set stopped if used: active transaction
 /// shall not be stoppable
 
+/// XXX: not finished, prototype
 /// Expected behavior:
 ///  - Used for request-reply protocols, that allow multiple in-flight transactions, but the order
 ///  of replies is guaranteed.
