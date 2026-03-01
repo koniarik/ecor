@@ -1183,7 +1183,7 @@ struct _sigs_append_impl< completion_signatures< S... >, Ts... >
 
 /// Helper to append a list of signatures to an existing list of completion signatures.
 template < typename Sigs, typename... Ts >
-using _sigs_append_t = _sigs_append_impl< Sigs, Ts... >::type;
+using _sigs_append_t = typename _sigs_append_impl< Sigs, Ts... >::type;
 
 template < typename S, typename... Ts >
 struct _sigs_concat_impl;
@@ -1203,7 +1203,7 @@ struct _sigs_concat_impl< completion_signatures< S1... >, completion_signatures<
 /// Helper to concatenate multiple lists of completion signatures into a single list that contains
 /// all signatures from the input lists.
 template < typename... Sigs >
-using _sigs_concat_t = _sigs_concat_impl< completion_signatures<>, Sigs... >::type;
+using _sigs_concat_t = typename _sigs_concat_impl< completion_signatures<>, Sigs... >::type;
 
 /// ------------------------------------------------------------------------------
 
@@ -1270,18 +1270,18 @@ struct inplace_stop_source
         /// Get the stop token associated with this stop source. The returned token can be used to
         /// check if a stop has been requested, and to register callbacks that will be invoked when
         /// a stop is requested.
-        inplace_stop_token get_token() const noexcept;
+        [[nodiscard]] inplace_stop_token get_token() const noexcept;
 
         /// Check if stopping is possible. For inplace_stop_source, this always returns true since
         /// it can always be stopped.
-        bool stop_possible() const noexcept
+        [[nodiscard]] bool stop_possible() const noexcept
         {
                 return true;
         }
 
         /// Check if a stop has been requested. This returns true if request_stop() has been called
         /// on this stop source, and false otherwise.
-        bool stop_requested() const noexcept
+        [[nodiscard]] bool stop_requested() const noexcept
         {
                 return _stopped;
         }
@@ -1985,7 +1985,9 @@ private:
 template < typename T >
 struct _awaitable_expected
 {
-        _awaitable_expected() noexcept {};
+        _awaitable_expected() noexcept
+        {
+        }
 
         _awaitable_state_e state = _awaitable_state_e::empty;
         union
@@ -2277,9 +2279,8 @@ enum class task_error : uint8_t
 /// when it is resumed by the task scheduler.
 struct _promise_base : _i_task_promise
 {
-        static constexpr std::size_t align = alignof( std::max_align_t );
-        static constexpr std::size_t spacing =
-            align > sizeof( task_memory_resource* ) ? align : sizeof( task_memory_resource* );
+        static constexpr std::size_t align   = alignof( std::max_align_t );
+        static constexpr std::size_t spacing = align > sizeof( void* ) ? align : sizeof( void* );
 
         /// Allocate memory for the task promise using the task memory resource, and store a pointer
         /// to the memory resource in the allocated memory for later use in deallocation.
@@ -2290,7 +2291,7 @@ struct _promise_base : _i_task_promise
                 if ( !vp )
                         return nullptr;
                 auto* pmem = &mem;
-                std::memcpy( vp, (void const*) &pmem, sizeof( task_memory_resource* ) );
+                std::memcpy( vp, (void const*) &pmem, sizeof( void* ) );
                 return ( (char*) vp ) + spacing;
         }
 
@@ -2301,7 +2302,7 @@ struct _promise_base : _i_task_promise
         {
                 void*                 beg = ( (char*) ptr ) - spacing;
                 task_memory_resource* mem = nullptr;
-                std::memcpy( (void*) &mem, beg, sizeof( task_memory_resource* ) );
+                std::memcpy( (void*) &mem, beg, sizeof( void* ) );
                 deallocate( *mem, beg, sz + spacing, align );
         }
 
@@ -3285,7 +3286,7 @@ private:
                         _holder->_core.reschedule( *_holder );
                 }
 
-                stop_token_env< inplace_stop_token > get_env() const noexcept
+                [[nodiscard]] stop_token_env< inplace_stop_token > get_env() const noexcept
                 {
                         return { _holder->_stop_src.get_token() };
                 }
