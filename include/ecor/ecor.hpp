@@ -3011,11 +3011,14 @@ struct _sink_err
         using _s_completions = _sender_completions_t< S, Env >;
 
         template < typename Env >
-        using _s_errors_as_val = std::optional< typename _filter_map_tag<
+        using _s_errors = typename _filter_map_tag<
             std::variant<>,
             set_error_t,
             _s_completions< Env >,
-            _type_identity_t >::type >;
+            _type_identity_t >::type;
+
+        template < typename Env >
+        using _s_errors_as_val = std::optional< _s_errors< Env > >;
 
         template < typename Env >
         using _s_values = _filter_values_of_t< _s_completions< Env > >;
@@ -3047,6 +3050,11 @@ struct _sink_err
                 using _env    = env_type< R >;
                 using value_t = _s_errors_as_val< _env >;
 
+                void set_value() noexcept
+                {
+                        R::set_value( value_t{} );
+                }
+
                 template < typename T >
                 void set_error( T&& err ) noexcept
                 {
@@ -3058,6 +3066,9 @@ struct _sink_err
         auto connect( R receiver ) &&
         {
                 using _env = env_type< R >;
+                static_assert(
+                    std::variant_size_v< _s_errors< _env > > > 0,
+                    "Sender used with sink_err must have at least one error type" );
                 static_assert(
                     std::same_as< _s_values< _env >, completion_signatures<> > ||
                         std::same_as< _s_values< _env >, completion_signatures< set_value_t() > >,
@@ -3090,43 +3101,122 @@ auto operator|( sender auto s, sink_err_t ) noexcept
         return _sink_err{ std::move( s ) };
 }
 
-template < sender S, template < typename R > class CB, typename DataType >
-struct _then_cb
-{
-        // XXX: Missing sender_concept tag and get_completion_signatures()
-        // These are needed for P2300 compliance, but get_completion_signatures() must
-        // compute the transformed signatures based on CB's transformation of values/errors.
-        // Currently we lack the API to extract signature transformation from CB.
+/// -------------------------------------------------------------------------------
 
+/// Helper for then: maps a set_value_t(Args...) signature through callable F.
+/// Produces set_value_t() if F returns void, otherwise set_value_t(invoke_result_t<F, Args...>).
+template < typename F >
+struct _then_value_sig
+{
+        template < typename... Args >
+        using type = std::conditional_t<
+            std::is_void_v< std::invoke_result_t< F, Args... > >,
+            set_value_t(),
+            set_value_t( std::invoke_result_t< F, Args... > ) >;
+};
+
+template < sender S, typename F >
+struct _then
+{
         using sender_concept = sender_t;
 
-        S         s;
-        DataType& cb;
+        template < typename Env >
+        using _s_completions = _sender_completions_t< S, Env >;
+
+        template < typename Env >
+        using _s_errors = _filter_errors_of_t< _s_completions< Env > >;
+
+        template < typename Env >
+        using _s_stopped = _filter_stopped_of_t< _s_completions< Env > >;
+
+        template < typename Env >
+        using _s_mapped_values = typename _filter_map_tag<
+            completion_signatures<>,
+            set_value_t,
+            _s_completions< Env >,
+            _then_value_sig< F >::template type >::type;
+
+        template < typename Env >
+        using _completions =
+            _sigs_merge_t< _s_mapped_values< Env >, _s_errors< Env >, _s_stopped< Env > >;
+
+        template < typename Env >
+        _completions< Env > get_completion_signatures( Env&& ) noexcept
+        {
+                return {};
+        }
+
+        template < typename R >
+        struct _recv : R
+        {
+                using receiver_concept = receiver_t;
+
+                F _f;
+
+                _recv( R r, F f )
+                  : R( std::move( r ) )
+                  , _f( std::move( f ) )
+                {
+                }
+
+                template < typename... Args >
+                void set_value( Args&&... args )
+                {
+                        if constexpr ( std::is_void_v< std::invoke_result_t< F, Args... > > ) {
+                                std::move( _f )( (Args&&) args... );
+                                R::set_value();
+                        } else {
+                                R::set_value( std::move( _f )( (Args&&) args... ) );
+                        }
+                }
+        };
 
         template < receiver R >
-        auto connect( R receiver )
+        auto connect( R receiver ) &&
         {
-                return s.connect( CB{ std::move( receiver ), cb } );
+                return std::move( _s ).connect(
+                    _recv< R >{ std::move( receiver ), std::move( _f ) } );
         }
+
+        S _s;
+        F _f;
 };
 
-template < template < typename R > class CB, typename DataType >
-struct _then_t
+/// Closure type returned by then(f) — can be used with the pipe operator.
+template < typename F >
+struct _then_closure
 {
-        DataType& data;
+        F _f;
 };
 
-template < sender S, template < typename R > class CB, typename DataType >
-auto operator|( S s, _then_t< CB, DataType > t ) noexcept
+template < sender S, typename F >
+auto operator|( S s, _then_closure< F > c )
 {
-        return _then_cb< S, CB, DataType >{ std::move( s ), t.data };
+        return _then< S, F >{ std::move( s ), std::move( c._f ) };
 }
 
-template < template < typename R > class CB, typename DataType >
-auto then( DataType& data ) noexcept
+/// CPO for applying a callable transformation to each set_value signal. Errors and stopped
+/// signals pass through unchanged. The callable is invoked with the value arguments of each
+/// set_value completion. If the callable returns void, the output sender emits set_value_t().
+/// Otherwise it emits set_value_t( result ).
+///
+[[maybe_unused]] static inline struct then_t
 {
-        return _then_t< CB, DataType >{ data };
-}
+        template < typename F >
+        auto operator()( F f ) const
+        {
+                return _then_closure< F >{ std::move( f ) };
+        }
+
+        template < sender S, typename F >
+        auto operator()( S s, F f ) const
+        {
+                return _then< S, F >{ std::move( s ), std::move( f ) };
+        }
+
+} then;
+
+/// -------------------------------------------------------------------------------
 
 // XXX: replace this iwth actually sender: repeat_until
 template < typename S >

@@ -2960,4 +2960,401 @@ TEST_CASE( "err_to_val - basic operations" )
         }
 }
 
+
+namespace
+{
+        struct sink_err_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _called;
+                bool* _has_value;
+                bool* _holds_int;
+                int*  _val_int;
+
+                void set_value( auto v )
+                {
+                        *_called    = true;
+                        *_has_value = v.has_value();
+                        if ( v.has_value() ) {
+                                auto& var = *v;
+                                if ( std::holds_alternative< int >( var ) ) {
+                                        *_holds_int = true;
+                                        *_val_int   = std::get< int >( var );
+                                }
+                        }
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "Should not be called" );
+                }
+                void set_stopped()
+                {
+                        FAIL( "Should not be called" );
+                }
+        };
+
+        struct sink_err_recv_null
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _called;
+                bool* _has_value;
+
+                void set_value( auto v )
+                {
+                        *_called    = true;
+                        *_has_value = v.has_value();
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "Should not be called" );
+                }
+                void set_stopped()
+                {
+                        FAIL( "Should not be called" );
+                }
+        };
+
+        struct sink_err_multi_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool*                             _called;
+                std::variant< int, std::string >* _val;
+
+                void set_value( auto v )
+                {
+                        *_called = true;
+                        if ( v.has_value() ) {
+                                std::visit(
+                                    [this]( auto&& arg ) {
+                                            using T = std::decay_t< decltype( arg ) >;
+                                            if constexpr ( std::is_same_v< T, int > )
+                                                    *_val = arg;
+                                            else if constexpr ( std::is_same_v< T, std::string > )
+                                                    *_val = arg;
+                                    },
+                                    *v );
+                        }
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "Should be handled by sink_err" );
+                }
+                void set_stopped()
+                {
+                        FAIL( "Should not stop" );
+                }
+        };
+
+        struct sink_err_stopped_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _stopped;
+
+                void set_value( auto... )
+                {
+                        FAIL( "Should not be called" );
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "Should not be called" );
+                }
+                void set_stopped()
+                {
+                        *_stopped = true;
+                }
+        };
+}  // namespace
+
+TEST_CASE( "sink_err - basic operations" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        SUBCASE( "error to value transformation" )
+        {
+                broadcast_source< set_error_t( int ) > src;
+                bool                                   called    = false;
+                bool                                   has_value = false;
+                bool                                   holds_int = false;
+                int                                    val_int   = -1;
+
+                auto op =
+                    ( src.schedule() | sink_err )
+                        .connect( sink_err_recv{ &called, &has_value, &holds_int, &val_int } );
+                op.start();
+
+                src.set_error( 42 );
+                CHECK( called );
+                CHECK( has_value );
+                CHECK( holds_int );
+                CHECK( val_int == 42 );
+        }
+
+
+        SUBCASE( "value to nullopt transformation" )
+        {
+                broadcast_source< set_value_t(), set_error_t( int ) > src;
+                bool                                                  called    = false;
+                bool                                                  has_value = true;
+
+                auto op = ( src.schedule() | sink_err )
+                              .connect( sink_err_recv_null{ &called, &has_value } );
+                op.start();
+
+                src.set_value();
+                CHECK( called );
+                CHECK( !has_value );
+        }
+
+        SUBCASE( "multiple error types" )
+        {
+                broadcast_source< set_value_t(), set_error_t( int ), set_error_t( std::string ) >
+                                                 src;
+                bool                             called = false;
+                std::variant< int, std::string > val;
+
+                // Note: connect returns an op state that is typically not reusable for start().
+                // We need to re-connect for the second test or use two separate ops.
+                // But broadcast_source supports multiple receivers anyway.
+
+                {
+                        auto op = ( src.schedule() | sink_err )
+                                      .connect( sink_err_multi_recv{ &called, &val } );
+                        op.start();
+                        src.set_error( 123 );
+                }
+                CHECK( called );
+                CHECK( std::holds_alternative< int >( val ) );
+                CHECK( std::get< int >( val ) == 123 );
+
+                called = false;
+                val    = 0;  // reset variant to int
+
+                {
+                        auto op = ( src.schedule() | sink_err )
+                                      .connect( sink_err_multi_recv{ &called, &val } );
+                        op.start();
+                        src.set_error( std::string( "oops" ) );
+                }
+                CHECK( called );
+                CHECK( std::holds_alternative< std::string >( val ) );
+                CHECK( std::get< std::string >( val ) == "oops" );
+        }
+
+        SUBCASE( "stopped propagation" )
+        {
+                broadcast_source< set_error_t( int ), set_value_t(), set_stopped_t() > src;
+                bool stopped_called = false;
+
+                auto op = ( src.schedule() | sink_err )
+                              .connect( sink_err_stopped_recv{ &stopped_called } );
+                op.start();
+
+                src.set_stopped();
+                CHECK( stopped_called );
+        }
+}
+
+namespace
+{
+        struct then_int_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _called;
+                int*  _val;
+
+                void set_value( int v )
+                {
+                        *_called = true;
+                        *_val    = v;
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "set_error should not be called" );
+                }
+                void set_stopped()
+                {
+                        FAIL( "set_stopped should not be called" );
+                }
+        };
+
+        struct then_string_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool*        _called;
+                std::string* _val;
+
+                void set_value( std::string v )
+                {
+                        *_called = true;
+                        *_val    = std::move( v );
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "set_error should not be called" );
+                }
+                void set_stopped()
+                {
+                        FAIL( "set_stopped should not be called" );
+                }
+        };
+
+        struct then_void_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _called;
+
+                void set_value()
+                {
+                        *_called = true;
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "set_error should not be called" );
+                }
+                void set_stopped()
+                {
+                        FAIL( "set_stopped should not be called" );
+                }
+        };
+
+        struct then_error_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _called;
+                int*  _val;
+
+                void set_value( auto&&... )
+                {
+                        FAIL( "set_value should not be called" );
+                }
+                void set_error( int e )
+                {
+                        *_called = true;
+                        *_val    = e;
+                }
+                void set_stopped()
+                {
+                        FAIL( "set_stopped should not be called" );
+                }
+        };
+
+        struct then_stopped_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                bool* _called;
+
+                void set_value( auto&&... )
+                {
+                        FAIL( "set_value should not be called" );
+                }
+                void set_error( auto&&... )
+                {
+                        FAIL( "set_error should not be called" );
+                }
+                void set_stopped()
+                {
+                        *_called = true;
+                }
+        };
+}  // namespace
+
+TEST_CASE( "then - basic operations" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        SUBCASE( "value transformation" )
+        {
+                broadcast_source< set_value_t( int ) > src;
+                bool                                   called = false;
+                int                                    result = -1;
+
+                auto op = ( src.schedule() | then( []( int v ) {
+                                    return v * 2;
+                            } ) )
+                              .connect( then_int_recv{ &called, &result } );
+                op.start();
+
+                src.set_value( 21 );
+                CHECK( called );
+                CHECK( result == 42 );
+        }
+
+        SUBCASE( "type change" )
+        {
+                broadcast_source< set_value_t( int ) > src;
+                bool                                   called = false;
+                std::string                            result;
+
+                auto op = ( src.schedule() | then( []( int v ) {
+                                    return std::to_string( v );
+                            } ) )
+                              .connect( then_string_recv{ &called, &result } );
+                op.start();
+
+                src.set_value( 7 );
+                CHECK( called );
+                CHECK( result == "7" );
+        }
+
+        SUBCASE( "void return becomes set_value()" )
+        {
+                broadcast_source< set_value_t( int ) > src;
+                bool                                   called = false;
+
+                auto op =
+                    ( src.schedule() | then( []( int ) {} ) ).connect( then_void_recv{ &called } );
+                op.start();
+
+                src.set_value( 99 );
+                CHECK( called );
+        }
+
+        SUBCASE( "error pass-through" )
+        {
+                broadcast_source< set_error_t( int ) > src;
+                bool                                   called = false;
+                int                                    err    = -1;
+
+                auto op = ( src.schedule() | then( []( auto v ) {
+                                    return v;
+                            } ) )
+                              .connect( then_error_recv{ &called, &err } );
+                op.start();
+
+                src.set_error( 77 );
+                CHECK( called );
+                CHECK( err == 77 );
+        }
+
+        SUBCASE( "stopped pass-through" )
+        {
+                broadcast_source< set_stopped_t() > src;
+                bool                                called = false;
+
+                auto op = ( src.schedule() | then( []( auto v ) {
+                                    return v;
+                            } ) )
+                              .connect( then_stopped_recv{ &called } );
+                op.start();
+
+                src.set_stopped();
+                CHECK( called );
+        }
+
+        SUBCASE( "signature check" )
+        {
+                using src_t = broadcast_source< set_value_t( int ) >;
+                using then_sender_t =
+                    decltype( std::declval< src_t >().schedule() | then( []( int v ) {
+                                      return v * 2;
+                              } ) );
+                using sigs = decltype( std::declval< then_sender_t >().get_completion_signatures(
+                    std::declval< ecor::empty_env >() ) );
+
+                static_assert( std::same_as< sigs, completion_signatures< set_value_t( int ) > > );
+        }
+}
+
 }  // namespace ecor
