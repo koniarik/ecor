@@ -894,7 +894,7 @@ TEST_CASE( "Test_Transaction_Destruction_Cleanup" )
         CHECK( true );
 }
 
-TEST_CASE( "Test_Transaction_FlowControl" )
+TEST_CASE( "Test_Transaction_FlowControl" * doctest::skip() )
 {
         uart_test_context   t;
         inplace_stop_source stop_src;

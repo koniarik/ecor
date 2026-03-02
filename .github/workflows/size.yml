@@ -1,0 +1,34 @@
+name: code-size
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+    branches: ["master", "main"]
+
+jobs:
+  size:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build gcc-arm-none-eabi binutils-arm-none-eabi
+
+      - name: build size probe (Cortex-M4 -Og)
+        run: cmake --workflow --preset size
+
+      - name: print section sizes
+        run: arm-none-eabi-size --format=berkeley build-size/ecor_size_probe
+
+      - name: print top symbols
+        run: |
+          arm-none-eabi-nm --print-size --radix=d --demangle build-size/ecor_size_probe \
+            | awk '$3 ~ /^[TtRr]$/ && $2+0 > 0 { sz=$2; $1=$2=$3=""; sub(/^ +/,""); printf "%8d  %s\n", sz, $0 }' \
+            | sort -rn \
+            | head -30
