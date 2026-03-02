@@ -2,6 +2,60 @@
   "version": 6,
   "configurePresets": [
     {
+      "name": "size",
+      "displayName": "ARM Cortex-M4 size probe (-Og)",
+      "description": "Cross-compile the size_probe TU with arm-none-eabi-g++ -Og for code-size analysis.",
+      "generator": "Ninja",
+      "binaryDir": "build-size",
+      "toolchainFile": "${sourceDir}/test/cmake/arm-none-eabi-toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "OFF",
+        "ECOR_SIZE_PROBE_ENABLED": "ON",
+        "ARM_CPU": "cortex-m4",
+        "ARM_FPU": "fpv4-sp-d16",
+        "ARM_FLOAT_ABI": "hard",
+        "CMAKE_C_FLAGS": "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -ffunction-sections -fdata-sections -Og -g",
+        "CMAKE_CXX_FLAGS": "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti -Og -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -Wl,--gc-sections --specs=nosys.specs --specs=nano.specs -Wl,-Map=ecor_size_probe.map"
+      }
+    },
+    {
+      "name": "size-opt",
+      "displayName": "ARM Cortex-M4 size probe (-Og + size-reduction flags)",
+      "description": "Like 'size' but adds -fno-unwind-tables, -fno-use-cxa-atexit, -fno-threadsafe-statics, -flto=auto, -fmerge-all-constants. Compare nm output against 'size' to measure impact.",
+      "generator": "Ninja",
+      "binaryDir": "build-size-opt",
+      "toolchainFile": "${sourceDir}/test/cmake/arm-none-eabi-toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "OFF",
+        "ECOR_SIZE_PROBE_ENABLED": "ON",
+        "ARM_CPU": "cortex-m4",
+        "ARM_FPU": "fpv4-sp-d16",
+        "ARM_FLOAT_ABI": "hard",
+        "CMAKE_C_FLAGS": "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -ffunction-sections -fdata-sections -Og -g -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-use-cxa-atexit -fno-threadsafe-statics -fmerge-all-constants -flto=auto",
+        "CMAKE_CXX_FLAGS": "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti -Og -g -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-use-cxa-atexit -fno-threadsafe-statics -fmerge-all-constants -flto=auto",
+        "CMAKE_EXE_LINKER_FLAGS": "-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -Wl,--gc-sections --specs=nosys.specs --specs=nano.specs -Wl,-Map=ecor_size_probe.map -flto=auto -Wl,--relax"
+      }
+    },
+    {
+      "name": "size-m0",
+      "displayName": "ARM Cortex-M0 size probe (-Og, soft-float)",
+      "description": "As 'size' but targeting Cortex-M0 (smallest 32-bit ARM core, no FPU).",
+      "generator": "Ninja",
+      "binaryDir": "build-size-m0",
+      "toolchainFile": "${sourceDir}/test/cmake/arm-none-eabi-toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "OFF",
+        "ECOR_SIZE_PROBE_ENABLED": "ON",
+        "ARM_CPU": "cortex-m0",
+        "ARM_FPU": "none",
+        "ARM_FLOAT_ABI": "soft",
+        "CMAKE_C_FLAGS": "-mcpu=cortex-m0 -mthumb -mfloat-abi=soft -ffunction-sections -fdata-sections -Og -g",
+        "CMAKE_CXX_FLAGS": "-mcpu=cortex-m0 -mthumb -mfloat-abi=soft -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti -Og -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Wl,--gc-sections --specs=nosys.specs --specs=nano.specs -Wl,-Map=ecor_size_probe.map"
+      }
+    },
+    {
       "name": "debug",
       "generator": "Ninja",
       "binaryDir": "build",
@@ -9,7 +63,8 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "ECOR_TESTS_ENABLED": "ON",
-        "ECOR_DEFAULT_ASSERT": "ON"
+        "ECOR_DEFAULT_ASSERT": "ON",
+        "CMAKE_CXX_FLAGS": "-Wall -Wextra"
       }
     },
     {
@@ -18,7 +73,7 @@
       "binaryDir": "build",
       "inherits": "debug",
       "cacheVariables": {
-        "CMAKE_CXX_FLAGS": "-fsanitize=address"
+        "CMAKE_CXX_FLAGS": "-Wall -Wextra -fsanitize=address"
       }
     },
     {
@@ -27,7 +82,7 @@
       "binaryDir": "build",
       "inherits": "debug",
       "cacheVariables": {
-        "CMAKE_CXX_FLAGS": "-fsanitize=undefined"
+        "CMAKE_CXX_FLAGS": "-Wall -Wextra -fsanitize=undefined"
       }
     },
     {
@@ -42,6 +97,18 @@
     }
   ],
   "buildPresets": [
+    {
+      "name": "size",
+      "configurePreset": "size"
+    },
+    {
+      "name": "size-m0",
+      "configurePreset": "size-m0"
+    },
+    {
+      "name": "size-opt",
+      "configurePreset": "size-opt"
+    },
     {
       "name": "debug",
       "configurePreset": "debug"
@@ -106,6 +173,45 @@
     }
   ],
   "workflowPresets": [
+    {
+      "name": "size",
+      "steps": [
+        {
+          "name": "size",
+          "type": "configure"
+        },
+        {
+          "name": "size",
+          "type": "build"
+        }
+      ]
+    },
+    {
+      "name": "size-m0",
+      "steps": [
+        {
+          "name": "size-m0",
+          "type": "configure"
+        },
+        {
+          "name": "size-m0",
+          "type": "build"
+        }
+      ]
+    },
+    {
+      "name": "size-opt",
+      "steps": [
+        {
+          "name": "size-opt",
+          "type": "configure"
+        },
+        {
+          "name": "size-opt",
+          "type": "build"
+        }
+      ]
+    },
     {
       "name": "debug",
       "steps": [

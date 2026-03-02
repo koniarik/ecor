@@ -33,6 +33,25 @@ install(
   NAMESPACE ecor::
   DESTINATION lib/cmake/ecor/)
 
+option(ECOR_SIZE_PROBE_ENABLED "Build the ARM code-size probe binary" OFF)
+
+if(ECOR_SIZE_PROBE_ENABLED)
+  add_executable(ecor_size_probe test/size_probe.cpp)
+  target_link_libraries(ecor_size_probe PRIVATE ecor)
+  target_compile_features(ecor_size_probe PRIVATE cxx_std_20)
+
+  # Post-build: print section totals with arm-none-eabi-size
+  find_program(ARM_SIZE arm-none-eabi-size)
+  if(ARM_SIZE)
+    add_custom_command(
+      TARGET ecor_size_probe
+      POST_BUILD
+      COMMAND ${ARM_SIZE} -A $<TARGET_FILE:ecor_size_probe>
+      COMMENT "Section sizes of ecor_size_probe"
+      VERBATIM)
+  endif()
+endif()
+
 if(ECOR_TESTS_ENABLED)
   find_package(
     Python3

@@ -26,7 +26,9 @@
 #include "ecor/ecor.hpp"
 
 #include <functional>
+#include <iostream>
 #include <list>
+#include <mutex>
 #include <semaphore>
 #include <thread>
 
@@ -75,13 +77,13 @@ struct uart_peripheral
 
         uart_status transmit( std::span< uint8_t > data )
         {
-                if ( tx_active.load() )
+                bool expected = false;
+                if ( !tx_active.compare_exchange_strong( expected, true ) )
                         return uart_status::busy;
-                tx_active = true;
                 tx_jq.emplace_back(
                     [data = std::vector< uint8_t >( data.begin(), data.end() ), this] {
                             delay();
-                            tx_active = false;
+                            std::lock_guard lg{ cpu_mtx };
                             do_reply( data );
                     } );
                 return uart_status::ok;
@@ -94,12 +96,12 @@ struct uart_peripheral
 
                         rx_jq.emplace_back( [sv = std::move( sv ), delay_iters, this] {
                                 delay( delay_iters );
+                                std::lock_guard lg{ cpu_mtx };
                                 if ( rx_buff.empty() )
                                         std::abort();
                                 if ( rx_buff.size() < sv.size() )
                                         std::abort();
                                 std::memcpy( rx_buff.data(), sv.data(), sv.size() );
-                                this->rx_active = false;
                                 this->on_rx_irq( sv.size() );
                         } );
                 };
@@ -109,7 +111,7 @@ struct uart_peripheral
 
                         rx_jq.emplace_back( [e, this] {
                                 delay();
-                                this->rx_active = false;
+                                std::lock_guard lg{ cpu_mtx };
                                 this->on_rx_err( e );
                         } );
                 };
@@ -189,6 +191,7 @@ struct uart_peripheral
                 }
         };
 
+        std::mutex                           cpu_mtx;
         std::function< void() >              on_tx_irq;
         std::function< void( uart_error ) >  on_tx_err;
         std::function< void( std::size_t ) > on_rx_irq;
@@ -243,50 +246,53 @@ struct uart
 
         void on_tx_complete_irq()
         {
-                CHECK( _tmp.mid2 != _tmp.last );
-                _tmp.mid2++;
+                CHECK( _trnxs.has_tx() );
+                _trnxs.tx_done();
+                _handle.tx_active = false;
                 dispatch_rx();
                 dispatch_tx();
         }
 
         void on_tx_error_irq( uart_error e )
         {
-                CHECK( _tmp.mid2 != _tmp.last );
-                _tmp[_tmp.mid2]->data.err = e;
-                _tmp.mid2++;
+                CHECK( _trnxs.has_tx() );
+                _trnxs.tx_front()->data.err = e;
+                _trnxs.tx_done();
+                _handle.tx_active = false;
                 dispatch_rx();
                 dispatch_tx();
         }
 
         void on_rx_complete_irq( std::size_t s )
         {
-                _tmp[_tmp.mid1]->data.rx_used = s;
-                _tmp.mid1++;
-                // Check if we can receive more
+                _handle.rx_active               = false;
+                _trnxs.rx_front()->data.rx_used = s;
+                _trnxs.rx_done();
                 dispatch_rx();
         }
 
         void on_rx_error_irq( uart_error e )
         {
-                _tmp[_tmp.mid1]->data.err = e;
-                _tmp.mid1++;
+                _handle.rx_active           = false;
+                _trnxs.rx_front()->data.err = e;
+                _trnxs.rx_done();
                 dispatch_rx();
         }
 
         void dispatch_tx()
         {
-                if ( _tmp.mid2 == _tmp.last )
+                if ( !_trnxs.has_tx() )
                         return;
-                auto* n = _tmp[_tmp.mid2];
+                auto* n = _trnxs.tx_front();
                 _handle.transmit( n->data.buffer.subspan( 0, n->data.tx_used ) );
         }
 
         void dispatch_rx()
         {
-                while ( _tmp.mid1 != _tmp.mid2 ) {
-                        auto* n = _tmp[_tmp.mid1];
+                while ( _trnxs.has_rx() ) {
+                        auto* n = _trnxs.rx_front();
                         if ( n->data.err != uart_error::none ) {
-                                _tmp.mid1++;
+                                _trnxs.rx_done();
                                 continue;
                         } else if ( _handle.rx_active ) {
                                 break;
@@ -299,20 +305,19 @@ struct uart
 
         void tick()
         {
-                while ( !_tmp.full() ) {
+                while ( !_trnxs.full() ) {
                         auto* n = _source.query_next_transaction();
                         if ( !n )
                                 break;
-                        _tmp[_tmp.last] = n;
-                        _tmp.last++;
+                        _trnxs.push( n );
                 }
 
                 if ( !_handle.tx_active )
                         dispatch_tx();
 
-                while ( _tmp.first != _tmp.mid1 ) {
-                        auto* p = _tmp[_tmp.first];
-                        _tmp.first++;
+                while ( _trnxs.has_deliver() ) {
+                        auto* p = _trnxs.deliver_front();
+                        _trnxs.pop();
                         if ( p->data.err != uart_error::none )
                                 p->_set_error( p->data.err );
                         else
@@ -320,8 +325,8 @@ struct uart
                 }
         }
 
-        transaction_source< uart_trans >                                   _source;
-        transaction_circular_buffer< transaction_entry< uart_trans >*, 4 > _tmp;
+        transaction_controller_source< uart_trans >                        _source;
+        transaction_circular_buffer< transaction_entry< uart_trans >*, 4 > _trnxs;
 
         uart_peripheral _handle{
             [this] {
@@ -440,6 +445,64 @@ struct capturing_receiver
         {
                 inplace_stop_token token;
 
+                inplace_stop_token query( ecor::get_stop_token_t ) const noexcept
+                {
+                        return token;
+                }
+        };
+
+        env get_env() const noexcept
+        {
+                if ( stop_source )
+                        return env{ stop_source->get_token() };
+                return env{};
+        }
+};
+
+// Receiver whose set_stopped() immediately starts a pre-constructed follow-up
+// operation. This exercises the re-entry path in query_next_transaction where
+// remove_if fires set_stopped() and the handler calls link_front() on the same
+// list while the traversal is still in progress.
+//
+// The type-erased (void*, fn-ptr) pair avoids a circular type dependency between
+// the receiver and the op it holds.
+struct _requeue_on_stop_receiver
+{
+        using receiver_concept = ecor::receiver_t;
+
+        int*                 stop_count  = nullptr;
+        inplace_stop_source* stop_source = nullptr;
+
+        // Pointer to a pre-constructed, not-yet-started op_state and a shim
+        // that calls .start() on it without knowing its concrete type here.
+        void* followup_op                 = nullptr;
+        void ( *start_followup )( void* ) = nullptr;
+
+        void set_value( std::span< uint8_t > ) noexcept
+        {
+        }
+        void set_error( uart_error ) noexcept
+        {
+        }
+        void set_error( std::exception_ptr ) noexcept
+        {
+        }
+
+        void set_stopped() noexcept
+        {
+                if ( stop_count )
+                        ( *stop_count )++;
+                // Inserting a new node into _pending_tx from inside remove_if:
+                // link_front() prepends before the range already captured by
+                // range_remove, so the traversal completes safely and the new
+                // entry is visible on the next query_next_transaction call.
+                if ( start_followup )
+                        start_followup( followup_op );
+        }
+
+        struct env
+        {
+                inplace_stop_token token;
                 inplace_stop_token query( ecor::get_stop_token_t ) const noexcept
                 {
                         return token;
@@ -608,17 +671,17 @@ TEST_CASE( "Test_Transaction_Lifecyle_Indices" )
         op.start();
 
         // Initial state: buffer empty
-        CHECK( t.u._tmp.first == 0 );
-        CHECK( t.u._tmp.last == 0 );
-        CHECK( t.u._tmp.mid1 == 0 );
-        CHECK( t.u._tmp.mid2 == 0 );
+        CHECK( t.u._trnxs.deliver == 0 );
+        CHECK( t.u._trnxs.enqueue == 0 );
+        CHECK( t.u._trnxs.rx == 0 );
+        CHECK( t.u._trnxs.tx == 0 );
 
         // Tick: moves from source to buffer (TX Ready)
         t.u.tick();
-        CHECK( t.u._tmp.first == 0 );
-        CHECK( t.u._tmp.last == 1 );
-        CHECK( t.u._tmp.mid1 == 0 );
-        CHECK( t.u._tmp.mid2 == 0 );
+        CHECK( t.u._trnxs.deliver == 0 );
+        CHECK( t.u._trnxs.enqueue == 1 );
+        CHECK( t.u._trnxs.rx == 0 );
+        CHECK( t.u._trnxs.tx == 0 );
 
         // Run once: dispatch_tx called by tick() logic if not active.
         // But dispatch_tx calls _handle.transmit which is async in mock.
@@ -627,19 +690,22 @@ TEST_CASE( "Test_Transaction_Lifecyle_Indices" )
 
         // Mock transmit starts. dispatch_tx called.
         // dispatch_tx does NOT increment mid2. mid2 is incremented in on_tx_complete_irq.
-        CHECK( t.u._tmp.mid2 == 0 );
+        // Note: the background TX thread fires on_tx_complete_irq almost immediately
+        // (only ~0-41 nops of delay), so mid2 may already be 1 by this point.
+        CHECK( t.u._trnxs.tx <= 1 );
 
         // Wait for TX to complete
-        // Mock "slow" transmits immediately (the delay is in RX), but "transmit" itself has a small
-        // delay? Mock transmit: tx_jq.emplace_back( ... delay(); tx_active=false; do_reply() ... )
+        // "slow" means slow RX (1M-nop delay on receive), not slow TX.
+        // TX job: delay() (~0-41 nops) then do_reply() which fires on_tx_irq.
+        // on_tx_complete_irq clears tx_active then signals dispatch_rx.
         t.run_until(
             [&] {
-                    return t.u._tmp.mid2 == 1;
+                    return t.u._trnxs.tx == 1;
             },
             100ms );
 
-        // TX Completed. on_tx_complete_irq increments mid2 and calls dispatch_rx.
-        CHECK( t.u._tmp.mid2 == 1 );
+        // TX Completed. on_tx_complete_irq increments tx and calls dispatch_rx.
+        CHECK( t.u._trnxs.tx == 1 );
 
         // RX should be scheduled now.
         // dispatch_rx calls _handle.receive which sets rx_active=true.
@@ -648,19 +714,19 @@ TEST_CASE( "Test_Transaction_Lifecyle_Indices" )
         // Wait for RX complete
         t.run_until(
             [&] {
-                    return t.u._tmp.mid1 == 1;
+                    return t.u._trnxs.rx == 1;
             },
             200ms );
 
-        CHECK( t.u._tmp.mid1 == 1 );
+        CHECK( t.u._trnxs.rx == 1 );
 
-        // Now tick() again to process the completion (mid1 -> first)
+        // Now tick() again to process the completion (rx -> deliver)
         t.u.tick();
 
-        CHECK( t.u._tmp.first == 1 );
-        CHECK( t.u._tmp.mid1 == 1 );
-        CHECK( t.u._tmp.mid2 == 1 );
-        CHECK( t.u._tmp.last == 1 );
+        CHECK( t.u._trnxs.deliver == 1 );
+        CHECK( t.u._trnxs.rx == 1 );
+        CHECK( t.u._trnxs.tx == 1 );
+        CHECK( t.u._trnxs.enqueue == 1 );
 }
 
 TEST_CASE( "Test_Transaction_Busy_Transmit" )
@@ -681,23 +747,8 @@ TEST_CASE( "Test_Transaction_Busy_Transmit" )
         t.ctx.core.run_once();
 
         // Should be in buffer
-        CHECK( t.u._tmp.last == 1 );
-        // Should NOT have started transmitting (mid2 is index of next to transmit? No, mid2 is
-        // index of next to complete TX IRQ?) Let's check definitions: mid2: tracks TX completions
-        // (on_tx_complete_irq increments mid2). dispatch_tx uses mid2... wait. dispatch_tx: if
-        // (mid2 == last) return; transmit(tmp[mid2]); So mid2 points to the item *currently being
-        // transmitted* or *waiting to transmit*.
-        CHECK( t.u._tmp.mid2 == 0 );
-
-        // If peripheral was busy, transmit() returns busy.
-        // BUT `uart::dispatch_tx` calls `transmit`. It does not check return value!
-        // It assumes `if (!_handle.tx_active)` check in `tick()` protects it?
-        // Let's check tick():
-        // if ( !_handle.tx_active ) dispatch_tx();
-
-        // So if handle is active, dispatch_tx is NOT called.
-        // So transmit is NOT called.
-        // So queue stays populated.
+        CHECK( t.u._trnxs.enqueue == 1 );
+        CHECK( t.u._trnxs.tx == 0 );
 
         // Now we simulate TX completion of the "previous" (manual blocking) operation.
         t.u._handle.tx_active = false;
@@ -711,11 +762,12 @@ TEST_CASE( "Test_Transaction_Busy_Transmit" )
         // Check if tx_active becomes true (mock sets it true in transmit).
         CHECK( t.u._handle.tx_active.load() );
 
-        // Cleanup to avoid hanging the mock thread
-        // We need to let the mock finish the job we just started.
-        // The mock creates a background thread for the job.
+        // Wait for the full round-trip: TX IRQ → RX job writes buffer → RX IRQ → tick delivers
+        // result. Waiting for just !tx_active is too early: at that point the RX job is still
+        // pending with a pointer into the local 'buffer'. We must wait until tick() has advanced
+        // 'first', meaning set_value/set_error has been called and the buffer is no longer live.
         t.run_until( [&] {
-                return !t.u._handle.tx_active;
+                return t.u._trnxs.deliver >= 1;
         } );
 }
 
@@ -814,7 +866,7 @@ TEST_CASE( "Test_UART_SPSC_Pipeline" )
         CHECK( total_completed == count );
 
         // Verify buffer is empty
-        CHECK( t.u._tmp.empty() );
+        CHECK( t.u._trnxs.empty() );
 }
 
 TEST_CASE( "Test_Transaction_Destruction_Cleanup" )
@@ -846,9 +898,16 @@ TEST_CASE( "Test_Transaction_FlowControl" )
 {
         uart_test_context   t;
         inplace_stop_source stop_src;
-        uint8_t             buffer[42];
-        std::string         req = "slow:1000000";  // Slow enough to fill buffer
-        std::memcpy( buffer, req.data(), req.size() );
+
+        std::string req = "slow:1000000";  // Slow enough to fill buffer
+
+        // Each transaction needs its own buffer: the RX mock writes the reply
+        // ("valid_resp") back into rx_buff, which points to the TX buffer.
+        // If all ops shared one buffer, the first RX reply would corrupt the
+        // command string for all subsequent transactions.
+        std::array< std::array< uint8_t, 42 >, 5 > buffers{};
+        for ( auto& buf : buffers )
+                std::memcpy( buf.data(), req.data(), req.size() );
 
         std::vector< std::string > results;
 
@@ -864,7 +923,7 @@ TEST_CASE( "Test_Transaction_FlowControl" )
         std::vector< flags > state( 5 );
 
         for ( int i = 0; i < 5; ++i ) {
-                ops.push_back( t.u.transact( buffer, req.size() )
+                ops.push_back( t.u.transact( buffers[i], req.size() )
                                    .connect( capturing_receiver{
                                        .value_count   = &state[i].value,
                                        .stopped_count = &state[i].stopped,
@@ -877,7 +936,7 @@ TEST_CASE( "Test_Transaction_FlowControl" )
         t.ctx.core.run_once();
 
         // Verify state is as expected
-        CHECK( t.u._tmp.full() );
+        CHECK( t.u._trnxs.full() );
         // The 5th one is still in _source logic (pending)
 
         // Now request stop.
@@ -1080,7 +1139,157 @@ TEST_CASE( "Test_UART_Concurrency_Stress" )
                 total_completed += ctx->completed;
 
         CHECK( total_completed == count );
-        CHECK( t.u._tmp.empty() );
+        CHECK( t.u._trnxs.empty() );
+}
+
+TEST_CASE( "Test_Transaction_Stop_All_Pending" )
+{
+        // Three transactions queued, all stopped before tick() calls
+        // query_next_transaction. All three should receive set_stopped(), none
+        // should receive set_value() or set_error().
+        uart_test_context t;
+
+        inplace_stop_source stop_a, stop_b, stop_c;
+        int                 stopped_a = 0, stopped_b = 0, stopped_c = 0;
+        int                 value_a = 0, value_b = 0, value_c = 0;
+
+        uint8_t     ba[42], bb[42], bc[42];
+        std::string req = "echo:x";
+        std::memcpy( ba, req.data(), req.size() );
+        std::memcpy( bb, req.data(), req.size() );
+        std::memcpy( bc, req.data(), req.size() );
+
+        auto oa = t.u.transact( ba, req.size() )
+                      .connect( capturing_receiver{
+                          .value_count   = &value_a,
+                          .stopped_count = &stopped_a,
+                          .stop_source   = &stop_a } );
+        auto ob = t.u.transact( bb, req.size() )
+                      .connect( capturing_receiver{
+                          .value_count   = &value_b,
+                          .stopped_count = &stopped_b,
+                          .stop_source   = &stop_b } );
+        auto oc = t.u.transact( bc, req.size() )
+                      .connect( capturing_receiver{
+                          .value_count   = &value_c,
+                          .stopped_count = &stopped_c,
+                          .stop_source   = &stop_c } );
+
+        oa.start();
+        ob.start();
+        oc.start();
+
+        stop_a.request_stop();
+        stop_b.request_stop();
+        stop_c.request_stop();
+
+        t.u.tick();
+        t.ctx.core.run_once();
+
+        CHECK( stopped_a );
+        CHECK( stopped_b );
+        CHECK( stopped_c );
+        CHECK_FALSE( value_a );
+        CHECK_FALSE( value_b );
+        CHECK_FALSE( value_c );
+}
+
+TEST_CASE( "Test_Transaction_Stop_Mixed_Pending" )
+{
+        // Three transactions queued. The middle one (B) is stopped before tick()
+        // calls query_next_transaction. A and C should complete with set_value();
+        // B should complete with set_stopped().
+        //
+        // NOTE: this also exercises the re-entry risk: the live completions of A
+        // and C via run_until/tick could (in a coroutine scenario) schedule new
+        // transactions into _pending_tx during remove_if's traversal of the list.
+        uart_test_context t;
+
+        inplace_stop_source stop_b;
+        int                 stopped_b = 0, value_a = 0, value_b = 0, value_c = 0;
+
+        uint8_t     ba[42], bb[42], bc[42];
+        std::string req = "echo:x";
+        std::memcpy( ba, req.data(), req.size() );
+        std::memcpy( bb, req.data(), req.size() );
+        std::memcpy( bc, req.data(), req.size() );
+
+        auto oa =
+            t.u.transact( ba, req.size() ).connect( capturing_receiver{ .value_count = &value_a } );
+        auto ob = t.u.transact( bb, req.size() )
+                      .connect( capturing_receiver{
+                          .value_count   = &value_b,
+                          .stopped_count = &stopped_b,
+                          .stop_source   = &stop_b } );
+        auto oc =
+            t.u.transact( bc, req.size() ).connect( capturing_receiver{ .value_count = &value_c } );
+
+        oa.start();
+        ob.start();
+        oc.start();
+
+        stop_b.request_stop();
+
+        t.run_until( [&] {
+                return value_a && value_c;
+        } );
+
+        CHECK( value_a );
+        CHECK( value_c );
+        CHECK( stopped_b );
+        CHECK_FALSE( value_b );
+}
+
+TEST_CASE( "Test_Transaction_Stop_Requeue" )
+{
+        // Op A is stopped while pending. Its set_stopped() immediately starts
+        // op B by calling link_front() on the same list that remove_if is
+        // currently traversing.
+        //
+        // Expected: A receives set_stopped(); B is inserted before the traversal
+        // range (link_front prepends before old first) so it is not visited in
+        // this pass and is safe. It is then picked up by the next
+        // query_next_transaction call and completes with set_value().
+        uart_test_context t;
+
+        inplace_stop_source stop_a;
+        int                 stopped_a = 0;
+        int                 value_b   = 0;
+
+        uint8_t     ba[42], bb[42];
+        std::string req = "echo:requeue";
+        std::memcpy( ba, req.data(), req.size() );
+        std::memcpy( bb, req.data(), req.size() );
+
+        // Pre-construct op B (not started yet).
+        using followup_op_t = transaction_op< uart_trans, capturing_receiver >;
+        auto followup =
+            t.u.transact( bb, req.size() ).connect( capturing_receiver{ .value_count = &value_b } );
+
+        auto oa = t.u.transact( ba, req.size() )
+                      .connect( _requeue_on_stop_receiver{
+                          .stop_count     = &stopped_a,
+                          .stop_source    = &stop_a,
+                          .followup_op    = &followup,
+                          .start_followup = []( void* p ) {
+                                  static_cast< followup_op_t* >( p )->start();
+                          } } );
+
+        oa.start();
+        stop_a.request_stop();
+
+        // tick() -> query_next_transaction -> remove_if -> set_stopped -> start(B)
+        t.u.tick();
+        t.ctx.core.run_once();
+
+        CHECK( stopped_a );
+
+        // B was inserted during remove_if and must now complete normally.
+        t.run_until( [&] {
+                return value_b;
+        } );
+
+        CHECK( value_b );
 }
 
 TEST_CASE( "transaction" )

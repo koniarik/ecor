@@ -1,6 +1,6 @@
 /// MIT License
 ///
-/// Copyright (c) 2025 koniarik
+/// Copyright (c) 2025-2026 koniarik
 ///
 /// Permission is hereby granted, free of charge, to any person obtaining a copy
 /// of this software and associated documentation files (the "Software"), to deal
@@ -3417,6 +3417,7 @@ struct _wait_until_stopped
 static inline _wait_until_stopped wait_until_stopped;
 
 /// -------------------------------------------------------------------------------
+/// controller/target
 
 template < typename T >
 struct _transaction_vtable_mixin;
@@ -3524,25 +3525,70 @@ struct transaction_circular_buffer
             "Size of circular buffer must be less than 65536" );
         static_assert( std::is_trivial_v< T > );
 
-        T& operator[]( uint16_t x )
+        bool full() const
         {
-                return _data[x % N];
+                return ( enqueue - deliver ) == N;
         }
 
-        bool full()
+        void push( T val )
         {
-                return ( last - first ) == N;
+                _data[enqueue++ % N] = val;
         }
 
-        bool empty()
+        bool empty() const
         {
-                return first == last;
+                return deliver == enqueue;
         }
 
-        std::atomic< uint16_t > first = 0;
-        std::atomic< uint16_t > mid1  = 0;
-        std::atomic< uint16_t > mid2  = 0;
-        std::atomic< uint16_t > last  = 0;
+        bool has_tx() const
+        {
+                return tx != enqueue;
+        }
+
+        T& tx_front()
+        {
+                return _data[tx % N];
+        }
+
+        void tx_done()
+        {
+                tx++;
+        }
+
+        bool has_rx() const
+        {
+                return rx != tx;
+        }
+
+        T& rx_front()
+        {
+                return _data[rx % N];
+        }
+
+        void rx_done()
+        {
+                rx++;
+        }
+
+        bool has_deliver() const
+        {
+                return deliver != rx;
+        }
+
+        T& deliver_front()
+        {
+                return _data[deliver % N];
+        }
+
+        void pop()
+        {
+                deliver++;
+        }
+
+        std::atomic< uint16_t > deliver = 0;
+        std::atomic< uint16_t > rx      = 0;
+        std::atomic< uint16_t > tx      = 0;
+        std::atomic< uint16_t > enqueue = 0;
 
 private:
         T _data[N];
@@ -3563,7 +3609,7 @@ private:
 ///  received, user can call tick() with the reply, and transaction source will find the matching
 ///  transaction and complete it with the appropriate signature.
 template < typename T >
-struct transaction_source
+struct transaction_controller_source
 {
         using sender_type                   = transaction_sender< T >;
         static constexpr bool _has_stop_sig = transaction_entry< T >::_has_stop_sig;
@@ -3575,7 +3621,6 @@ struct transaction_source
 
         transaction_entry< T >* query_next_transaction()
         {
-                // XXX: test the stop behavior
                 if constexpr ( _has_stop_sig ) {
                         _pending_tx.remove_if( [this]( transaction_entry< T >& tx ) {
                                 if ( !tx._get_stopped() )

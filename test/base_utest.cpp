@@ -1749,7 +1749,7 @@ TEST_CASE( "task - pass data" )
 static ecor::task< void > multiple_set_value_f( task_ctx&, auto& source )
 {
         for ( int i = 0; i < 3; ++i )
-                auto value = co_await as_variant( source.schedule() );
+                co_await as_variant( source.schedule() );
 };
 
 TEST_CASE( "broadcast - multiple set_value" )
