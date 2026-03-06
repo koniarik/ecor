@@ -3885,4 +3885,122 @@ TEST_CASE( "task_holder - basic operations" )
         }
 }
 
+// -------------------------------------------------------------------------------
+// ecor::suspend tests
+
+static task< void > suspend_ordering_task_a( task_ctx&, bool& b_ran, bool& a_done )
+{
+        co_await suspend;
+        // B should have run while we were suspended
+        a_done = b_ran;
+}
+
+static task< void > suspend_ordering_task_b( task_ctx&, bool& b_ran )
+{
+        b_ran = true;
+        co_return;
+}
+
+static task< void > suspend_single_task( task_ctx&, bool& done )
+{
+        co_await suspend;
+        done = true;
+}
+
+static task< void > suspend_stop_task( task_ctx&, bool& body_reached_after_suspend )
+{
+        co_await suspend;
+        // If we reach here, stop was not observed at suspension time
+        body_reached_after_suspend = true;
+}
+
+struct _stoppable_receiver
+{
+        using receiver_concept = ecor::receiver_t;
+
+        bool*                stopped;
+        inplace_stop_source* src;
+
+        void set_value() noexcept
+        {
+        }
+        void set_error( task_error ) noexcept
+        {
+        }
+        void set_stopped() noexcept
+        {
+                *stopped = true;
+        }
+
+        struct env_t
+        {
+                inplace_stop_token token;
+                inplace_stop_token query( get_stop_token_t ) const noexcept
+                {
+                        return token;
+                }
+        };
+
+        [[nodiscard]] env_t get_env() const noexcept
+        {
+                return env_t{ src->get_token() };
+        }
+};
+
+TEST_CASE( "suspend - basic ordering" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        bool     b_ran  = false;
+        bool     a_done = false;
+
+        auto ha = suspend_ordering_task_a( ctx, b_ran, a_done ).connect( _dummy_receiver{} );
+        auto hb = suspend_ordering_task_b( ctx, b_ran ).connect( _dummy_receiver{} );
+        ha.start();
+        hb.start();
+
+        ctx.core.run_once();  // A runs to co_await suspend, rescheduled; queue: [B, A]
+        ctx.core.run_once();  // B runs, sets b_ran = true, completes; queue: [A]
+        ctx.core.run_once();  // A resumes, sets a_done = b_ran, completes
+
+        CHECK( b_ran );
+        CHECK( a_done );
+}
+
+TEST_CASE( "suspend - single task makes progress" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        bool     done = false;
+
+        auto h = suspend_single_task( ctx, done ).connect( _dummy_receiver{} );
+        h.start();
+
+        ctx.core.run_once();  // task runs to co_await suspend, rescheduled
+        CHECK( !done );
+
+        ctx.core.run_once();  // task resumes, sets done = true, completes
+        CHECK( done );
+}
+
+TEST_CASE( "suspend - stop requested before suspension fires set_stopped" )
+{
+        nd_mem              mem;
+        task_ctx            ctx{ mem };
+        bool                stopped      = false;
+        bool                body_reached = false;
+        inplace_stop_source stop_src;
+
+        auto h = suspend_stop_task( ctx, body_reached )
+                     .connect( _stoppable_receiver{ &stopped, &stop_src } );
+        h.start();
+
+        stop_src.request_stop();
+
+        ctx.core.run_once();  // task runs to co_await suspend → stop observed → set_stopped
+
+        CHECK( stopped );
+        CHECK_FALSE( body_reached );
+}
+
 }  // namespace ecor

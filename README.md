@@ -149,6 +149,24 @@ ecor::task<void> wait_for_event(
 }
 ```
 
+### Cooperative Scheduling — `ecor::suspend`
+
+Use `co_await ecor::suspend;` to yield from the current task, placing it at the back of the ready queue so other tasks get a chance to run first.
+
+```cpp
+ecor::task<void> worker_a(ecor::task_ctx& ctx)
+{
+    while (true) {
+        toggle_led();
+
+        // Yield: let other ready tasks run before resuming
+        co_await ecor::suspend;
+    }
+}
+```
+
+If a stop has already been requested at the point of suspension, the task completes with `set_stopped()` instead of resuming — no callbacks or extra allocations involved. Code that never uses `ecor::suspend` incurs zero overhead.
+
 ## Broadcast Source - One-to-Many Events
 
 `broadcast_source` allows **one producer** to send events to **multiple subscribers**.

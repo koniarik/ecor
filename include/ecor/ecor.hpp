@@ -3417,6 +3417,50 @@ struct _wait_until_stopped
 static inline _wait_until_stopped wait_until_stopped;
 
 /// -------------------------------------------------------------------------------
+
+/// Awaiter used by ecor::suspend. Suspends the current task coroutine and re-queues it at the back
+/// of the task_core's ready list, allowing other ready tasks to run first.
+///
+/// If the stop token in the task promise is already triggered at suspension time, the task
+/// completes with set_stopped() and does not resume. No callbacks or allocations are involved;
+/// code that never uses this type incurs zero overhead.
+struct _suspend_awaiter
+{
+        [[nodiscard]] bool await_ready() const noexcept
+        {
+                return false;
+        }
+
+        template < typename Promise >
+        void await_suspend( std::coroutine_handle< Promise > h ) noexcept
+        {
+                auto& p = h.promise();
+                if ( p.token.stop_requested() ) {
+                        p.invoke_set_stopped();
+                        return;
+                }
+                p.core.reschedule( p );
+        }
+
+        void await_resume() noexcept
+        {
+        }
+};
+
+/// Yields the current task to the scheduler, placing it at the back of the ready queue so
+/// that other tasks get a chance to run before this one resumes.
+///
+/// If a stop has already been requested (via the stop token propagated from the receiver)
+/// at the point of suspension, the task completes with set_stopped() and does not resume.
+///
+/// Usage inside a task coroutine:
+///   co_await ecor::suspend;
+///
+/// Zero overhead when not used: no callbacks, no allocations, no extra per-task state.
+[[maybe_unused]]
+static inline _suspend_awaiter suspend;
+
+/// -------------------------------------------------------------------------------
 /// controller/target
 
 template < typename T >
