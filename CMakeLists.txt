@@ -5,11 +5,24 @@ option(ECOR_TESTS_ENABLED "Enable tests" OFF)
 project(ecor)
 
 include(CMakePackageConfigHelpers)
+include(FetchContent)
 
-add_library(zll INTERFACE dep/zll/zll.hpp)
-target_include_directories(
-  zll INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/dep/zll>
-                $<INSTALL_INTERFACE:include/zll>)
+# Allow the env var set in .envrc (or CI) to redirect FetchContent to a local
+# checkout.
+if(DEFINED ENV{FETCHCONTENT_SOURCE_DIR_ZLL}
+   AND NOT DEFINED CACHE{FETCHCONTENT_SOURCE_DIR_ZLL})
+  set(FETCHCONTENT_SOURCE_DIR_ZLL
+      "$ENV{FETCHCONTENT_SOURCE_DIR_ZLL}"
+      CACHE
+        PATH
+        "Local zll source override (from FETCHCONTENT_SOURCE_DIR_ZLL env var)")
+endif()
+
+FetchContent_Declare(
+  zll
+  GIT_REPOSITORY https://github.com/koniarik/zll.git
+  GIT_TAG 6159cad0af1e44062ba857a100525326fc6e8781)
+FetchContent_MakeAvailable(zll)
 
 add_library(ecor INTERFACE include/ecor/ecor.hpp)
 target_include_directories(
