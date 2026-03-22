@@ -4003,4 +4003,183 @@ TEST_CASE( "suspend - stop requested before suspension fires set_stopped" )
         CHECK_FALSE( body_reached );
 }
 
+
+// -----------------------------------------------------------------------
+// Concept tests: sender, receiver, receiver_for, receiver_for_sigs
+// -----------------------------------------------------------------------
+
+namespace sender_receiver_concepts_test
+{
+        // Receiver that handles set_value(int), set_error(task_error), set_stopped()
+        struct int_recv
+        {
+                using receiver_concept = receiver_t;
+                void set_value( int ) noexcept
+                {
+                }
+                void set_error( task_error ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+
+        // Receiver whose set_value takes no arguments — cannot satisfy set_value_t(int)
+        struct noarg_value_recv
+        {
+                using receiver_concept = receiver_t;
+                void set_value() noexcept
+                {
+                }
+                void set_error( task_error ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+
+        // Receiver with no set_error method at all
+        struct no_error_recv
+        {
+                using receiver_concept = receiver_t;
+                void set_value( int ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+
+        // Receiver with no set_stopped method at all
+        struct no_stopped_recv
+        {
+                using receiver_concept = receiver_t;
+                void set_value( int ) noexcept
+                {
+                }
+                void set_error( task_error ) noexcept
+                {
+                }
+        };
+
+        // Struct with all the right methods but no receiver_concept typedef
+        struct no_concept_recv
+        {
+                void set_value( int ) noexcept
+                {
+                }
+                void set_error( task_error ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+
+        // receiver_concept present but pointing to sender_t instead of receiver_t
+        struct wrong_concept_recv
+        {
+                using receiver_concept = sender_t;
+                void set_value( int ) noexcept
+                {
+                }
+                void set_error( task_error ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+
+}  // namespace sender_receiver_concepts_test
+
+TEST_CASE( "sender concept" )
+{
+        // Standard built-in senders all satisfy the concept
+        static_assert( sender< _ll_sender< set_value_t( int ) > > );
+        static_assert(
+            sender< _ll_sender< set_value_t( int ), set_error_t( int ), set_stopped_t() > > );
+        static_assert( sender< _just_error< int > > );
+        static_assert( sender< task< void > > );
+        static_assert( sender< task< int > > );
+
+        // Scalars, receivers, and structs without sender_concept are not senders
+        static_assert( !sender< int > );
+        static_assert( !sender< _dummy_receiver > );
+        static_assert( !sender< sender_receiver_concepts_test::int_recv > );
+}
+
+TEST_CASE( "receiver concept" )
+{
+        using namespace sender_receiver_concepts_test;
+
+        // Properly tagged types satisfy the receiver concept
+        static_assert( receiver< _dummy_receiver > );
+        static_assert( receiver< int_recv > );
+        static_assert( receiver< noarg_value_recv > );
+
+        // Scalars, senders, and structs without receiver_concept are not receivers
+        static_assert( !receiver< int > );
+        static_assert( !receiver< _ll_sender< set_value_t( int ) > > );
+        static_assert( !receiver< no_concept_recv > );
+        // receiver_concept present but points to sender_t, not receiver_t
+        static_assert( !receiver< wrong_concept_recv > );
+}
+
+TEST_CASE( "receiver_for concept" )
+{
+        using namespace sender_receiver_concepts_test;
+
+        using val_sender  = _ll_sender< set_value_t( int ) >;
+        using err_sender  = _just_error< task_error >;
+        using stop_sender = _ll_sender< set_stopped_t() >;
+
+        // Full match: receiver handles every signature the sender declares
+        static_assert( receiver_for< int_recv, val_sender > );
+        static_assert( receiver_for< _dummy_receiver, val_sender > );
+        static_assert( receiver_for< _dummy_receiver, err_sender > );
+        static_assert( receiver_for< _dummy_receiver, stop_sender > );
+
+        // set_value() does not satisfy set_value_t(int)
+        static_assert( !receiver_for< noarg_value_recv, val_sender > );
+
+        // no set_error: can't satisfy an error-only sender
+        static_assert( !receiver_for< no_error_recv, err_sender > );
+
+        // no set_stopped: can't satisfy a stopped-only sender
+        static_assert( !receiver_for< no_stopped_recv, stop_sender > );
+
+        // Extra methods on the receiver are fine: val_sender has no error/stopped sigs,
+        // so receivers missing those methods still satisfy it
+        static_assert( receiver_for< no_error_recv, val_sender > );
+        static_assert( receiver_for< no_stopped_recv, val_sender > );
+}
+
+TEST_CASE( "receiver_for_sigs concept" )
+{
+        using namespace sender_receiver_concepts_test;
+
+        // Checking against explicit signature lists
+        static_assert( receiver_for_sigs< int_recv, set_value_t( int ) > );
+        static_assert(
+            receiver_for_sigs< int_recv, set_value_t( int ), set_error_t( task_error ) > );
+        static_assert( receiver_for_sigs<
+                       int_recv,
+                       set_value_t( int ),
+                       set_error_t( task_error ),
+                       set_stopped_t() > );
+
+        // Wrong set_value arity
+        static_assert( !receiver_for_sigs< noarg_value_recv, set_value_t( int ) > );
+        // Missing set_error
+        static_assert( !receiver_for_sigs< no_error_recv, set_error_t( task_error ) > );
+        // Missing set_stopped
+        static_assert( !receiver_for_sigs< no_stopped_recv, set_stopped_t() > );
+
+        // Non-receivers fail even when all methods are present
+        static_assert( !receiver_for_sigs< no_concept_recv, set_value_t( int ) > );
+}
+
 }  // namespace ecor

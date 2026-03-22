@@ -797,8 +797,10 @@ struct _get_completion_signatures_t
                 };
                 if constexpr ( has_member )
                         return s.get_completion_signatures( e );
-                else
-                        return typename S::completion_signatures{};
+                else {
+                        using sigs = typename S::completion_signatures;
+                        return sigs{};
+                }
         }
 };
 /// CPO for getting the completion signatures from a sender. If the sender has a
@@ -839,6 +841,54 @@ concept receiver =
     } && std::move_constructible< std::remove_cvref_t< T > > &&
     std::constructible_from< std::remove_cvref_t< T >, T >;
 
+
+template < typename R, typename T >
+struct _receiver_sig_callable;
+
+template < typename R, typename... Args >
+struct _receiver_sig_callable< R, set_value_t( Args... ) >
+{
+        static constexpr bool value =
+            requires( R& r, Args&&... args ) { r.set_value( (Args&&) args... ); };
+};
+
+template < typename R, typename Err >
+struct _receiver_sig_callable< R, set_error_t( Err ) >
+{
+        static constexpr bool value = requires( R& r, Err&& err ) { r.set_error( (Err&&) err ); };
+};
+
+template < typename R >
+struct _receiver_sig_callable< R, set_stopped_t() >
+{
+        static constexpr bool value = requires( R& r ) { r.set_stopped(); };
+};
+
+template < typename R, typename Sigs >
+struct _receiver_for_impl;
+
+template < typename R, typename... S >
+struct _receiver_for_impl< R, completion_signatures< S... > >
+{
+        static constexpr bool value = ( ... && _receiver_sig_callable< R, S >::value );
+};
+
+/// Concept for receivers that can handle a specific sender's completion signatures. Requires that R
+/// satisfies the receiver concept and has the callable member functions required by every signature
+/// in the completion signatures of sender S (queried with R's own environment). Use this to
+/// constrain connect() overloads to receivers that are compatible with a given sender type.
+template < typename R, typename S >
+concept receiver_for =
+    receiver< R > && _receiver_for_impl< R, _sender_completions_t< S, env_type< R > > >::value;
+
+/// Concept for receivers that can handle an explicitly listed set of completion signatures.
+/// Requires that R satisfies the receiver concept and has callable member functions for each of the
+/// provided signatures Sig. Unlike receiver_for, the signatures are supplied directly rather than
+/// derived from a sender type, which creates more human-friendly error messages when the constraint
+/// is not satisfied, as the signatures are explicitly listed in the error rather than being buried
+/// inside the sender's type.
+template < typename R, typename... Sig >
+concept receiver_for_sigs = receiver< R > && ( ... && _receiver_sig_callable< R, Sig >::value );
 
 /// Single row of vtable for a specific completion signature. This contains the function pointer for
 /// invoking the corresponding completion signal on derived class, and a constructor that
@@ -1580,6 +1630,9 @@ struct _ll_sender
         _ll_op< R, S... > connect( R receiver ) noexcept(
             noexcept( _ll_op< R, S... >{ _ll, std::move( receiver ) } ) )
         {
+                static_assert(
+                    receiver_for_sigs< R, S... >,
+                    "Receiver does not satisfy the requirements for the sender's completion signatures" );
                 return { _ll, std::move( receiver ) };
         }
 
@@ -1608,6 +1661,9 @@ struct _sh_sender
         _sh_op< R, K, S... > connect( R receiver ) && noexcept(
             noexcept( _sh_op< R, K, S... >{ _sh, std::move( _key ), std::move( receiver ) } ) )
         {
+                static_assert(
+                    receiver_for_sigs< R, S... >,
+                    "Receiver does not satisfy the requirements for the sender's completion signatures" );
                 return { _sh, std::move( _key ), std::move( receiver ) };
         }
 
@@ -1615,6 +1671,9 @@ struct _sh_sender
         _sh_op< R, K, S... > connect( R receiver ) const& noexcept(
             noexcept( _sh_op< R, K, S... >{ _sh, _key, std::move( receiver ) } ) )
         {
+                static_assert(
+                    receiver_for_sigs< R, S... >,
+                    "Receiver does not satisfy the requirements for the sender's completion signatures" );
                 return { _sh, _key, std::move( receiver ) };
         }
 
@@ -1913,6 +1972,9 @@ struct _just_error
         auto connect( R receiver ) && noexcept(
             std::is_nothrow_move_constructible_v< T > && std::is_nothrow_move_constructible_v< R > )
         {
+                static_assert(
+                    receiver_for< R, _just_error< T > >,
+                    "Receiver does not satisfy the requirements for the sender's completion signatures" );
                 return _op{ std::move( err ), std::move( receiver ) };
         }
 
@@ -2693,6 +2755,9 @@ struct task
         template < receiver R >
         auto connect( R receiver ) &&
         {
+                static_assert(
+                    receiver_for< R, task< T, CFG > >,
+                    "Receiver does not satisfy the requirements for the task's completion signatures" );
                 auto tmp = _h;
                 _h       = nullptr;
                 return _task_op< T, CFG, R >{ _error, std::move( tmp ), std::move( receiver ) };
@@ -2802,6 +2867,9 @@ struct _or_sender
         template < receiver R >
         _or_op< S1, S2, R > connect( R receiver )
         {
+                static_assert(
+                    receiver_for< R, _or_sender >,
+                    "Receiver does not satisfy the requirements for the combined completion signatures of the two senders" );
                 return { std::move( _s1 ), std::move( _s2 ), std::move( receiver ) };
         }
 
@@ -2980,6 +3048,9 @@ struct _err_to_val
         template < receiver R >
         auto connect( R receiver ) &&
         {
+                static_assert(
+                    receiver_for< R, _err_to_val >,
+                    "Receiver does not satisfy the requirements for the err_to_val transformation" );
                 return std::move( _s ).connect( _recv< R >{ std::move( receiver ) } );
         }
 
@@ -3079,6 +3150,9 @@ struct _sink_err
                     std::same_as< _s_values< _env >, completion_signatures<> > ||
                         std::same_as< _s_values< _env >, completion_signatures< set_value_t() > >,
                     "Sender used with sink_err must not complete with set_value, or there has to be only one set_value of shape set_value_t()" );
+                static_assert(
+                    receiver_for< R, _sink_err< S > >,
+                    "Receiver does not satisfy the requirements for the sink_err sender's completion signatures" );
                 return std::move( _s ).connect( _recv< R >{ std::move( receiver ) } );
         }
 
@@ -3111,14 +3185,23 @@ auto operator|( sender auto s, sink_err_t ) noexcept
 
 /// Helper for then: maps a set_value_t(Args...) signature through callable F.
 /// Produces set_value_t() if F returns void, otherwise set_value_t(invoke_result_t<F, Args...>).
+template < typename Ret >
+struct _then_value_sig_ret
+{
+        using type = set_value_t( Ret );
+};
+
+template <>
+struct _then_value_sig_ret< void >
+{
+        using type = set_value_t();
+};
+
 template < typename F >
 struct _then_value_sig
 {
         template < typename... Args >
-        using type = std::conditional_t<
-            std::is_void_v< std::invoke_result_t< F, Args... > >,
-            set_value_t(),
-            set_value_t( std::invoke_result_t< F, Args... > ) >;
+        using type = typename _then_value_sig_ret< std::invoke_result_t< F, Args... > >::type;
 };
 
 template < sender S, typename F >
@@ -3180,6 +3263,9 @@ struct _then
         template < receiver R >
         auto connect( R receiver ) &&
         {
+                static_assert(
+                    receiver_for< R, _then >,
+                    "Receiver does not satisfy the requirements for the then sender's completion signatures" );
                 return std::move( _s ).connect(
                     _recv< R >{ std::move( receiver ), std::move( _f ) } );
         }
@@ -3406,6 +3492,9 @@ struct _wait_until_stopped
         template < receiver R >
         auto connect( R receiver ) &&
         {
+                static_assert(
+                    receiver_for< R, _wait_until_stopped >,
+                    "Receiver does not satisfy the requirements for wait_until_stopped's completion signatures" );
                 return _op{ std::move( receiver ) };
         }
 };
@@ -3552,6 +3641,10 @@ struct transaction_sender
         template < receiver R >
         auto connect( R receiver ) &&
         {
+                static_assert(
+                    receiver_for< R, transaction_sender >,
+                    "Receiver does not satisfy the requirements for the transaction sender's completion signatures" );
+
                 return transaction_op< T, R >{ std::move( val ), std::move( receiver ), _pending };
         }
 
