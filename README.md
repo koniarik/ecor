@@ -719,6 +719,109 @@ void run_with_custom_cfg(my_ctx_type& ctx) {
 }
 ```
 
+## Async Arena - Managed Async Lifetimes
+
+`async_arena` provides reference-counted smart pointers (`async_ptr`) with **asynchronous destruction**. When the last pointer to an object is dropped, the arena runs a user-defined async destroy protocol before calling `~T()` and freeing memory — all driven through the same `task_core` scheduler.
+
+### Basic Usage
+
+```cpp
+// 1. Define a type with an async_destroy member
+struct my_device {
+    int id;
+    ecor::broadcast_source<ecor::set_value_t()>& shutdown_source;
+
+    auto async_destroy(ecor::task_ctx& ctx) {
+        // Return a sender: flush buffers, release hardware, etc.
+        return shutdown_source.schedule();
+    }
+};
+
+// 2. Create an arena and make objects
+struct my_mem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+void arena_example() {
+    my_mem mem;
+    ecor::task_ctx ctx{mem};
+
+    ecor::broadcast_source<ecor::set_value_t()> shutdown_src;
+    ecor::async_arena<ecor::task_ctx, my_mem> arena(ctx, mem);
+
+    auto ptr = arena.make<my_device>(42, shutdown_src);
+    // ptr is an async_ptr with refcount 1
+
+    auto copy = ptr;  // refcount → 2
+    ptr.reset();      // refcount → 1, object still alive
+    copy.reset();     // refcount → 0 → async destroy enqueued
+}
+```
+
+When the last `async_ptr` is dropped, the arena:
+1. Enqueues the object for destruction,
+2. Calls `ecor::async_destroy(ctx, obj)` which must return a sender,
+3. Connects and starts that sender,
+4. On completion, calls `~T()` and frees the control block memory.
+
+### The `async_destroy` CPO
+
+Provide either a member function or an ADL free function:
+
+```cpp
+// Member:
+struct widget {
+    ecor::broadcast_source<ecor::set_value_t()> src;
+    auto async_destroy(ecor::task_ctx& ctx) { return src.schedule(); }
+};
+
+// ADL free function:
+struct driver {};
+ecor::broadcast_source<ecor::set_value_t()> driver_src;
+auto async_destroy(ecor::task_ctx& ctx, driver& d) { return driver_src.schedule(); }
+```
+
+The destroy sender can be a `task<void>` coroutine, a source's `schedule()`, or any other sender.
+
+### Graceful Shutdown
+
+`async_destroy()` on the arena signals that no new objects will be created and returns a sender that completes when all pending destructions have finished:
+
+```cpp
+struct arena_obj {
+    ecor::broadcast_source<ecor::set_value_t()> src;
+    auto async_destroy(ecor::task_ctx& ctx) { return src.schedule(); }
+};
+
+struct arena_mem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+ecor::task<void> shutdown(ecor::task_ctx& ctx, ecor::async_arena<ecor::task_ctx, arena_mem>& arena)
+{
+    co_await arena.async_destroy();
+    // All managed objects have been async-destroyed and freed
+}
+```
+
+> **Precondition:** The `async_destroy()` sender must complete before the arena object is destroyed.
+
+### Key Properties
+
+- **Single-threaded, not interrupt-safe** — all pointer operations and `run_once()` must happen on the same thread.
+- **Single allocation per object** — control block and `T` are allocated together (make_shared style).
+- **Two-phase cleanup** — the destroy sender's operation state is freed on a separate `run_once()` tick after completion, preventing use-after-free of the op_state during stack unwinding.
+
 ## Assert customization
 
 By default, ecor uses `assert` for internal checks. You can customize this by defining `ECOR_ASSERT` before including the header:

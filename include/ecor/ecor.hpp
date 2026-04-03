@@ -1999,8 +1999,9 @@ enum class _awaitable_state_e : uint8_t
         value
 };
 
-/// Base class for task promises that can be resumed by the task scheduler.
-struct _i_task_promise : zll::ll_base< _i_task_promise >
+/// Base class for any item that can be placed in the `task_core` ready queue and resumed.
+/// Used by coroutine task promises, task holders, and async arena internals.
+struct _schedulable : zll::ll_base< _schedulable >
 {
         virtual void resume() = 0;
 };
@@ -2035,13 +2036,13 @@ struct task_core
 
         /// Reschedule a task by adding it's promise to the list of ready tasks. The task will be
         /// resumed the next time run_once() or run_n() is called.
-        void reschedule( _i_task_promise& op ) noexcept
+        void reschedule( _schedulable& op ) noexcept
         {
                 _ready_tasks.link_back( op );
         }
 
 private:
-        zll::ll_list< _i_task_promise > _ready_tasks;
+        zll::ll_list< _schedulable > _ready_tasks;
 };
 
 template < typename T >
@@ -2339,7 +2340,7 @@ enum class task_error : uint8_t
 /// Base class for task promises. This implements the common functionality for all task promises,
 /// such as memory allocation and deallocation, and provides the interface for rescheduling the task
 /// when it is resumed by the task scheduler.
-struct _promise_base : _i_task_promise
+struct _promise_base : _schedulable
 {
         static constexpr std::size_t align   = alignof( std::max_align_t );
         static constexpr std::size_t spacing = align > sizeof( void* ) ? align : sizeof( void* );
@@ -3315,7 +3316,7 @@ auto operator|( S s, _then_closure< F > c )
 /// are in use. Not intended to be used directly — use `task_holder` instead.
 ///
 template < task_config CFG = task_default_cfg >
-struct _task_holder_base : _i_task_promise
+struct _task_holder_base : _schedulable
 {
         using _task_t = task< void, CFG >;
 
@@ -3548,6 +3549,456 @@ struct _suspend_awaiter
 /// Zero overhead when not used: no callbacks, no allocations, no extra per-task state.
 [[maybe_unused]]
 static inline _suspend_awaiter suspend;
+
+/// -------------------------------------------------------------------------------
+/// async_arena — asynchronous reference-counted lifetime management
+
+template < typename Ctx, typename T >
+concept _has_member_async_destroy = requires( Ctx& ctx, T& obj ) {
+        { obj.async_destroy( ctx ) } -> sender;
+};
+
+template < typename Ctx, typename T >
+concept _has_adl_async_destroy =
+    !_has_member_async_destroy< Ctx, T > && requires( Ctx& ctx, T& obj ) {
+            { async_destroy( ctx, obj ) } -> sender;
+    };
+
+/// CPO for asynchronous destruction of managed objects. Used by the library to destroy objects with
+/// asynchronous destruction.
+///
+/// Users specialize this by providing either:
+///  - A member function: `auto async_destroy(task_context auto& ctx)`
+///  - An ADL free function: `auto async_destroy(task_context auto& ctx, T& obj)`
+///
+/// The returned type must be a sender.
+///
+struct _async_destroy_t
+{
+        template < typename Ctx, typename T >
+                requires _has_member_async_destroy< Ctx, T >
+        ecor::sender auto operator()( Ctx& ctx, T& obj ) const
+            noexcept( noexcept( obj.async_destroy( ctx ) ) )
+        {
+                return obj.async_destroy( ctx );
+        }
+
+        template < typename Ctx, typename T >
+                requires _has_adl_async_destroy< Ctx, T >
+        ecor::sender auto operator()( Ctx& ctx, T& obj ) const
+            noexcept( noexcept( async_destroy( ctx, obj ) ) )
+        {
+                return async_destroy( ctx, obj );
+        }
+};
+inline constexpr _async_destroy_t async_destroy{};
+
+enum class _cb_state : uint8_t
+{
+        alive,
+        queued,
+        destroying,
+};
+
+struct _async_arena_cb_base : zll::ll_base< _async_arena_cb_base >
+{
+        virtual void start_destroy()  = 0;
+        virtual void finish_cleanup() = 0;
+
+protected:
+        ~_async_arena_cb_base() = default;
+};
+
+struct _async_arena_core_base : _schedulable
+{
+        explicit _async_arena_core_base( task_core& core ) noexcept
+          : _core( core )
+        {
+        }
+
+        void _enqueue_destroy( _async_arena_cb_base& cb ) noexcept
+        {
+                _destroy_queue.link_back( cb );
+                if ( !_active && zll::detached( static_cast< _schedulable& >( *this ) ) )
+                        _core.reschedule( *this );
+        }
+
+        void _on_destroy_complete() noexcept
+        {
+                ECOR_ASSERT( _active );
+                ECOR_ASSERT( zll::detached( static_cast< _schedulable& >( *this ) ) );
+                _core.reschedule( *this );
+        }
+
+        void resume() override
+        {
+                if ( _active ) {
+                        _active->finish_cleanup();
+                        _active = nullptr;
+                }
+
+                if ( !_destroy_queue.empty() ) {
+                        _active = &_destroy_queue.take_front();
+                        _active->start_destroy();
+                } else if ( _stopped && _alive_list.empty() ) {
+                        _done_src.set_value();
+                }
+        }
+
+        task_core&                           _core;
+        zll::ll_list< _async_arena_cb_base > _alive_list;
+        zll::ll_list< _async_arena_cb_base > _destroy_queue;
+        _async_arena_cb_base*                _active  = nullptr;
+        bool                                 _stopped = false;
+        broadcast_source< set_value_t() >    _done_src;
+
+        struct _destroy_receiver
+        {
+                using receiver_concept = receiver_t;
+
+                _async_arena_core_base* _core;
+
+                void set_value( auto&&... ) noexcept
+                {
+                        _core->_on_destroy_complete();
+                }
+
+                void set_error( auto&& ) noexcept
+                {
+                        _core->_on_destroy_complete();
+                }
+
+                void set_stopped() noexcept
+                {
+                        _core->_on_destroy_complete();
+                }
+        };
+};
+
+struct _async_arena_cb_counted : _async_arena_cb_base
+{
+        explicit _async_arena_cb_counted( _async_arena_core_base& arena ) noexcept
+          : _arena( arena )
+        {
+        }
+
+        void add_ref() noexcept
+        {
+                ECOR_ASSERT( _refs > 0 );
+                ECOR_ASSERT( _state == _cb_state::alive );
+                ++_refs;
+        }
+
+        void release() noexcept
+        {
+                ECOR_ASSERT( _refs > 0 );
+                if ( --_refs == 0 ) {
+                        _state = _cb_state::queued;
+                        _arena._enqueue_destroy( *this );
+                }
+        }
+
+        _async_arena_core_base& _arena;
+        uint32_t                _refs  = 1;
+        _cb_state               _state = _cb_state::alive;
+
+protected:
+        ~_async_arena_cb_counted() = default;
+};
+
+template < typename Ctx, typename Mem >
+struct async_arena;
+
+template < typename Ctx, typename Mem >
+struct _async_arena_core : _async_arena_core_base
+{
+        _async_arena_core( Ctx& ctx, Mem& mem ) noexcept
+          : _async_arena_core_base( get_task_core( ctx ) )
+          , _ctx( ctx )
+          , _mem( mem )
+        {
+        }
+
+        Ctx& _ctx;
+        Mem& _mem;
+};
+
+template < typename T, typename Ctx, typename Mem >
+struct _async_arena_control_block : _async_arena_cb_counted
+{
+        using _destroy_sender_t =
+            decltype( ecor::async_destroy( std::declval< Ctx& >(), std::declval< T& >() ) );
+
+        using _destroy_receiver = _async_arena_core_base::_destroy_receiver;
+        using _destroy_op_t     = connect_type< _destroy_sender_t, _destroy_receiver >;
+
+        _destroy_op_t* _destroy_op = nullptr;
+        T              _object;
+
+        template < typename... Args >
+        _async_arena_control_block( _async_arena_core< Ctx, Mem >& arena, Args&&... a )
+          : _async_arena_cb_counted( arena )
+          , _object( (Args&&) a... )
+        {
+        }
+
+        void start_destroy() override
+        {
+                ECOR_ASSERT( _state == _cb_state::queued );
+                _state = _cb_state::destroying;
+
+                auto& arena = static_cast< _async_arena_core< Ctx, Mem >& >( _arena );
+
+                using op_t = _destroy_op_t;
+
+                auto  s = ecor::async_destroy( arena._ctx, _object );
+                void* p = ecor::allocate( arena._mem, sizeof( op_t ), alignof( op_t ) );
+                ECOR_ASSERT( p );
+                _destroy_op =
+                    ::new ( p ) op_t( std::move( s ).connect( _destroy_receiver{ &_arena } ) );
+                _destroy_op->start();
+        }
+
+        void finish_cleanup() override
+        {
+                auto& arena = static_cast< _async_arena_core< Ctx, Mem >& >( _arena );
+
+                using op_t = _destroy_op_t;
+                _destroy_op->~op_t();
+                ecor::deallocate( arena._mem, _destroy_op, sizeof( op_t ), alignof( op_t ) );
+                _destroy_op = nullptr;
+                auto& mem   = arena._mem;
+                this->~_async_arena_control_block();
+                ecor::deallocate(
+                    mem,
+                    this,
+                    sizeof( _async_arena_control_block ),
+                    alignof( _async_arena_control_block ) );
+        }
+};
+
+/// Reference-counted smart pointer to an object managed by an `async_arena`. When the last
+/// `async_ptr` is dropped, the async destroy protocol is initiated — the object is not immediately
+/// destructed but instead queued for asynchronous cleanup via the arena.
+///
+/// Copyable, movable, nullable. Dereferenceable via `*` and `->`.
+///
+template < typename T, typename Ctx, typename Mem >
+struct async_ptr
+{
+        using _cb_t = _async_arena_control_block< T, Ctx, Mem >;
+
+        /// Default constructor creates a null `async_ptr`.
+        async_ptr() noexcept = default;
+
+        /// Constructing from nullptr creates a null `async_ptr`.
+        async_ptr( std::nullptr_t ) noexcept
+        {
+        }
+
+        /// Copy constructor and copy assignment operator increment the reference count.
+        async_ptr( async_ptr const& o ) noexcept
+          : _cb( o._cb )
+        {
+                if ( _cb )
+                        _cb->add_ref();
+        }
+
+        /// Move constructor and move assignment operator transfer ownership without modifying the
+        /// reference count.
+        async_ptr( async_ptr&& o ) noexcept
+          : _cb( o._cb )
+        {
+                o._cb = nullptr;
+        }
+
+        /// Copy assignment operator: release the current object (if any), copy the control block
+        /// pointer from the other `async_ptr`, and increment the reference count if the new control
+        /// block is not null.
+        async_ptr& operator=( async_ptr const& o ) noexcept
+        {
+                if ( this != &o ) {
+                        _reset();
+                        _cb = o._cb;
+                        if ( _cb )
+                                _cb->add_ref();
+                }
+                return *this;
+        }
+
+        /// Move assignment operator: release the current object (if any), transfer the control
+        /// block pointer from the other `async_ptr`, and set the other `async_ptr` to null without
+        /// modifying the reference count.
+        async_ptr& operator=( async_ptr&& o ) noexcept
+        {
+                if ( this != &o ) {
+                        _reset();
+                        _cb   = o._cb;
+                        o._cb = nullptr;
+                }
+                return *this;
+        }
+
+        /// Destructor releases the current object (if any) by decrementing the reference count and
+        /// initiating async destruction if the count reaches zero.
+        ~async_ptr()
+        {
+                _reset();
+        }
+
+        /// Explicit bool conversion operator returns true if the `async_ptr` is non-null.
+        explicit operator bool() const noexcept
+        {
+                return _cb != nullptr;
+        }
+
+        /// Dereference operators return the managed object. Precondition: the `async_ptr` must be
+        /// non-null.
+        T& operator*() const noexcept
+        {
+                ECOR_ASSERT( _cb );
+                return _cb->_object;
+        }
+
+        /// Arrow operator returns a pointer to the managed object. Precondition: the `async_ptr`
+        /// must be non-null.
+        T* operator->() const noexcept
+        {
+                ECOR_ASSERT( _cb );
+                return &_cb->_object;
+        }
+
+        /// Get the raw pointer to the managed object, or nullptr if the `async_ptr` is null.
+        T* get() const noexcept
+        {
+                return _cb ? &_cb->_object : nullptr;
+        }
+
+        /// Reset the `async_ptr` to null, releasing the current object (if any) by decrementing the
+        /// reference count and initiating async destruction if the count reaches zero.
+        void reset() noexcept
+        {
+                _reset();
+        }
+
+        /// Comparison operators compare the control block pointers for equality. Two `async_ptr`s
+        /// are equal if they point to the same control block (i.e., manage the same object), and
+        /// not equal otherwise.
+        friend bool operator==( async_ptr const& a, async_ptr const& b ) noexcept
+        {
+                return a._cb == b._cb;
+        }
+
+        /// Comparison operators compare the control block pointers for inequality. Two `async_ptr`s
+        /// are not equal if they point to different control blocks (i.e., manage different
+        /// objects), and equal otherwise.
+        friend bool operator!=( async_ptr const& a, async_ptr const& b ) noexcept
+        {
+                return a._cb != b._cb;
+        }
+
+        /// Comparison operators with nullptr compare the control block pointer to null. An
+        /// `async_ptr` is equal to nullptr if its control block pointer is null.
+        friend bool operator==( async_ptr const& a, std::nullptr_t ) noexcept
+        {
+                return a._cb == nullptr;
+        }
+
+        /// Comparison operators with nullptr compare the control block pointer to null. An
+        /// `async_ptr` is not equal to nullptr if its control block pointer is not null.
+        friend bool operator!=( async_ptr const& a, std::nullptr_t ) noexcept
+        {
+                return a._cb != nullptr;
+        }
+
+private:
+        template < typename, typename >
+        friend struct async_arena;
+
+        explicit async_ptr( _cb_t* cb ) noexcept
+          : _cb( cb )
+        {
+        }
+
+        void _reset() noexcept
+        {
+                if ( _cb ) {
+                        _cb->release();
+                        _cb = nullptr;
+                }
+        }
+
+        _cb_t* _cb = nullptr;
+};
+
+/// Async arena. Creates `async_ptr` instances and provides graceful shutdown via `async_destroy()`.
+/// This allows construction of datasets of type with asynchronous destruction requirements, and
+/// ensures that all pending destructions complete before shutdown.
+///
+/// For any type managed by the arena, we assume that async_destroy CPO can be used and guaranteee
+/// that it's get called before standard destructor of the object.
+///
+/// Arena uses reference-counted pointers to handle lifetime of the objects. When the last
+/// `async_ptr` to an object is destroyed, the arena initiates asynchronous destruction of the
+/// object by enqueuing it for cleanup in provided task context object. The arena keeps track of all
+/// alive objects and pending destructions, and provides a sender that completes when all pending
+/// destructions have finished after shutdown is initiated.
+///
+/// Any memory is allocated via `Mem` memory resource provided to the arena. Arena allocates newly
+/// created objects and all internal bookkeeping structures (control blocks, destroy operations)
+/// from the provided memory resource, and deallocates them when they are destroyed.
+///
+/// The resulting operation state from sender returned by objects `async_destroy()` is stored in
+/// memory blocked allocated from the arena's memory resource, and is properly destroyed and
+/// deallocated when the destruction completes.
+///
+/// The arena itself is not thread-safe and must be used from a single task context.
+///
+/// Precondition: `async_destroy()` sender must complete before the arena is destroyed.
+///
+template < typename Ctx, typename Mem >
+struct async_arena
+{
+        /// Construct an async arena with the provided context and memory resource.
+        async_arena( Ctx& ctx, Mem& mem ) noexcept
+          : _core( ctx, mem )
+        {
+        }
+
+        async_arena( async_arena const& )            = delete;
+        async_arena& operator=( async_arena const& ) = delete;
+        async_arena( async_arena&& )                 = delete;
+        async_arena& operator=( async_arena&& )      = delete;
+
+        /// Create a new managed object of type T. Returns an `async_ptr<T,Ctx,Mem>` with a
+        /// reference count of 1. Returns a null `async_ptr` if allocation fails.
+        template < typename T, typename... Args >
+        async_ptr< T, Ctx, Mem > make( Args&&... args )
+        {
+                ECOR_ASSERT( !_core._stopped );
+                using cb_t = _async_arena_control_block< T, Ctx, Mem >;
+                void* p    = ecor::allocate( _core._mem, sizeof( cb_t ), alignof( cb_t ) );
+                if ( !p )
+                        return { nullptr };
+                auto* cb = ::new ( p ) cb_t( _core, (Args&&) args... );
+                _core._alive_list.link_back( *cb );
+                return async_ptr< T, Ctx, Mem >{ cb };
+        }
+
+        /// Signal that no new objects will be created and return a sender that completes with
+        /// `set_value_t()` when all pending async destructions have finished.
+        _ll_sender< set_value_t() > async_destroy() noexcept
+        {
+                _core._stopped = true;
+                if ( _core._alive_list.empty() && _core._destroy_queue.empty() &&
+                     zll::detached( static_cast< _schedulable& >( _core ) ) && !_core._active )
+                        _core._core.reschedule( _core );
+                return _core._done_src.schedule();
+        }
+
+private:
+        _async_arena_core< Ctx, Mem > _core;
+};
 
 /// -------------------------------------------------------------------------------
 /// controller/target

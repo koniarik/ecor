@@ -4182,4 +4182,461 @@ TEST_CASE( "receiver_for_sigs concept" )
         static_assert( !receiver_for_sigs< no_concept_recv, set_value_t( int ) > );
 }
 
+// ---------------------------------------------------------------------------
+// async_arena tests
+// ---------------------------------------------------------------------------
+
+namespace async_arena_test
+{
+
+        /// A simple managed type whose async_destroy returns a sender from a fifo_source.
+        /// Tracks destruction order via a shared log vector.
+        struct tracked_obj
+        {
+                int                           id;
+                std::vector< int >&           log;
+                fifo_source< set_value_t() >& destroy_src;
+
+                auto async_destroy( task_ctx& ctx )
+                {
+                        return destroy_src.schedule();
+                }
+
+                ~tracked_obj()
+                {
+                        log.push_back( id );
+                }
+        };
+
+        /// A done-receiver: records into a bool when set_value() fires.
+        struct _done_receiver
+        {
+                using receiver_concept = receiver_t;
+                bool* done;
+
+                void set_value( auto&&... ) noexcept
+                {
+                        *done = true;
+                }
+                void set_error( auto&&... ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+
+        /// Managed type whose async_destroy is a task<void> coroutine.
+        struct coro_obj
+        {
+                int                 id;
+                std::vector< int >& log;
+                bool*               destroy_started;
+
+                static ecor::task< void > _do_destroy( task_ctx&, bool& started )
+                {
+                        started = true;
+                        co_return;
+                }
+
+                auto async_destroy( task_ctx& ctx )
+                {
+                        return _do_destroy( ctx, *destroy_started );
+                }
+
+                ~coro_obj()
+                {
+                        log.push_back( id );
+                }
+        };
+
+}  // namespace async_arena_test
+
+TEST_CASE( "async_arena - basic lifecycle" )
+{
+        using namespace async_arena_test;
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t() > destroy_src;
+        std::vector< int >           log;
+
+        async_arena< task_ctx, nd_mem > arena( ctx, mem );
+
+        {
+                auto ptr = arena.make< tracked_obj >( 1, log, destroy_src );
+                CHECK( ptr );
+                CHECK( ptr->id == 1 );
+        }
+        // ptr dropped — refcount→0, destroy enqueued
+
+        CHECK( log.empty() );  // ~T not yet called
+
+        // run_once: arena picks up the destroy request, calls start_destroy
+        ctx.core.run_once();
+
+        CHECK( log.empty() );  // async_destroy sender still pending
+
+        // external code fires the destroy sender
+        destroy_src.set_value();
+
+        // run_once: arena calls finish_cleanup — destroys op, ~T(), deallocs
+        ctx.core.run_once();
+
+        CHECK( log.size() == 1 );
+        CHECK( log[0] == 1 );
+
+        // now stop the arena
+        bool done = false;
+        auto op   = arena.async_destroy().connect( _done_receiver{ &done } );
+        op.start();
+
+        ctx.core.run_once();  // arena sees empty alive list, fires done
+        CHECK( done );
+}
+
+TEST_CASE( "async_arena - copy semantics" )
+{
+        using namespace async_arena_test;
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t() > destroy_src;
+        std::vector< int >           log;
+
+        async_arena< task_ctx, nd_mem > arena( ctx, mem );
+
+        auto p1 = arena.make< tracked_obj >( 1, log, destroy_src );
+        {
+                auto p2 = p1;  // copy — refcount becomes 2
+                CHECK( p2->id == 1 );
+        }
+        // p2 dropped — refcount→1, no destroy
+        CHECK( log.empty() );
+
+        p1.reset();  // refcount→0, destroy enqueued
+
+        ctx.core.run_once();      // start_destroy
+        destroy_src.set_value();  // async_destroy completes
+        ctx.core.run_once();      // finish_cleanup
+
+        CHECK( log.size() == 1 );
+        CHECK( log[0] == 1 );
+
+        bool done = false;
+        auto op   = arena.async_destroy().connect( _done_receiver{ &done } );
+        op.start();
+        ctx.core.run_once();
+        CHECK( done );
+}
+
+TEST_CASE( "async_arena - move semantics" )
+{
+        using namespace async_arena_test;
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t() > destroy_src;
+        std::vector< int >           log;
+
+        async_arena< task_ctx, nd_mem > arena( ctx, mem );
+
+        auto p1 = arena.make< tracked_obj >( 1, log, destroy_src );
+        auto p2 = std::move( p1 );
+
+        CHECK( !p1 );
+        CHECK( p2 );
+        CHECK( p2->id == 1 );
+
+        p2.reset();
+
+        ctx.core.run_once();
+        destroy_src.set_value();
+        ctx.core.run_once();
+
+        CHECK( log.size() == 1 );
+        CHECK( log[0] == 1 );
+
+        bool done = false;
+        auto op   = arena.async_destroy().connect( _done_receiver{ &done } );
+        op.start();
+        ctx.core.run_once();
+        CHECK( done );
+}
+
+TEST_CASE( "async_arena - multiple objects" )
+{
+        using namespace async_arena_test;
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t() > destroy_src_a;
+        fifo_source< set_value_t() > destroy_src_b;
+        std::vector< int >           log;
+
+        async_arena< task_ctx, nd_mem > arena( ctx, mem );
+
+        auto pa = arena.make< tracked_obj >( 1, log, destroy_src_a );
+        auto pb = arena.make< tracked_obj >( 2, log, destroy_src_b );
+
+        pa.reset();  // only Foo queued
+
+        ctx.core.run_once();  // start_destroy for object 1
+        destroy_src_a.set_value();
+        ctx.core.run_once();  // finish_cleanup for object 1
+
+        CHECK( log.size() == 1 );
+        CHECK( log[0] == 1 );  // only object 1 destroyed
+
+        pb.reset();  // now object 2 queued
+
+        ctx.core.run_once();  // start_destroy for object 2
+        destroy_src_b.set_value();
+        ctx.core.run_once();  // finish_cleanup for object 2
+
+        CHECK( log.size() == 2 );
+        CHECK( log[1] == 2 );
+
+        bool done = false;
+        auto op   = arena.async_destroy().connect( _done_receiver{ &done } );
+        op.start();
+        ctx.core.run_once();
+        CHECK( done );
+}
+
+TEST_CASE( "async_arena - destroy as plain sender" )
+{
+        using namespace async_arena_test;
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t() > destroy_src;
+        std::vector< int >           log;
+
+        async_arena< task_ctx, nd_mem > arena( ctx, mem );
+
+        auto p = arena.make< tracked_obj >( 1, log, destroy_src );
+        p.reset();
+
+        ctx.core.run_once();  // start_destroy — arena connects the fifo sender
+
+        CHECK( log.empty() );  // async_destroy not yet fired
+
+        destroy_src.set_value();  // external fire
+
+        ctx.core.run_once();  // finish_cleanup
+
+        CHECK( log.size() == 1 );
+        CHECK( log[0] == 1 );
+
+        bool done = false;
+        auto op   = arena.async_destroy().connect( _done_receiver{ &done } );
+        op.start();
+        ctx.core.run_once();
+        CHECK( done );
+}
+
+TEST_CASE( "async_arena - destroy as task<void>" )
+{
+        using namespace async_arena_test;
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        std::vector< int > log;
+        bool               destroy_started = false;
+
+        async_arena< task_ctx, nd_mem > arena( ctx, mem );
+
+        auto p = arena.make< coro_obj >( 1, log, &destroy_started );
+        p.reset();
+
+        CHECK( !destroy_started );
+
+        ctx.core.run_once();  // arena resume → start_destroy → task scheduled
+
+        CHECK( !destroy_started );  // task not yet run
+
+        ctx.core.run_once();  // task runs, co_return → set_value → arena rescheduled
+
+        CHECK( destroy_started );
+
+        ctx.core.run_once();  // arena resume → finish_cleanup → ~T()
+
+        CHECK( log.size() == 1 );
+        CHECK( log[0] == 1 );
+
+        bool done = false;
+        auto op   = arena.async_destroy().connect( _done_receiver{ &done } );
+        op.start();
+        ctx.core.run_once();
+        CHECK( done );
+}
+
+/// Helper coroutine for interleaving test.
+static ecor::task< void >
+interleave_coro( task_ctx&, broadcast_source< set_value_t( int ) >& src, int& result )
+{
+        result = co_await src.schedule();
+}
+
+TEST_CASE( "async_arena - interleaving with normal tasks" )
+{
+        using namespace async_arena_test;
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t() >           destroy_src;
+        std::vector< int >                     log;
+        broadcast_source< set_value_t( int ) > task_src;
+        int                                    task_result = -1;
+
+        async_arena< task_ctx, nd_mem > arena( ctx, mem );
+
+        // Start a normal task
+        auto h = interleave_coro( ctx, task_src, task_result ).connect( _dummy_receiver{} );
+        h.start();
+
+        ctx.core.run_once();  // task suspends waiting for broadcast
+
+        auto p = arena.make< tracked_obj >( 1, log, destroy_src );
+        p.reset();  // enqueue destroy
+
+        // Now both the arena destroy and the broadcast task are pending
+        ctx.core.run_once();  // arena: start_destroy
+
+        int v = 42;
+        task_src.set_value( v );  // fire broadcast — task gets rescheduled
+
+        CHECK( task_result == -1 );  // not yet run
+
+        ctx.core.run_once();  // task resumes with value 42
+        CHECK( task_result == 42 );
+
+        destroy_src.set_value();
+        ctx.core.run_once();  // arena: finish_cleanup
+
+        CHECK( log.size() == 1 );
+        CHECK( log[0] == 1 );
+
+        bool done = false;
+        auto op   = arena.async_destroy().connect( _done_receiver{ &done } );
+        op.start();
+        ctx.core.run_once();
+        CHECK( done );
+}
+
+TEST_CASE( "async_arena - reentrancy during cleanup" )
+{
+        using namespace async_arena_test;
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t() > destroy_src_a;
+        fifo_source< set_value_t() > destroy_src_b;
+        std::vector< int >           log;
+
+        async_arena< task_ctx, nd_mem > arena( ctx, mem );
+
+        // Object B whose last pointer will be dropped during A's destructor
+        auto pb = arena.make< tracked_obj >( 2, log, destroy_src_b );
+
+        /// A special object whose destructor drops the last pointer to B.
+        struct reentrant_obj
+        {
+                int                                        id;
+                std::vector< int >&                        log;
+                fifo_source< set_value_t() >&              destroy_src;
+                async_ptr< tracked_obj, task_ctx, nd_mem > other;
+
+                auto async_destroy( task_ctx& ctx )
+                {
+                        return destroy_src.schedule();
+                }
+
+                ~reentrant_obj()
+                {
+                        log.push_back( id );
+                        other.reset();  // drops last ref to B → queues B's destroy
+                }
+        };
+
+        auto pa = arena.make< reentrant_obj >( 1, log, destroy_src_a, std::move( pb ) );
+        pa.reset();
+
+        // run_once: arena picks up A's destroy
+        ctx.core.run_once();
+        destroy_src_a.set_value();
+
+        // run_once: arena calls finish_cleanup → ~A runs → drops B → B queued
+        ctx.core.run_once();
+
+        CHECK( log.size() == 1 );
+        CHECK( log[0] == 1 );  // A destroyed
+
+        // B's destroy now in queue — arena should process it
+        ctx.core.run_once();  // start_destroy for B
+        destroy_src_b.set_value();
+        ctx.core.run_once();  // finish_cleanup for B
+
+        CHECK( log.size() == 2 );
+        CHECK( log[1] == 2 );
+
+        bool done = false;
+        auto op   = arena.async_destroy().connect( _done_receiver{ &done } );
+        op.start();
+        ctx.core.run_once();
+        CHECK( done );
+}
+
+TEST_CASE( "async_arena - async_destroy() completes after all objects destroyed" )
+{
+        using namespace async_arena_test;
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        fifo_source< set_value_t() > destroy_src_a;
+        fifo_source< set_value_t() > destroy_src_b;
+        std::vector< int >           log;
+
+        async_arena< task_ctx, nd_mem > arena( ctx, mem );
+
+        auto pa = arena.make< tracked_obj >( 1, log, destroy_src_a );
+        auto pb = arena.make< tracked_obj >( 2, log, destroy_src_b );
+
+        // Call async_destroy() while objects are still alive
+        bool done = false;
+        auto op   = arena.async_destroy().connect( _done_receiver{ &done } );
+        op.start();
+
+        CHECK( !done );
+
+        pa.reset();
+
+        ctx.core.run_once();  // start_destroy for A
+        destroy_src_a.set_value();
+        ctx.core.run_once();  // finish_cleanup for A
+
+        CHECK( !done );  // B still alive
+
+        pb.reset();
+
+        ctx.core.run_once();  // start_destroy for B
+        destroy_src_b.set_value();
+
+        CHECK( !done );  // not yet — finish_cleanup hasn't run
+
+        ctx.core.run_once();  // finish_cleanup for B, alive list empty → fires done
+
+        CHECK( done );
+}
+
 }  // namespace ecor
