@@ -4182,6 +4182,58 @@ TEST_CASE( "receiver_for_sigs concept" )
         static_assert( !receiver_for_sigs< no_concept_recv, set_value_t( int ) > );
 }
 
+namespace connect_cpo_test
+{
+        struct test_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                int& val;
+                void set_value( int v )
+                {
+                        val = v;
+                }
+                void set_error( auto&& ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+}  // namespace connect_cpo_test
+
+TEST_CASE( "connect CPO" )
+{
+        using namespace sender_receiver_concepts_test;
+        using namespace connect_cpo_test;
+
+        // connect CPO returns the same type as member .connect()
+        using src_t    = broadcast_source< set_value_t( int ) >;
+        using sender_t = decltype( std::declval< src_t >().schedule() );
+        static_assert(
+            std::is_same_v<
+                decltype( ecor::connect( std::declval< sender_t >(), std::declval< int_recv >() ) ),
+                decltype( std::declval< sender_t >().connect( std::declval< int_recv >() ) ) > );
+
+        // connect CPO produces a working op_state
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        src_t    src;
+        int      result = -1;
+
+        auto op = ecor::connect( src.schedule(), test_recv{ .val = result } );
+        op.start();
+        ctx.core.run_once();
+        src.set_value( 42 );
+        CHECK( result == 42 );
+
+        // _connectable concept holds for valid sender-receiver pairs
+        static_assert( _connectable< sender_t, int_recv > );
+        // _connectable fails for non-receiver
+        static_assert( !_connectable< sender_t, int > );
+        // _connectable fails for non-sender
+        static_assert( !_connectable< int, int_recv > );
+}
+
 // ---------------------------------------------------------------------------
 // async_arena tests
 // ---------------------------------------------------------------------------

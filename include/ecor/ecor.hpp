@@ -23,6 +23,7 @@
 #pragma once
 
 #include <atomic>
+#include <bit>
 #include <concepts>
 #include <coroutine>
 #include <cstddef>
@@ -841,6 +842,23 @@ concept receiver =
     } && std::move_constructible< std::remove_cvref_t< T > > &&
     std::constructible_from< std::remove_cvref_t< T >, T >;
 
+template < typename S, typename R >
+concept _connectable = sender< S > && receiver< R > && requires( S&& s, R&& r ) {
+        { std::move( s ).connect( std::move( r ) ) };
+};
+
+struct _connect_t
+{
+        template < typename S, typename R >
+                requires _connectable< S, R >
+        auto operator()( S&& s, R&& r ) const
+            noexcept( noexcept( std::move( s ).connect( std::move( r ) ) ) )
+        {
+                return std::move( s ).connect( std::move( r ) );
+        }
+};
+/// Connect CPO for connecting senders to receivers.
+inline constexpr _connect_t connect{};
 
 template < typename R, typename T >
 struct _receiver_sig_callable;
@@ -4001,57 +4019,88 @@ private:
 };
 
 /// -------------------------------------------------------------------------------
-/// controller/target
+/// Transaction controller
 
 template < typename T >
-struct _transaction_vtable_mixin;
+struct _trnx_vtable_mixin;
 
 template < signature... S >
         requires( !_contains_type< set_stopped_t(), S... >::value )
-struct _transaction_vtable_mixin< completion_signatures< S... > >
+struct _trnx_vtable_mixin< completion_signatures< S... > >
 {
         using type = _vtable_mixin< S... >;
 };
 
 template < signature... S >
         requires( _contains_type< set_stopped_t(), S... >::value )
-struct _transaction_vtable_mixin< completion_signatures< S... > >
+struct _trnx_vtable_mixin< completion_signatures< S... > >
 {
         using type = _vtable_mixin< S..., _get_stopped_t() >;
 };
 
 template < typename T >
-using _transaction_vtable_mixin_t =
-    typename _transaction_vtable_mixin< _sender_completions_t< T, empty_env > >::type;
+using _trnx_vtable_mixin_t =
+    typename _trnx_vtable_mixin< _sender_completions_t< T, empty_env > >::type;
 
-/// XXX: not finished, prototype
+/// Type-erased linked-list node for a pending transaction. Holds user data of type T and a vtable
+/// for dispatching completion signals (set_value, set_error, set_stopped) to the concrete receiver
+/// without knowing its type. Automatically unlinks from its list on destruction.
+///
+/// - `T`: User-defined transaction data type. Must provide completion signatures via
+/// `get_completion_signatures` CPO.
 template < typename T >
-struct transaction_entry : _transaction_vtable_mixin_t< T >, zll::ll_base< transaction_entry< T > >
+struct trnx_entry : _trnx_vtable_mixin_t< T >, zll::ll_base< trnx_entry< T > >
 {
-        using base    = _transaction_vtable_mixin_t< T >;
+        using base    = _trnx_vtable_mixin_t< T >;
         using _vtable = typename base::_vtable;
         static constexpr bool _has_stop_sig =
             _sigs_contains_set_stopped< _sender_completions_t< T, empty_env > >;
 
         T data;
 
-        template < typename D >
-        transaction_entry( _tag< D >, T data )
-          : base( _tag< D >{} )
+        /// Construct a transaction entry with the given data. The _tag parameter is used to setup
+        /// vtable correctly.
+        template < typename Derived >
+        trnx_entry( _tag< Derived >, T data )
+          : base( _tag< Derived >{} )
           , data( std::move( data ) )
         {
         }
+
+        template < typename... Args >
+        void set_value( Args&&... args )
+        {
+                this->_set_value( (Args&&) args... );
+        }
+
+        template < typename E >
+        void set_error( E&& e )
+        {
+                this->_set_error( (E&&) e );
+        }
+
+        void set_stopped()
+        {
+                this->_set_stopped();
+        }
+
+        bool get_stopped() const noexcept
+        {
+                return this->get_stopped();
+        }
 };
-
-/// XXX: not finished, prototype
 template < typename T, typename R >
-struct transaction_op : transaction_entry< T >, R
+struct _trnx_controller_op : trnx_entry< T >, R
 {
-        using _vtable                       = typename transaction_entry< T >::_vtable;
-        static constexpr bool _has_stop_sig = transaction_entry< T >::_has_stop_sig;
+        using _vtable                       = typename trnx_entry< T >::_vtable;
+        static constexpr bool _has_stop_sig = trnx_entry< T >::_has_stop_sig;
 
-        transaction_op( T data, R r, zll::ll_list< transaction_entry< T > >& pending )
-          : transaction_entry< T >{ _tag< transaction_op >{}, std::move( data ) }
+        using R::set_error;
+        using R::set_stopped;
+        using R::set_value;
+
+        _trnx_controller_op( T data, R r, zll::ll_list< trnx_entry< T > >& pending )
+          : trnx_entry< T >{ _tag< _trnx_controller_op >{}, std::move( data ) }
           , R( std::move( r ) )
           , _pending( pending )
         {
@@ -4072,103 +4121,111 @@ struct transaction_op : transaction_entry< T >, R
         }
 
 private:
-        zll::ll_list< transaction_entry< T > >& _pending;
+        zll::ll_list< trnx_entry< T > >& _pending;
 };
 
-
-/// XXX: not finished, prototype
 template < typename T >
-struct transaction_sender
+struct _trnx_controller_sender
 {
         using sender_concept = sender_t;
 
         template < typename Env >
         constexpr auto get_completion_signatures( Env&& e ) noexcept
         {
-                return val.get_completion_signatures( (Env&&) e );
+                return ecor::get_completion_signatures( val, (Env&&) e );
         }
-
 
         template < receiver R >
         auto connect( R receiver ) &&
         {
                 static_assert(
-                    receiver_for< R, transaction_sender >,
+                    receiver_for< R, _trnx_controller_sender >,
                     "Receiver does not satisfy the requirements for the transaction sender's completion signatures" );
 
-                return transaction_op< T, R >{ std::move( val ), std::move( receiver ), _pending };
+                return _trnx_controller_op< T, R >{
+                    std::move( val ), std::move( receiver ), _pending };
         }
 
-        T                                       val;
-        zll::ll_list< transaction_entry< T > >& _pending;
+        T                                val;
+        zll::ll_list< trnx_entry< T > >& _pending;
 };
 
-/// XXX: not finished, prototype
+/// ISR-safe 4-cursor circular buffer for managing in-flight transactions.
+/// Cursors are: enqueue -> tx -> rx -> deliver
+///   - enqueue - tx: Tasks ready to be transmitted (main loop pushes new entries here).
+///   - tx - rx: Transactions that have been transmitted and are awaiting a reply.
+///   - rx - deliver: Transactions that have received a reply and are awaiting to be taken out (main
+///     loop delivers completion to the receiver).
+///
+/// Cursors use std::atomic for safe cross-context access (main loop vs ISR).
+///
+/// - `T`: Element type (must be trivial).
+/// - `N`: Buffer capacity (must be a power of 2, < 65536).
 template < typename T, size_t N >
-struct transaction_circular_buffer
+struct trnx_circular_buffer
 {
-        static_assert( ( N & ( N - 1 ) ) == 0, "Size of circular buffer must be a power of 2" );
+        static_assert( std::has_single_bit( N ), "Size of circular buffer must be a power of 2" );
         static_assert(
             N < std::numeric_limits< uint16_t >::max(),
             "Size of circular buffer must be less than 65536" );
         static_assert( std::is_trivial_v< T > );
 
-        bool full() const
+        bool full() const noexcept
         {
                 return ( enqueue - deliver ) == N;
         }
 
-        void push( T val )
+        void push( T val ) noexcept
         {
                 _data[enqueue++ % N] = val;
         }
 
-        bool empty() const
+        bool empty() const noexcept
         {
                 return deliver == enqueue;
         }
 
-        bool has_tx() const
+        bool has_tx() const noexcept
         {
                 return tx != enqueue;
         }
 
-        T& tx_front()
+        T& tx_front() noexcept
         {
                 return _data[tx % N];
         }
 
-        void tx_done()
+        void tx_done() noexcept
         {
                 tx++;
         }
 
-        bool has_rx() const
+        bool has_rx() const noexcept
         {
                 return rx != tx;
         }
 
-        T& rx_front()
+        T& rx_front() noexcept
         {
                 return _data[rx % N];
         }
 
-        void rx_done()
+        void rx_done() noexcept
         {
                 rx++;
         }
 
-        bool has_deliver() const
+        bool has_deliver() const noexcept
         {
                 return deliver != rx;
         }
 
-        T& deliver_front()
+        T& deliver_front() noexcept
         {
                 return _data[deliver % N];
         }
 
-        void pop()
+        void pop() noexcept
         {
                 deliver++;
         }
@@ -4182,35 +4239,57 @@ private:
         T _data[N];
 };
 
-/// XXX: example usage: request reply over UART - we can wait a while for reply
-/// XXX: write explicit tests about proper semantics of set stopped if used: active transaction
-/// shall not be stoppable
-
-/// XXX: not finished, prototype
-/// Expected behavior:
-///  - Used for request-reply protocols, that allow multiple in-flight transactions, but the order
-///  of replies is guaranteed.
-///  - Transaction is user-defined type T
-///  - User can specify signatures S... that the transaction can complete with, and provide handlers
-///  for those signatures when scheduling a transaction.
-///  - When transaction is started, it is added to the list of pending transactions. When a reply is
-///  received, user can call tick() with the reply, and transaction source will find the matching
-///  transaction and complete it with the appropriate signature.
+/// Source for scheduling transactions in a request-reply protocol (e.g. UART, SPI, I²C)
+/// where multiple transactions can be in flight simultaneously, but replies arrive in FIFO order.
+/// The source will get user-defined type T as transaction payload and will return senders that
+/// complete when the transaction is completed by the driver.
+///
+/// The source maintains a linked list of pending transactions. Once a transaction is taken by the
+/// driver, it is removed from the list and handed off to the driver, which is responsible for
+/// managing it until completion.
+///
+/// On completion, the driver calls set_value/set_error/set_stopped on the transaction entry. The
+/// exact API is specified by the user-provided transaction data type T.
+///
+/// Architecture of the transaction abstraction:
+///   - trnx_controller_source<T>  — schedules transactions, returns senders (this type)
+///   - trnx_entry<T>              — type-erased linked-list node holding user data T
+///   - trnx_circular_buffer<T, N> — ISR-safe 4-cursor ring buffer for in-flight management
+///
+/// Usage:
+///   1. Call schedule(data) to get a sender representing the transaction.
+///   2. Connect the sender to a receiver and start().
+///   3. In the driver's tick loop, call query_next_trnx() to retrieve pending entries.
+///   4. Move entries into a circular buffer or process them directly.
+///   5. When the reply arrives, call set_value/set_error/set_stopped on the entry to complete the
+///   sender.
+///
+/// Stop semantics: stop tokens are checked only for *pending* transactions (still in the source's
+/// linked list). Once a transaction is moved outside, whenever it can be cancelled or not depends
+/// solely on the driver.
+///
+/// - `T`: User-defined transaction data type providing get_completion_signatures.
 template < typename T >
-struct transaction_controller_source
+struct trnx_controller_source
 {
-        using sender_type                   = transaction_sender< T >;
-        static constexpr bool _has_stop_sig = transaction_entry< T >::_has_stop_sig;
+        using sender_type                   = _trnx_controller_sender< T >;
+        static constexpr bool _has_stop_sig = trnx_entry< T >::_has_stop_sig;
 
+        /// Schedule a new transaction with the given user data. Returns a sender that completes
+        /// when the transaction is completed by the driver.
         sender_type schedule( T val )
         {
                 return { std::move( val ), _pending_tx };
         }
 
-        transaction_entry< T >* query_next_transaction()
+        /// Retrieve the next pending transaction entry for processing by the driver. Returns
+        /// nullptr if there are no pending transactions. Any transaction has been cancelled
+        /// (stop token triggered) while it was pending, it will be removed from the list,
+        /// set_stopped() will be called on it, and it will not be returned.
+        trnx_entry< T >* query_next_trnx()
         {
                 if constexpr ( _has_stop_sig ) {
-                        _pending_tx.remove_if( [this]( transaction_entry< T >& tx ) {
+                        _pending_tx.remove_if( [this]( trnx_entry< T >& tx ) {
                                 if ( !tx._get_stopped() )
                                         return false;
 
@@ -4224,7 +4303,7 @@ struct transaction_controller_source
         }
 
 private:
-        zll::ll_list< transaction_entry< T > > _pending_tx;
+        zll::ll_list< trnx_entry< T > > _pending_tx;
 };
 
 }  // namespace ecor

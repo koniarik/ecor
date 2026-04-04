@@ -207,19 +207,10 @@ struct uart_peripheral
 
 struct uart_trans
 {
-        template < typename Env >
-        using _completions = completion_signatures<
+        using completion_signatures = completion_signatures<
             set_value_t( std::span< uint8_t > ),
             set_error_t( uart_error ),
             set_stopped_t() >;
-
-        template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& )
-        {
-                return {};
-        }
-
-        bool stoppable = true;
 
         // Buffer for message
         std::span< uint8_t > buffer;
@@ -306,7 +297,7 @@ struct uart
         void tick()
         {
                 while ( !_trnxs.full() ) {
-                        auto* n = _source.query_next_transaction();
+                        auto* n = _source.query_next_trnx();
                         if ( !n )
                                 break;
                         _trnxs.push( n );
@@ -325,8 +316,8 @@ struct uart
                 }
         }
 
-        transaction_controller_source< uart_trans >                        _source;
-        transaction_circular_buffer< transaction_entry< uart_trans >*, 4 > _trnxs;
+        trnx_controller_source< uart_trans >                 _source;
+        trnx_circular_buffer< trnx_entry< uart_trans >*, 4 > _trnxs;
 
         uart_peripheral _handle{
             [this] {
@@ -1262,7 +1253,7 @@ TEST_CASE( "Test_Transaction_Stop_Requeue" )
         std::memcpy( bb, req.data(), req.size() );
 
         // Pre-construct op B (not started yet).
-        using followup_op_t = transaction_op< uart_trans, capturing_receiver >;
+        using followup_op_t = _trnx_controller_op< uart_trans, capturing_receiver >;
         auto followup =
             t.u.transact( bb, req.size() ).connect( capturing_receiver{ .value_count = &value_b } );
 
