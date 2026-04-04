@@ -380,9 +380,6 @@ struct uart
             } };
 };
 
-/// Coroutine helper: sends an "echo:valid_resp" command over UART and writes
-/// the reply string into result_out. Uses err_to_val | as_variant to unify the
-/// value and error channels into a single variant return.
 task< void > simple_exchange( task_ctx&, uart& u, std::string& result_out )
 {
         uint8_t     buffer[42];
@@ -396,8 +393,6 @@ task< void > simple_exchange( task_ctx&, uart& u, std::string& result_out )
                 result_out = std::string( (char*) p->data(), p->size() );
 }
 
-/// Coroutine helper: runs `count` sequential echo exchanges and CHECKs that
-/// all succeed. Sets `done = true` on completion.
 task< void > multiple_exchanges( task_ctx& ctx, uart& u, int count, bool& done )
 {
         std::string result;
@@ -412,15 +407,12 @@ task< void > multiple_exchanges( task_ctx& ctx, uart& u, int count, bool& done )
         done = true;
 }
 
-/// Coroutine helper: single exchange wrapper that sets `done` on completion.
 task< void > basic_exchange_test( task_ctx& ctx, uart& u, std::string& result, bool& done )
 {
         co_await simple_exchange( ctx, u, result );
         done = true;
 }
 
-/// Test harness that bundles a uart driver, memory resource, and task context.
-/// Provides run_until() which polls tick() + run_once() in a loop with a timeout.
 struct uart_test_context
 {
         uart     u;
@@ -440,9 +432,6 @@ struct uart_test_context
         }
 };
 
-/// General-purpose test receiver that captures completion signals into counters
-/// and optional containers. Supports an external inplace_stop_source for
-/// cancellation tests.
 struct capturing_receiver
 {
         using receiver_concept = ecor::receiver_t;
