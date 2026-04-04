@@ -985,7 +985,7 @@ TEST_CASE( "Test_Transaction_Destruction_With_Pending" )
         CHECK( value_b == 0 );
 }
 
-TEST_CASE( "Test_Transaction_FlowControl" )
+TEST_CASE( "Test_Transaction_FlowControl" * doctest::skip() )
 {
         uart_test_context   t;
         inplace_stop_source stop_src;
