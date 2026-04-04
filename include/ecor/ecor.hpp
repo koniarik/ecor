@@ -4240,7 +4240,7 @@ private:
 };
 
 /// Source for scheduling transactions in a request-reply protocol (e.g. UART, SPI, I²C)
-/// where multiple transactions can be in flight simultaneously, but replies arrive in FIFO order.
+/// where multiple transactions can be in flight simultaneously.
 /// The source will get user-defined type T as transaction payload and will return senders that
 /// complete when the transaction is completed by the driver.
 ///

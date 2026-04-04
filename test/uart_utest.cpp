@@ -32,11 +32,31 @@
 #include <semaphore>
 #include <thread>
 
+/// -------------------------------------------------------------------------------
+/// UART driver example & test suite
+///
+/// This file demonstrates how to build a real-world UART driver on top of the
+/// ecor transaction abstraction. The design mirrors what a production embedded
+/// driver would look like:
+///
+///   uart_peripheral  — mock hardware that simulates async TX/RX with background
+///                       threads (stands in for DMA + ISR on real hardware)
+///   uart_trans       — transaction payload: buffer, TX/RX sizes, error, timeout
+///   uart             — the driver: owns a trnx_controller_source and a
+///                       trnx_circular_buffer, wires ISR callbacks to the
+///                       buffer cursors, and delivers completions in tick()
+///
+/// The test cases exercise the full lifecycle: basic exchange, cancellation
+/// (pending and in-flight), errors, FIFO ordering, flow control (buffer full),
+/// destruction cleanup, and stop-token propagation.
+/// -------------------------------------------------------------------------------
+
 namespace ecor
 {
 
 using namespace std::chrono_literals;
 
+/// UART error flags, matching typical hardware register bit positions.
 enum class uart_error : uint32_t
 {
         none    = 0,
@@ -54,6 +74,14 @@ enum class uart_status
 };
 
 
+/// Mock UART peripheral that simulates asynchronous TX and RX using background
+/// threads. Each transmit() call enqueues work on a job queue thread; when that
+/// work completes it parses the transmitted command string and schedules an
+/// appropriate RX reply (echo, error, slow, partial, silent).
+///
+/// The cpu_mtx simulates the "interrupt fires on the main CPU" constraint:
+/// ISR callbacks (on_tx_irq, on_rx_irq, etc.) are always called under that lock,
+/// and the main-loop tick() must also hold it when reading shared state.
 struct uart_peripheral
 {
         uart_peripheral(
@@ -205,6 +233,9 @@ struct uart_peripheral
         std::span< uint8_t > rx_buff;
 };
 
+/// Transaction payload for the UART driver. Carries the buffer, usage counters,
+/// error state, and timeout. The nested `completion_signatures` type alias tells
+/// the transaction abstraction what signals the sender can complete with.
 struct uart_trans
 {
         using completion_signatures = completion_signatures<
@@ -224,10 +255,25 @@ struct uart_trans
         tp timeout;
 };
 
+/// UART driver built on top of ecor's transaction abstraction.
+///
+/// Owns a `trnx_controller_source<uart_trans>` for scheduling transactions and a
+/// `trnx_circular_buffer` (capacity 4) for managing in-flight ones. The driver
+/// wires four ISR callbacks from `uart_peripheral` to advance the buffer cursors:
+///
+///   on_tx_complete_irq  — TX DMA done, advance tx cursor
+///   on_tx_error_irq     — TX NACK, record error and advance tx cursor
+///   on_rx_complete_irq  — RX DMA done, record size and advance rx cursor
+///   on_rx_error_irq     — RX error, record error and advance rx cursor
+///
+/// The main-loop calls tick() which:
+///   1. Pulls pending transactions from the source into the circular buffer
+///   2. Starts TX for the next queued entry
+///   3. Delivers completed transactions by calling set_value/set_error on entries
 struct uart
 {
 
-        // returns sender that has following API:
+        /// Returns a sender representing a UART transaction.
         // - set_value_t(std::span<uint8_t>) - reply
         // - set_error_t(uart_error) - error during transaction
         auto transact( std::span< uint8_t > buffer, uint16_t tx_used )
@@ -334,6 +380,9 @@ struct uart
             } };
 };
 
+/// Coroutine helper: sends an "echo:valid_resp" command over UART and writes
+/// the reply string into result_out. Uses err_to_val | as_variant to unify the
+/// value and error channels into a single variant return.
 task< void > simple_exchange( task_ctx&, uart& u, std::string& result_out )
 {
         uint8_t     buffer[42];
@@ -347,6 +396,8 @@ task< void > simple_exchange( task_ctx&, uart& u, std::string& result_out )
                 result_out = std::string( (char*) p->data(), p->size() );
 }
 
+/// Coroutine helper: runs `count` sequential echo exchanges and CHECKs that
+/// all succeed. Sets `done = true` on completion.
 task< void > multiple_exchanges( task_ctx& ctx, uart& u, int count, bool& done )
 {
         std::string result;
@@ -361,12 +412,15 @@ task< void > multiple_exchanges( task_ctx& ctx, uart& u, int count, bool& done )
         done = true;
 }
 
+/// Coroutine helper: single exchange wrapper that sets `done` on completion.
 task< void > basic_exchange_test( task_ctx& ctx, uart& u, std::string& result, bool& done )
 {
         co_await simple_exchange( ctx, u, result );
         done = true;
 }
 
+/// Test harness that bundles a uart driver, memory resource, and task context.
+/// Provides run_until() which polls tick() + run_once() in a loop with a timeout.
 struct uart_test_context
 {
         uart     u;
@@ -386,6 +440,9 @@ struct uart_test_context
         }
 };
 
+/// General-purpose test receiver that captures completion signals into counters
+/// and optional containers. Supports an external inplace_stop_source for
+/// cancellation tests.
 struct capturing_receiver
 {
         using receiver_concept = ecor::receiver_t;
@@ -885,7 +942,61 @@ TEST_CASE( "Test_Transaction_Destruction_Cleanup" )
         CHECK( true );
 }
 
-TEST_CASE( "Test_Transaction_FlowControl" * doctest::skip() )
+TEST_CASE( "Test_Transaction_Empty_Source" )
+{
+        trnx_controller_source< uart_trans > source;
+
+        // query_next_trnx on a fresh, empty source should return nullptr.
+        CHECK( source.query_next_trnx() == nullptr );
+
+        // Schedule one transaction, take it, then verify empty again.
+        uint8_t buffer[16]{};
+        int     value_count = 0;
+        auto    op          = source.schedule( uart_trans{ .buffer = buffer, .tx_used = 4 } )
+                      .connect( capturing_receiver{ .value_count = &value_count } );
+        op.start();
+
+        auto* entry = source.query_next_trnx();
+        CHECK( entry != nullptr );
+        CHECK( source.query_next_trnx() == nullptr );
+
+        // Complete the taken entry so the op_state can be destroyed cleanly.
+        entry->set_value( std::span< uint8_t >{} );
+        CHECK( value_count == 1 );
+}
+
+TEST_CASE( "Test_Transaction_Destruction_With_Pending" )
+{
+        // Destroy a trnx_controller_source while transactions are still pending.
+        // The pending ops hold references (via ll_base) into the source's list.
+        // On destruction, each op_state unlinks itself from the list automatically.
+
+        int value_a = 0;
+        int value_b = 0;
+
+        uint8_t buf_a[16]{};
+        uint8_t buf_b[16]{};
+
+        {
+                trnx_controller_source< uart_trans > source;
+
+                auto op_a = source.schedule( uart_trans{ .buffer = buf_a, .tx_used = 4 } )
+                                .connect( capturing_receiver{ .value_count = &value_a } );
+                auto op_b = source.schedule( uart_trans{ .buffer = buf_b, .tx_used = 4 } )
+                                .connect( capturing_receiver{ .value_count = &value_b } );
+                op_a.start();
+                op_b.start();
+
+                // Both are pending. Destroy source + ops by exiting scope.
+                // zll::ll_base unlinks each entry on destruction.
+        }
+
+        // If we survived without crash, the cleanup is correct.
+        CHECK( value_a == 0 );
+        CHECK( value_b == 0 );
+}
+
+TEST_CASE( "Test_Transaction_FlowControl" )
 {
         uart_test_context   t;
         inplace_stop_source stop_src;

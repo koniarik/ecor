@@ -127,6 +127,10 @@ ecor::task< void > example_task( ecor::task_ctx& ctx, ecor::seq_source<int, ecor
 
 `seq_source` is a synchronization primitive that allows tasks to wait for values in order based on a key. When a value is sent to the `seq_source`, the task with lowest key that is waiting is resumed and receives the value.
 
+In any source, the API mirros the signatures of the source. If the source has `set_value_t(int)` signature, then the way to invoke the source is to call `source.set_value( 42 )` to send the value `42` to waiting task. If the source has `set_error_t(std::string)` signature, then the way to signal an error is to call `source.set_error( "error message" )`. If the source has `set_stopped_t` signature, then the way to signal a stop condition is to call `source.set_stopped()`. For any source, the effect occurs inside this call.
+
+Note that if the source is awaited by a task, due to the way the task is setup, the won't be resumed within the `set_value()`, `set_error()`, or `set_stopped()` call. Instead, the task will be scheduled to run in the next iteration of the main loop.
+
 ## Senders/receivers
 
 The internals of the library is based on the sender/receiver model as specified in PR2300 for C++26. This means that all sources and tasks can be used as senders, and all receivers that satisfy the `receiver_t` concept can be used to receive values from sources or tasks. This is standalone implementation of the sender/receiver model, not based on any existing library.

@@ -822,6 +822,103 @@ ecor::task<void> shutdown(ecor::task_ctx& ctx, ecor::async_arena<ecor::task_ctx,
 - **Single allocation per object** — control block and `T` are allocated together (make_shared style).
 - **Two-phase cleanup** — the destroy sender's operation state is freed on a separate `run_once()` tick after completion, preventing use-after-free of the op_state during stack unwinding.
 
+## Transaction Controller - Request-Reply Protocols
+
+`trnx_controller_source` supports ordered request-reply protocols (UART, SPI, I²C, etc.) where multiple transactions can be in flight simultaneously.
+
+### Basic Usage
+
+Define a transaction data type with completion signatures, then schedule transactions through the source:
+
+```cpp
+// 1. Define the transaction payload
+struct my_trnx {
+    using completion_signatures = ecor::completion_signatures<
+        ecor::set_value_t(int),         // reply value
+        ecor::set_error_t(uint8_t),     // error code
+        ecor::set_stopped_t()>;         // cancellation
+
+    int request_id;
+};
+
+// 2. Create a source and schedule transactions
+void trnx_example() {
+    ecor::trnx_controller_source<my_trnx> source;
+
+    // schedule() returns a sender
+    auto sender = source.schedule(my_trnx{.request_id = 1});
+
+    // Connect to a receiver and start
+    int reply = 0;
+    struct recv {
+        using receiver_concept = ecor::receiver_t;
+        int* out;
+        void set_value(int v) noexcept { *out = v; }
+        void set_error(uint8_t) noexcept {}
+        void set_stopped() noexcept {}
+    };
+    auto op = std::move(sender).connect(recv{&reply});
+    op.start();
+
+    // 3. Driver picks up the pending transaction
+    auto* entry = source.query_next_trnx();
+    // entry->data.request_id == 1
+
+    // 4. Complete the transaction when the reply arrives
+    entry->set_value(42);
+    // reply == 42
+}
+```
+
+### Circular Buffer for In-Flight Transactions
+
+`trnx_circular_buffer` is a 4-cursor ring buffer for managing transactions that cross ISR boundaries. The cursors form a pipeline: **enqueue → tx → rx → deliver**.
+
+```cpp
+struct buf_trnx {
+    using completion_signatures = ecor::completion_signatures<
+        ecor::set_value_t(int),
+        ecor::set_error_t(uint8_t),
+        ecor::set_stopped_t()>;
+    int request_id;
+};
+
+void buffer_example() {
+    ecor::trnx_controller_source<buf_trnx> source;
+    ecor::trnx_circular_buffer<ecor::trnx_entry<buf_trnx>*, 4> buffer;
+
+    // Driver tick loop:
+    // 1. Move pending transactions into the buffer
+    while (!buffer.full()) {
+        auto* entry = source.query_next_trnx();
+        if (!entry) break;
+        buffer.push(entry);
+    }
+
+    // 2. Start TX for queued entries
+    while (buffer.has_tx()) {
+        // Start hardware transmission for buffer.tx_front()
+        buffer.tx_done();
+    }
+
+    // 3. ISR marks RX complete
+    // buffer.rx_done();
+
+    // 4. Deliver completions back to receivers
+    while (buffer.has_deliver()) {
+        auto* entry = buffer.deliver_front();
+        entry->set_value(0);  // complete with reply
+        buffer.pop();
+    }
+}
+```
+
+### Stop Semantics
+
+Stop tokens are checked only for **pending** transactions (still in the source's linked list). `query_next_trnx()` automatically removes cancelled entries and calls `set_stopped()` on them. Once a transaction is taken from the list and moved into a circular buffer or handed to hardware, the driver is fully responsible for completing it — stop is no longer checked by the source.
+
+> **ISR safety:** `trnx_circular_buffer` uses `std::atomic` cursors. On single-word architectures (e.g. ARM Cortex-M), these compile to plain loads/stores with no overhead.
+
 ## Assert customization
 
 By default, ecor uses `assert` for internal checks. You can customize this by defining `ECOR_ASSERT` before including the header:
