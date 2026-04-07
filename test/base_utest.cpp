@@ -915,8 +915,7 @@ TEST_CASE( "circular_buffer_memory_edge_cases" )
         // First, use up most space
         std::vector< void* > ptrs;
         while ( true ) {
-                auto  size = mem.used_bytes();
-                void* p    = mem.allocate( 8, 1 );
+                void* p = mem.allocate( 8, 1 );
                 if ( !p )
                         break;
                 CHECK( p <= buffer_storage.data() + buffer_storage.size() );
@@ -1131,7 +1130,7 @@ static ecor::task< void > stress_task(
 {
         // Wait for trigger
         // std::cout << "Task " << task_id << " waiting for trigger\n";
-        int value = co_await trigger.schedule();
+        [[maybe_unused]] int value = co_await trigger.schedule();
         execution_order.push_back( task_id );
         task_counter++;
 
@@ -3019,10 +3018,6 @@ TEST_CASE( "as_variant - error, stopped propagation and constraints" )
                 // Connecting to as_variant should invoke the static_assert failure constraint.
                 // Since we can't test compile failure easily in this file, we verify the
                 // trait/concept check directly.
-
-                using multi_arg_sender = broadcast_source< set_value_t( int, int ) >;
-                using as_variant_sender =
-                    decltype( as_variant( std::declval< multi_arg_sender >().schedule() ) );
 
                 // Positive control: singular sender should be connectable
                 using singular_sender = broadcast_source< set_value_t( int ) >;

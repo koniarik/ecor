@@ -3734,7 +3734,7 @@ struct _async_arena_core : _async_arena_core_base
 };
 
 template < typename T, typename Ctx, typename Mem >
-struct _async_arena_control_block : _async_arena_cb_counted
+struct _async_arena_control_block final : _async_arena_cb_counted
 {
         using _destroy_sender_t =
             decltype( ecor::async_destroy( std::declval< Ctx& >(), std::declval< T& >() ) );
@@ -4281,7 +4281,7 @@ struct trnx_controller_source
         trnx_entry< T >* query_next_trnx()
         {
                 if constexpr ( _has_stop_sig ) {
-                        _pending_tx.remove_if( [this]( trnx_entry< T >& tx ) {
+                        _pending_tx.remove_if( []( trnx_entry< T >& tx ) {
                                 if ( !tx._get_stopped() )
                                         return false;
 

@@ -62,7 +62,7 @@ struct nd_mem
                 return ::operator new( bytes, std::align_val_t( align ) );
         }
 
-        void deallocate( void* p, std::size_t bytes, std::size_t align )
+        void deallocate( void* p, std::size_t /*bytes*/, std::size_t align )
         {
                 //   std::cout << "dealloc " << bytes << " align " << align << " this: " << this <<
                 //   "\n";

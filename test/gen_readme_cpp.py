@@ -35,6 +35,11 @@ def find_snippets(lines):
 
 def gen_cpp(lines):
     yield f"""
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wunused-variable"
+    #pragma clang diagnostic ignored "-Wunused-parameter"
+    #pragma clang diagnostic ignored "-Wmacro-redefined"
+
     #include <ecor/ecor.hpp>
 
     #include "doctest.h"
@@ -87,6 +92,7 @@ def gen_cpp(lines):
     yield f"""
     }}
 
+    #pragma clang diagnostic pop
     """
 
 
