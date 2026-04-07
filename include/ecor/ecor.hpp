@@ -3571,16 +3571,15 @@ static inline _suspend_awaiter suspend;
 /// -------------------------------------------------------------------------------
 /// async_arena — asynchronous reference-counted lifetime management
 
-template < typename Ctx, typename T >
-concept _has_member_async_destroy = requires( Ctx& ctx, T& obj ) {
-        { obj.async_destroy( ctx ) } -> sender;
+template < typename T >
+concept _has_member_async_destroy = requires( T& obj ) {
+        { obj.async_destroy() } -> sender;
 };
 
 template < typename Ctx, typename T >
-concept _has_adl_async_destroy =
-    !_has_member_async_destroy< Ctx, T > && requires( Ctx& ctx, T& obj ) {
-            { async_destroy( ctx, obj ) } -> sender;
-    };
+concept _has_adl_async_destroy = requires( Ctx& ctx, T& obj ) {
+        { async_destroy( ctx, obj ) } -> sender;
+};
 
 /// CPO for asynchronous destruction of managed objects. Used by the library to destroy objects with
 /// asynchronous destruction.
@@ -3594,19 +3593,12 @@ concept _has_adl_async_destroy =
 struct _async_destroy_t
 {
         template < typename Ctx, typename T >
-                requires _has_member_async_destroy< Ctx, T >
         ecor::sender auto operator()( Ctx& ctx, T& obj ) const
-            noexcept( noexcept( obj.async_destroy( ctx ) ) )
         {
-                return obj.async_destroy( ctx );
-        }
-
-        template < typename Ctx, typename T >
-                requires _has_adl_async_destroy< Ctx, T >
-        ecor::sender auto operator()( Ctx& ctx, T& obj ) const
-            noexcept( noexcept( async_destroy( ctx, obj ) ) )
-        {
-                return async_destroy( ctx, obj );
+                if constexpr ( _has_adl_async_destroy< Ctx, T > )
+                        return async_destroy( ctx, obj );
+                else
+                        return obj.async_destroy();
         }
 };
 inline constexpr _async_destroy_t async_destroy{};

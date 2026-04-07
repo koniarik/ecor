@@ -726,16 +726,17 @@ void run_with_custom_cfg(my_ctx_type& ctx) {
 ### Basic Usage
 
 ```cpp
-// 1. Define a type with an async_destroy member
+// 1. Define a type with an async_destroy free function
 struct my_device {
     int id;
     ecor::broadcast_source<ecor::set_value_t()>& shutdown_source;
 
-    auto async_destroy(ecor::task_ctx& ctx) {
-        // Return a sender: flush buffers, release hardware, etc.
-        return shutdown_source.schedule();
-    }
 };
+
+auto async_destroy(ecor::task_ctx& ctx, my_device& dev) {
+    // Return a sender: flush buffers, release hardware, etc.
+    return dev.shutdown_source.schedule();
+}
 
 // 2. Create an arena and make objects
 struct my_mem {

@@ -356,6 +356,85 @@ TEST_CASE( "transitive noop" )
         test_simple_broadcast_source( ctx, es, y );
 }
 
+namespace
+{
+        struct _terror_receiver
+        {
+                using receiver_concept = ecor::receiver_t;
+
+                task_error& err;
+
+                void set_value()
+                {
+                }
+
+                void set_error( task_error e )
+                {
+                        err = e;
+                }
+
+                void set_stopped()
+                {
+                }
+        };
+
+        ecor::task< void > terror_c( task_ctx& )
+        {
+                co_yield with_error( task_error::task_unfinished );
+        }
+
+        ecor::task< void >
+        terror_b( task_ctx& ctx, broadcast_source< set_value_t() >& trig, int& b_count )
+        {
+                co_await trig.schedule();
+                ++b_count;
+                co_await terror_c( ctx );
+                ++b_count;  // should never be reached
+        }
+
+        ecor::task< void > terror_a(
+            task_ctx&                          ctx,
+            broadcast_source< set_value_t() >& trig,
+            int&                               a_count,
+            int&                               b_count )
+        {
+                co_await trig.schedule();
+                ++a_count;
+                co_await terror_b( ctx, trig, b_count );
+                ++a_count;  // should never be reached
+        }
+}  // namespace
+
+TEST_CASE( "transitive error propagation" )
+{
+        nd_mem                            mem;
+        task_ctx                          ctx{ mem };
+        broadcast_source< set_value_t() > trig;
+        int                               a_count = 0;
+        int                               b_count = 0;
+        task_error                        err     = task_error::none;
+
+        auto h = terror_a( ctx, trig, a_count, b_count ).connect( _terror_receiver{ err } );
+        h.start();
+        while ( ctx.core.run_once() )
+                ;
+
+        // wake A
+        trig.set_value();
+        while ( ctx.core.run_once() )
+                ;
+        CHECK( a_count == 1 );
+        CHECK( b_count == 0 );
+
+        // wake B — B runs, increments b_count, then co_awaits C which errors
+        trig.set_value();
+        while ( ctx.core.run_once() )
+                ;
+        CHECK( b_count == 1 );
+        CHECK( a_count == 1 );  // A never resumed after B errored
+        CHECK( err == task_error::task_unfinished );
+}
+
 struct timer
 {
 
@@ -4249,7 +4328,7 @@ namespace async_arena_test
                 std::vector< int >&           log;
                 fifo_source< set_value_t() >& destroy_src;
 
-                auto async_destroy( task_ctx& ctx )
+                auto async_destroy()
                 {
                         return destroy_src.schedule();
                 }
@@ -4291,16 +4370,17 @@ namespace async_arena_test
                         co_return;
                 }
 
-                auto async_destroy( task_ctx& ctx )
-                {
-                        return _do_destroy( ctx, *destroy_started );
-                }
-
                 ~coro_obj()
                 {
                         log.push_back( id );
                 }
         };
+
+        auto async_destroy( task_ctx& ctx, coro_obj& obj )
+        {
+                return coro_obj::_do_destroy( ctx, *obj.destroy_started );
+        }
+
 
 }  // namespace async_arena_test
 
@@ -4608,7 +4688,7 @@ TEST_CASE( "async_arena - reentrancy during cleanup" )
                 fifo_source< set_value_t() >&              destroy_src;
                 async_ptr< tracked_obj, task_ctx, nd_mem > other;
 
-                auto async_destroy( task_ctx& ctx )
+                auto async_destroy()
                 {
                         return destroy_src.schedule();
                 }
