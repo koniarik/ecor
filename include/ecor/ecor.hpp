@@ -2018,8 +2018,11 @@ enum class _awaitable_state_e : uint8_t
 };
 
 /// Base class for any item that can be placed in the `task_core` ready queue and resumed.
-/// Used by coroutine task promises, task holders, and async arena internals.
-struct _schedulable : zll::ll_base< _schedulable >
+///
+/// Derive from `schedulable` and override `resume()` to create custom schedulable items that
+/// can be enqueued into `task_core` via `reschedule()`.
+///
+struct schedulable : zll::ll_base< schedulable >
 {
         virtual void resume() = 0;
 };
@@ -2054,13 +2057,13 @@ struct task_core
 
         /// Reschedule a task by adding it's promise to the list of ready tasks. The task will be
         /// resumed the next time run_once() or run_n() is called.
-        void reschedule( _schedulable& op ) noexcept
+        void reschedule( schedulable& op ) noexcept
         {
                 _ready_tasks.link_back( op );
         }
 
 private:
-        zll::ll_list< _schedulable > _ready_tasks;
+        zll::ll_list< schedulable > _ready_tasks;
 };
 
 template < typename T >
@@ -2358,7 +2361,7 @@ enum class task_error : uint8_t
 /// Base class for task promises. This implements the common functionality for all task promises,
 /// such as memory allocation and deallocation, and provides the interface for rescheduling the task
 /// when it is resumed by the task scheduler.
-struct _promise_base : _schedulable
+struct _promise_base : schedulable
 {
         static constexpr std::size_t align   = alignof( std::max_align_t );
         static constexpr std::size_t spacing = align > sizeof( void* ) ? align : sizeof( void* );
@@ -2574,6 +2577,7 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, CFG, typename
                         this->_recv->invoke( set_stopped_t{}, _obj );
         }
 
+private:
         vtable const* _recv = nullptr;
         void*         _obj  = nullptr;
 };
@@ -3334,7 +3338,7 @@ auto operator|( S s, _then_closure< F > c )
 /// are in use. Not intended to be used directly — use `task_holder` instead.
 ///
 template < task_config CFG = task_default_cfg >
-struct _task_holder_base : _schedulable
+struct _task_holder_base : schedulable
 {
         using _task_t = task< void, CFG >;
 
@@ -3619,7 +3623,7 @@ protected:
         ~_async_arena_cb_base() = default;
 };
 
-struct _async_arena_core_base : _schedulable
+struct _async_arena_core_base : schedulable
 {
         explicit _async_arena_core_base( task_core& core ) noexcept
           : _core( core )
@@ -3629,14 +3633,14 @@ struct _async_arena_core_base : _schedulable
         void _enqueue_destroy( _async_arena_cb_base& cb ) noexcept
         {
                 _destroy_queue.link_back( cb );
-                if ( !_active && zll::detached( static_cast< _schedulable& >( *this ) ) )
+                if ( !_active && zll::detached( static_cast< schedulable& >( *this ) ) )
                         _core.reschedule( *this );
         }
 
         void _on_destroy_complete() noexcept
         {
                 ECOR_ASSERT( _active );
-                ECOR_ASSERT( zll::detached( static_cast< _schedulable& >( *this ) ) );
+                ECOR_ASSERT( zll::detached( static_cast< schedulable& >( *this ) ) );
                 _core.reschedule( *this );
         }
 
@@ -3970,6 +3974,11 @@ template < typename Ctx, typename Mem >
 struct async_arena
 {
         /// Construct an async arena with the provided context and memory resource.
+        /// `async_ptr` type for an object of type `T` managed by this arena.
+        template < typename T >
+        using ptr_type = async_ptr< T, Ctx, Mem >;
+
+        /// Construct an async arena with the provided context and memory resource.
         async_arena( Ctx& ctx, Mem& mem ) noexcept
           : _core( ctx, mem )
         {
@@ -3995,13 +4004,19 @@ struct async_arena
                 return async_ptr< T, Ctx, Mem >{ cb };
         }
 
+        /// Return a reference to the context provided at construction.
+        Ctx& ctx() noexcept
+        {
+                return _core._ctx;
+        }
+
         /// Signal that no new objects will be created and return a sender that completes with
         /// `set_value_t()` when all pending async destructions have finished.
         _ll_sender< set_value_t() > async_destroy() noexcept
         {
                 _core._stopped = true;
                 if ( _core._alive_list.empty() && _core._destroy_queue.empty() &&
-                     zll::detached( static_cast< _schedulable& >( _core ) ) && !_core._active )
+                     zll::detached( static_cast< schedulable& >( _core ) ) && !_core._active )
                         _core._core.reschedule( _core );
                 return _core._done_src.schedule();
         }

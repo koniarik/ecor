@@ -176,7 +176,7 @@ After a successful feature implementation, add any new patterns, pitfalls, or wo
 `async_arena` manages objects with asynchronous destruction via reference-counted `async_ptr`. Key patterns and pitfalls discovered:
 
 - **`_destroy_receiver` must handle `set_error`** — `task<void>` senders complete with `set_error_t(task_error)`, so the destroy receiver needs `set_error(auto&&)`. Using `auto&` (lvalue ref) breaks because `_task_op::start()` passes error enums by value (rvalue). Always use `auto&&` (forwarding reference) for error parameters.
-- **`zll::detached()` requires exact CRTP type** — `ll_base<_schedulable>` produces `ll_header<_schedulable, ...>`, so `zll::detached()` constraints fail on derived types like `_async_arena_core_base`. Fix: `zll::detached(static_cast<_schedulable&>(*this))`.
+- **`zll::detached()` requires exact CRTP type** — `ll_base<schedulable>` produces `ll_header<schedulable, ...>`, so `zll::detached()` constraints fail on derived types like `_async_arena_core_base`. Fix: `zll::detached(static_cast<schedulable&>(*this))`.
 - **`task<void>` destroy needs 3 `run_once()` ticks** — (1) arena resume → start_destroy → task scheduled, (2) task runs → co_return → set_value on receiver → arena rescheduled, (3) arena resume → finish_cleanup. Plain sender destroy needs 2 ticks + external fire + 1 tick.
 - **README code blocks are compiled** — `gen_readme_cpp.py` wraps each `cpp` fence in a namespace and compiles it. Examples must be self-contained (define all types, no placeholder names like `my_mem_type`).
 - **Type erasure base classes** — non-templated `_async_arena_core_base` and `_async_arena_cb_counted` reduce template bloat. Control block uses `static_cast` to recover the typed arena for `_ctx`/`_mem` access.
