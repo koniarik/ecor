@@ -4376,6 +4376,42 @@ namespace async_arena_test
                 return coro_obj::_do_destroy( ctx, *obj.destroy_started );
         }
 
+        /// A task managed by the arena. Its async_destroy calls holder.stop() and waits
+        /// for the task loop to exit before the arena releases the memory.
+        struct arena_spawned_task
+        {
+                using factory_t = ecor::task< void > ( * )( ecor::task_ctx& );
+                using holder_t  = ecor::task_holder< ecor::task_default_cfg, task_ctx, factory_t >;
+
+                holder_t holder;
+                bool*    destroyed;
+
+                arena_spawned_task( task_ctx& ctx, factory_t factory, bool& is_destroyed )
+                  : holder( ctx, factory )
+                  , destroyed( &is_destroyed )
+                {
+                }
+
+                ~arena_spawned_task()
+                {
+                        *destroyed = true;
+                }
+
+                /// The inner task: suspends until the stop token fires, then returns.
+                static ecor::task< void > worker( ecor::task_ctx& )
+                {
+                        co_await ecor::wait_until_stopped;
+                        co_return;
+                }
+
+                /// async_destroy: signal the holder to stop and return a sender that
+                /// completes once the task loop has fully exited.
+                auto async_destroy()
+                {
+                        return holder.stop();
+                }
+        };
+
 
 }  // namespace async_arena_test
 
@@ -4763,6 +4799,60 @@ TEST_CASE( "async_arena - async_destroy() completes after all objects destroyed"
 
         ctx.core.run_once();  // finish_cleanup for B, alive list empty → fires done
 
+        CHECK( done );
+}
+
+TEST_CASE( "async_arena - task_holder lifecycle, freed after last ptr dropped" )
+{
+        using namespace async_arena_test;
+
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        bool                            destroyed = false;
+        async_arena< task_ctx, nd_mem > arena( ctx, mem );
+
+        // Spawn a task into the arena.
+        auto ptr = arena.make< arena_spawned_task >( ctx, arena_spawned_task::worker, destroyed );
+        CHECK( ptr );
+
+        ptr->holder.start();
+
+        // Tick 1: holder.resume() — creates the task coroutine, starts it → task in queue.
+        ctx.core.run_once();
+        // Tick 2: task runs — suspends at wait_until_stopped, registers stop callback.
+        ctx.core.run_once();
+
+        CHECK( !destroyed );
+
+        // Drop the last reference.  refcount → 0 → async_destroy enqueued → arena rescheduled.
+        ptr.reset();
+
+        CHECK( !destroyed );  // ~arena_spawned_task not yet called
+
+        // Tick 3: arena.resume() → start_destroy() → holder.stop() called.
+        //   request_stop() fires synchronously → stop callback wakes the task → task in queue.
+        //   op-state for holder's _done_src.schedule() is stored in arena memory.
+        ctx.core.run_once();
+
+        // Tick 4: task resumes from wait_until_stopped → co_return → set_value on _recv
+        //   → holder rescheduled.
+        ctx.core.run_once();
+
+        // Tick 5: holder.resume() — task op cleared, stop requested → _done_src.set_value()
+        //   → arena destroy-receiver fires → arena rescheduled.
+        ctx.core.run_once();
+
+        // Tick 6: arena.resume() → finish_cleanup() → ~arena_spawned_task() → memory freed.
+        ctx.core.run_once();
+
+        CHECK( destroyed );
+
+        // Arena is now empty; its shutdown sender should fire on the next tick.
+        bool done = false;
+        auto op   = arena.async_destroy().connect( _done_receiver{ &done } );
+        op.start();
+        ctx.core.run_once();
         CHECK( done );
 }
 
