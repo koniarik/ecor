@@ -3601,8 +3601,10 @@ struct _async_destroy_t
         {
                 if constexpr ( _has_adl_async_destroy< Ctx, T > )
                         return async_destroy( ctx, obj );
-                else
+                else {
+                        static_assert( _has_member_async_destroy< T > );
                         return obj.async_destroy();
+                }
         }
 };
 inline constexpr _async_destroy_t async_destroy{};
