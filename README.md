@@ -827,6 +827,39 @@ ecor::task<void> shutdown(ecor::task_ctx& ctx, ecor::async_arena<ecor::task_ctx,
 
 `trnx_controller_source` supports ordered request-reply protocols (UART, SPI, I²C, etc.) where multiple transactions can be in flight simultaneously.
 
+### Memory Layout
+
+Each `schedule()` + `connect()` + `start()` call creates a `_trnx_controller_op` on the caller's stack (or in a coroutine frame). The op is linked into the source's doubly-linked list. With 3 queued transactions, the memory looks like this:
+
+```mermaid
+graph LR
+    subgraph source["trnx_controller_source"]
+        head["_pending_tx\n(doubly-linked list)"]
+    end
+
+    head -- "front" --> op3
+
+    subgraph op3["_trnx_controller_op  ③  (newest)"]
+        direction TB
+        f3["vtable ptrs\ndata: T\nll prev/next\nreceiver: R"]
+    end
+
+    op3 <-- "prev / next" --> op2
+
+    subgraph op2["_trnx_controller_op  ②"]
+        direction TB
+        f2["vtable ptrs\ndata: T\nll prev/next\nreceiver: R"]
+    end
+
+    op2 <-- "prev / next" --> op1
+
+    subgraph op1["_trnx_controller_op  ①  (oldest)"]
+        direction TB
+        f1["vtable ptrs\ndata: T\nll prev/next\nreceiver: R"]
+    end
+
+```
+
 ### Basic Usage
 
 Define a transaction data type with completion signatures, then schedule transactions through the source:
@@ -871,6 +904,10 @@ void trnx_example() {
 }
 ```
 
+After `op.start()`, the transaction is pending in the source's linked list. The driver calls `query_next_trnx()` to get the oldest pending transaction, then completes it with `set_value()`, `set_error()`, or `set_stopped()`.
+
+In the example above, the transaction completes with `set_value(42)`, which calls the receiver's `set_value` and sets `reply` to 42. In practice the op would be created in other part of the program than which calls `query_next_trnx()` — e.g., the transaction could be scheduled from a task, while `query_next_trnx()` is called from the main loop.
+
 ### Circular Buffer for In-Flight Transactions
 
 `trnx_circular_buffer` is a 4-cursor ring buffer for managing transactions that cross ISR boundaries. The cursors form a pipeline: **enqueue → tx → rx → deliver**.
@@ -912,6 +949,16 @@ void buffer_example() {
         buffer.pop();
     }
 }
+```
+
+Once the driver calls `query_next_trnx()`, the oldest entry is unlinked and moved into a `trnx_circular_buffer`. The buffer's four atomic cursors partition in-flight transactions into pipeline stages:
+
+```mermaid
+pie title trnx_circular_buffer (capacity 8, 3 in-flight)
+    "deliver→rx  (reply received, awaiting delivery)" : 1
+    "rx→tx  (sent, awaiting reply)" : 1
+    "tx→enqueue  (enqueued, ready to send)" : 1
+    "free slots" : 5
 ```
 
 ### Stop Semantics
