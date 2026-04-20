@@ -20,7 +20,7 @@ def find_snippets(lines):
             yield snippet.START
             gen_stuff = True
             continue
-        elif "```" in line:
+        elif "```" in line and gen_stuff:
             yield snippet.END
             gen_stuff = False
             continue
