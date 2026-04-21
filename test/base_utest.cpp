@@ -2911,7 +2911,7 @@ TEST_CASE( "~_task_op frees frame after normal completion" )
 TEST_CASE( "all_value_signatures_singular concept" )
 {
         // Basic singular signatures
-        static_assert( all_value_signatures_singular< set_value_t() > );
+        static_assert( !all_value_signatures_singular< set_value_t() > );
         static_assert( all_value_signatures_singular< set_value_t( int ) > );
         static_assert( all_value_signatures_singular< set_value_t( std::string ) > );
 
@@ -2919,7 +2919,7 @@ TEST_CASE( "all_value_signatures_singular concept" )
         static_assert( all_value_signatures_singular<
                        set_value_t( int ),
                        set_error_t( std::exception_ptr ) > );
-        static_assert( all_value_signatures_singular< set_value_t(), set_stopped_t() > );
+        static_assert( !all_value_signatures_singular< set_value_t(), set_stopped_t() > );
 
         // Multiple singular value signatures
         static_assert( all_value_signatures_singular< set_value_t( int ), set_value_t( double ) > );

@@ -212,7 +212,7 @@ struct _value_setter< void >
 template < typename T >
 using _value_setter_t = typename _value_setter< T >::type;
 
-template < typename... S >
+template < typename S >
 struct _multivalue_value_signature : std::false_type
 {
 };
@@ -222,10 +222,21 @@ struct _multivalue_value_signature< set_value_t( T, U, Ts... ) > : std::true_typ
 {
 };
 
+template < typename S >
+struct _no_value_signature : std::false_type
+{
+};
+
+template <>
+struct _no_value_signature< set_value_t() > : std::true_type
+{
+};
+
 /// Helper concept to check if all set_value signatures in a sender's completion signatures are
 /// singular, i.e. they have at exactly one argument.
 template < typename... S >
-concept all_value_signatures_singular = ( ... && !_multivalue_value_signature< S >::value );
+concept all_value_signatures_singular =
+    ( ... && ( !_multivalue_value_signature< S >::value && !_no_value_signature< S >::value ) );
 
 template < typename T >
 struct _is_all_singular;
