@@ -72,6 +72,7 @@ enum class spi_err : uint8_t
 struct uart_task_cfg
 {
         using extra_error_signatures = ecor::completion_signatures< ecor::set_error_t( uart_err ) >;
+        using trace_type             = ecor::task_default_trace;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
