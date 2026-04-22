@@ -708,6 +708,7 @@ using my_ctx_type = ecor::task_ctx;
 
 struct my_cfg {
     using extra_error_signatures = ecor::completion_signatures<ecor::set_error_t(my_error)>;
+    using trace_type = ecor::task_default_trace;
 };
 
 ecor::task<void, my_cfg> cfg_service(my_ctx_type& ctx) { co_return; }
@@ -982,6 +983,38 @@ Or use default `assert` by defining `ECOR_USE_DEFAULT_ASSERT`:
 #define ECOR_USE_DEFAULT_ASSERT
 #include <ecor/ecor.hpp>
 ```
+
+## Experimental
+
+### Task tracing
+
+`task` exposes an experimental tracing hook: every task configuration carries a `trace_type`
+(defaulting to `ecor::task_default_trace`) whose member functions are invoked at key points in
+the task's lifetime — promise construction, op start, resume, return, set_value/error/stopped,
+await suspend/resume, and so on. This can be used to instrument tasks for logging, metrics,
+profiling, or any other observation of what happens inside the system at runtime.
+
+The simplest way to plug in your own trace is to inherit from `ecor::task_default_trace` and
+override only the hooks you care about — every other hook keeps its zero-overhead empty
+implementation.
+
+```cpp
+struct my_trace : ecor::task_default_trace {
+    void on_resume(auto& promise) noexcept {
+        // log, count, timestamp, ...
+    }
+};
+
+struct my_cfg {
+    using extra_error_signatures = ecor::completion_signatures<>;
+    using trace_type             = my_trace;
+};
+
+ecor::task<void, my_cfg> traced_task(ecor::task_ctx& ctx) { co_return; }
+```
+
+> **Unstable:** the set of hooks, their signatures, and the surrounding API may change
+> drastically between releases. Pin a version if you depend on the exact shape.
 
 ## Credits
 

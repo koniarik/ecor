@@ -48,9 +48,33 @@
 #else
 
 #ifndef ECOR_ASSERT
-#define ECOR_ASSERT( expr ) ( (void) ( ( expr ) ) )
+#define ECOR_ASSERT( expr ) ( (void) sizeof( expr ) )
 #endif
 
+#endif
+
+/// Portable wrapper for the [[no_unique_address]] attribute. MSVC ignores the standard form
+/// and instead recognizes the vendor-specific [[msvc::no_unique_address]] (since VS 2019 16.9
+/// with /Zc:__cplusplus or /std:c++20). All other major compilers honor the standard form.
+#ifndef ECOR_NO_UNIQUE_ADDRESS
+#if defined( _MSC_VER ) && !defined( __clang__ )
+#define ECOR_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+#define ECOR_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#endif
+#endif
+
+/// Portable force-inline hint. Expands to a vendor-specific attribute on Clang, GCC, and MSVC;
+/// expands to nothing on other compilers (the function is still implicitly inline because it is
+/// defined in a class body or marked `inline` by the user).
+#ifndef ECOR_FORCE_INLINE
+#if defined( __clang__ ) || defined( __GNUC__ )
+#define ECOR_FORCE_INLINE __attribute__( ( always_inline ) ) inline
+#elif defined( _MSC_VER )
+#define ECOR_FORCE_INLINE __forceinline
+#else
+#define ECOR_FORCE_INLINE inline
+#endif
 #endif
 
 namespace ecor
@@ -383,7 +407,7 @@ struct unique_span : std::span< T, Extent >
         }
 
 private:
-        [[no_unique_address]] Deleter _deleter;
+        ECOR_NO_UNIQUE_ADDRESS Deleter _deleter;
 };
 
 /// Circular buffer memory resource, manages a provided memory block as a circular buffer for
@@ -2172,6 +2196,7 @@ struct _task_awaitable
         void await_suspend( std::coroutine_handle< PromiseType > ch ) noexcept
         {
                 _promise = &ch.promise();
+                _promise->trace.on_await_suspend( *this );
                 _op.start();
         }
 
@@ -2180,6 +2205,7 @@ struct _task_awaitable
         /// operation completed with an error or was stopped.
         decltype( auto ) await_resume() noexcept
         {
+                _promise->trace.on_await_resume( *this );
                 ECOR_ASSERT( _exp.state == _awaitable_state_e::value );
                 if constexpr ( std::same_as< value_type, void > )
                         return;
@@ -2208,6 +2234,7 @@ struct _task_awaitable
                     std::is_nothrow_constructible_v< value_type, Ts... > ||
                     std::same_as< value_type, void > )
                 {
+                        _self->_promise->trace.on_await_set_value( *_self, vals... );
                         _self->_exp.set_value( (Ts&&) vals... );
                         _self->_promise->core.reschedule( *_self->_promise );
                 }
@@ -2215,11 +2242,13 @@ struct _task_awaitable
                 template < typename E >
                 void set_error( E&& err )
                 {
+                        _self->_promise->trace.on_await_set_error( *_self, err );
                         _self->_promise->invoke_set_error( (E&&) err );
                 }
 
                 void set_stopped()
                 {
+                        _self->_promise->trace.on_await_set_stopped( *_self );
                         _self->_promise->invoke_set_stopped();
                 }
 
@@ -2341,10 +2370,156 @@ concept task_context = requires( T t ) {
         { get_memory_resource( t ) } -> std::same_as< task_memory_resource& >;
 };
 
+/// EXPERIMENTAL: the task tracing API (this type, the `trace_type` slot in `task_config`, and
+/// every `on_*` hook below) is unstable and may change drastically between releases. Use at
+/// your own risk; pin a version if you depend on the exact shape of these hooks.
+///
+/// User trace types must define every hook on this default type — the promise calls them
+/// unconditionally. A user trace must not outlive the promise that owns it; hooks may store
+/// the address of the promise but must not access it after the promise is destroyed.
+///
+/// Lifecycle of a single task call, in roughly the order the hooks fire:
+///   on_alloc → on_promise_construct → on_op_start → on_resume → (await cycles) →
+///   on_return → (on_set_value | on_set_error | on_set_stopped) → on_final_suspend →
+///   on_dealloc.
+///
+/// Every hook receives the owning `promise` (or `op` / `awaiter`) by reference so a trace
+/// can correlate events belonging to the same task instance by address.
+struct task_default_trace
+{
+        /// Called from `_promise_type::operator new` right after the coroutine frame has been
+        /// allocated from the task memory resource. `sz` is the frame size in bytes, `p` is the
+        /// pointer that was just allocated (or null on failure). Use this to account for memory
+        /// usage per task.
+        ECOR_FORCE_INLINE static void
+        on_alloc( auto& /*ctx*/, std::size_t const /*sz*/, void* /*p*/ ) noexcept
+        {
+        }
+
+        /// Called from `_promise_type::operator delete` just before the coroutine frame is
+        /// returned to the task memory resource. Pairs 1:1 with `on_alloc`.
+        ECOR_FORCE_INLINE static void on_dealloc( void* /*p*/, std::size_t const /*sz*/ ) noexcept
+        {
+        }
+
+        /// Called from the promise constructor, after the task core and the trace member itself
+        /// have been initialized but before the coroutine body has started running. The variadic
+        /// pack contains the original arguments passed to the coroutine function (the same ones
+        /// the coroutine body receives), giving you a chance to capture identifying parameters.
+        ECOR_FORCE_INLINE void
+        on_promise_construct( auto& /*promise*/, auto& /*ctx*/, auto&... ) noexcept
+        {
+        }
+
+        /// Called from `_task_op::start()` — i.e. when a connected sender is started by its
+        /// receiver. This marks the moment the task is first scheduled on the task core; it
+        /// fires exactly once per operation state.
+        ECOR_FORCE_INLINE void on_op_start( auto& /*op*/ ) noexcept
+        {
+        }
+
+        /// Called every time the scheduler picks this task and is about to resume the coroutine
+        /// handle. Fires once per scheduling tick — i.e. once after `on_op_start`, then again
+        /// after each `co_await` that suspended the task.
+        ECOR_FORCE_INLINE void on_resume( auto& /*promise*/ ) noexcept
+        {
+        }
+
+        /// Called when the task's own completion is being delivered to its continuation
+        /// (the receiver that connected this task) with `set_value`. Fires after `on_return`
+        /// and just before the receiver's `set_value` is invoked. The pack holds the value(s).
+        ECOR_FORCE_INLINE void on_set_value( auto& /*promise*/, auto&... /*value*/ ) noexcept
+        {
+        }
+
+        /// Called when the task is completing its continuation with `set_error`. This happens
+        /// either because an awaited child sender errored and the error was propagated, or
+        /// because the coroutine body threw (see `on_unhandled_exception`).
+        ECOR_FORCE_INLINE void on_set_error( auto& /*promise*/, auto& /*error*/ ) noexcept
+        {
+        }
+
+        /// Called when the task is completing its continuation with `set_stopped`, i.e. the
+        /// task was cancelled (typically because an awaited child sender propagated stop).
+        ECOR_FORCE_INLINE void on_set_stopped( auto& /*promise*/ ) noexcept
+        {
+        }
+
+        /// Called from `return_value` — the coroutine body executed `co_return <expr>`. Fires
+        /// before `on_set_value` so a trace can observe the produced value at the point the
+        /// coroutine emits it.
+        ECOR_FORCE_INLINE void on_return( auto& /*promise*/, auto& /*value*/ ) noexcept
+        {
+        }
+
+        /// Called from `return_void` — the `task<void>` coroutine body reached `co_return;` or
+        /// fell off the end. Same role as the value overload, for void tasks.
+        ECOR_FORCE_INLINE void on_return( auto& /*promise*/ ) noexcept
+        {
+        }
+
+        /// Called from the promise destructor when the coroutine frame is being torn down while
+        /// a continuation was still attached — meaning the task never delivered a completion
+        /// to it. The promise will synthesize `set_stopped` for the continuation right after
+        /// this hook returns. Useful for spotting tasks abandoned by their op_state.
+        ECOR_FORCE_INLINE void on_destroy_with_continuation( auto& /*promise*/ ) noexcept
+        {
+        }
+
+        /// Called when an exception escapes the coroutine body. The promise will translate it
+        /// into `set_error(task_error::task_unhandled_exception)` immediately after this hook.
+        ECOR_FORCE_INLINE void on_unhandled_exception( auto& /*promise*/ ) noexcept
+        {
+        }
+
+        /// Called from `final_suspend()` — the coroutine has finished executing and is about
+        /// to suspend for the last time. After this point the frame is inert and waiting to
+        /// be destroyed (followed eventually by `on_dealloc`).
+        ECOR_FORCE_INLINE void on_final_suspend( auto& /*promise*/ ) noexcept
+        {
+        }
+
+        /// Called inside `_task_awaitable::await_resume` — the task is being resumed after a
+        /// `co_await` on a child sender, and the child completed with a value. Fires just
+        /// before the value is handed back to the coroutine body.
+        ECOR_FORCE_INLINE void on_await_resume( auto& /*awaiter*/ ) noexcept
+        {
+        }
+
+        /// Called inside `_task_awaitable::await_suspend` — the coroutine reached a
+        /// `co_await` on a child sender and is about to suspend itself; the child sender's
+        /// op_state will be started immediately after.
+        ECOR_FORCE_INLINE void on_await_suspend( auto& /*awaiter*/ ) noexcept
+        {
+        }
+
+        /// Called when the awaited child sender completed with `set_value`. Fires before the
+        /// task is rescheduled to be resumed. The pack contains the value(s) produced by the
+        /// child sender.
+        ECOR_FORCE_INLINE void on_await_set_value( auto& /*awaiter*/, auto&... /*value*/ ) noexcept
+        {
+        }
+
+        /// Called when the awaited child sender completed with `set_error`. The task will
+        /// propagate this error to its own continuation (triggering `on_set_error`) instead of
+        /// being resumed.
+        ECOR_FORCE_INLINE void on_await_set_error( auto& /*awaiter*/, auto& /*error*/ ) noexcept
+        {
+        }
+
+        /// Called when the awaited child sender completed with `set_stopped`. The task will
+        /// propagate stop to its own continuation (triggering `on_set_stopped`) instead of
+        /// being resumed.
+        ECOR_FORCE_INLINE void on_await_set_stopped( auto& /*awaiter*/ ) noexcept
+        {
+        }
+};
+
 /// Task can be configured by passing type with configuration information. This is default value.
 struct task_default_cfg
 {
         using extra_error_signatures = completion_signatures<>;
+        using trace_type             = task_default_trace;
 };
 
 /// Concept for the task configuration. A type is task configuration if:
@@ -2352,8 +2527,13 @@ struct task_default_cfg
 ///   specifies the additional error signatures that the task can complete with, in addition to the
 ///   default set of error signatures defined by the library. This allows the user to customize the
 ///   error handling of the task.
+/// - It has a nested type `trace_type` (EXPERIMENTAL — see `task_default_trace`) used by the
+///   promise to dispatch trace events. Use `task_default_trace` if you do not need tracing.
 template < typename T >
-concept task_config = requires() { typename T::extra_error_signatures; };
+concept task_config = requires() {
+        typename T::extra_error_signatures;
+        typename T::trace_type;
+};
 
 template < typename T, task_config CFG = task_default_cfg >
 struct task;
@@ -2401,31 +2581,15 @@ struct _promise_base : schedulable
                 deallocate( *mem, beg, sz + spacing, align );
         }
 
-        void* operator new( std::size_t const sz, task_context auto&& ctx, auto&&... ) noexcept
-        {
-                /// XXX: we can't guarantee noexcept of the subcalls - try/catch?
-                task_memory_resource& a = get_memory_resource( ctx );
-                return _alloc( sz, a );
-        }
-
-        void operator delete( void* const ptr, std::size_t const sz ) noexcept
-        {
-                /// XXX: we can't guarantee noexcept of the subcalls - try/catch?
-                _dealloc( ptr, sz );
-        }
-
         _promise_base( _promise_base const& )            = delete;
         _promise_base& operator=( _promise_base const& ) = delete;
 
-        /// Construct the promise base by extracting the task core from the context argument and
-        /// initializing the token.
-        _promise_base( task_context auto&& ctx, auto&&... )
-          : core( get_task_core( ctx ) )
+        _promise_base( task_core& c )
+          : core( c )
           , token()
         {
         }
 
-        /// Task always starts suspended.
         std::suspend_always initial_suspend() noexcept
         {
                 return {};
@@ -2442,26 +2606,29 @@ struct _promise_base : schedulable
         }
 };
 
-template < typename Task, typename CFG >
+template < typename Task >
 struct _promise_type;
 
 /// Promise type subset that implements value_type specific behavior of the task.
-template < typename Task, typename CFG, typename Val = typename Task::value_type >
+template < typename Task, typename Val >
 struct _promise_return_mixin
 {
         void return_value( Val v )
         {
-                static_cast< _promise_type< Task, CFG >* >( this )->invoke_set_value(
-                    std::move( v ) );
+                auto* p = static_cast< _promise_type< Task >* >( this );
+                p->trace.on_return( *p, v );
+                p->invoke_set_value( std::move( v ) );
         }
 };
 
-template < typename Task, typename CFG >
-struct _promise_return_mixin< Task, CFG, void >
+template < typename Task >
+struct _promise_return_mixin< Task, void >
 {
         void return_void()
         {
-                static_cast< _promise_type< Task, CFG >* >( this )->invoke_set_value();
+                auto* p = static_cast< _promise_type< Task >* >( this );
+                p->trace.on_return( *p );
+                p->invoke_set_value();
         }
 };
 
@@ -2478,15 +2645,42 @@ struct _promise_return_mixin< Task, CFG, void >
 /// - Provides the await_transform function that wraps any sender into _task_awaitable, which allows
 ///   co_awaiting on senders from the task coroutine.
 ///
-template < typename Task, typename CFG >
-struct _promise_type : _promise_base, _promise_return_mixin< Task, CFG, typename Task::value_type >
+template < typename Task >
+struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task::value_type >
 {
         using value_type = typename Task::value_type;
+        using cfg_type   = typename Task::config_type;
+        using trace_type = typename cfg_type::trace_type;
         using _promise_base::_promise_base;
         using vtable = _apply_to_sigs_t< _sig_vtable, typename Task::completion_signatures >;
 
         _promise_type( _promise_type const& )            = delete;
         _promise_type& operator=( _promise_type const& ) = delete;
+
+        void* operator new( std::size_t const sz, task_context auto&& ctx, auto&&... ) noexcept
+        {
+                /// XXX: we can't guarantee noexcept of the subcalls - try/catch?
+                task_memory_resource& a = get_memory_resource( ctx );
+                void*                 p = _alloc( sz, a );
+                trace_type::on_alloc( ctx, sz, p );
+                return p;
+        }
+
+        void operator delete( void* const ptr, std::size_t const sz ) noexcept
+        {
+                /// XXX: we can't guarantee noexcept of the subcalls - try/catch?
+                trace_type::on_dealloc( ptr, sz );
+                _dealloc( ptr, sz );
+        }
+
+        /// Construct the promise base by extracting the task core from the context argument and
+        /// initializing the token.
+        _promise_type( task_context auto&& ctx, auto&&... s )
+          : _promise_base( get_task_core( ctx ) )
+          , trace()
+        {
+                trace.on_promise_construct( *this, ctx, s... );
+        }
 
         static Task get_return_object_on_allocation_failure()
         {
@@ -2528,11 +2722,13 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, CFG, typename
 
         void unhandled_exception() noexcept
         {
+                trace.on_unhandled_exception( *this );
                 this->invoke_set_error( task_error::task_unhandled_exception );
         }
 
         void resume() override
         {
+                trace.on_resume( *this );
                 auto h = std::coroutine_handle< _promise_type >::from_promise( *this );
                 h.resume();
         }
@@ -2540,37 +2736,41 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, CFG, typename
         template < typename U >
         void invoke_set_error( U&& err )
         {
-                ECOR_ASSERT( this->_recv );
-                if ( this->_recv ) {
-                        auto* r = std::exchange( this->_recv, nullptr );
-                        r->invoke( set_error_t{}, _obj, (U&&) err );
+                trace.on_set_error( *this, err );
+                ECOR_ASSERT( this->_cont_vtable );
+                if ( this->_cont_vtable ) {
+                        auto* r = std::exchange( this->_cont_vtable, nullptr );
+                        r->invoke( set_error_t{}, _cont_obj, (U&&) err );
                 }
         }
 
         template < typename... U >
         void invoke_set_value( U&&... v )
         {
-                ECOR_ASSERT( this->_recv );
-                if ( this->_recv ) {
-                        auto* r = std::exchange( this->_recv, nullptr );
-                        r->invoke( set_value_t{}, this->_obj, (U&&) v... );
+                trace.on_set_value( *this, v... );
+                ECOR_ASSERT( this->_cont_vtable );
+                if ( this->_cont_vtable ) {
+                        auto* r = std::exchange( this->_cont_vtable, nullptr );
+                        r->invoke( set_value_t{}, this->_cont_obj, (U&&) v... );
                 }
         }
 
         void invoke_set_stopped()
         {
-                ECOR_ASSERT( this->_recv );
-                if ( this->_recv ) {
-                        auto* r = std::exchange( this->_recv, nullptr );
-                        r->invoke( set_stopped_t{}, this->_obj );
+                trace.on_set_stopped( *this );
+                ECOR_ASSERT( this->_cont_vtable );
+                if ( this->_cont_vtable ) {
+                        auto* r = std::exchange( this->_cont_vtable, nullptr );
+                        r->invoke( set_stopped_t{}, this->_cont_obj );
                 }
         }
 
         std::suspend_always final_suspend() noexcept
         {
-                if ( _recv ) {
-                        auto* r = std::exchange( this->_recv, nullptr );
-                        r->invoke( set_error_t{}, _obj, task_error::task_unfinished );
+                trace.on_final_suspend( *this );
+                if ( _cont_vtable ) {
+                        auto* r = std::exchange( this->_cont_vtable, nullptr );
+                        r->invoke( set_error_t{}, _cont_obj, task_error::task_unfinished );
                 }
                 return {};
         }
@@ -2578,19 +2778,24 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, CFG, typename
         template < typename U >
         void setup_continuable( U& p )
         {
-                this->_recv = &_vtable_of< U, U, vtable >;
-                this->_obj  = static_cast< void* >( &p );
+                this->_cont_vtable = &_vtable_of< U, U, vtable >;
+                this->_cont_obj    = static_cast< void* >( &p );
         }
 
         ~_promise_type() noexcept
         {
-                if ( _recv )
-                        this->_recv->invoke( set_stopped_t{}, _obj );
+                if ( _cont_vtable ) {
+                        trace.on_destroy_with_continuation( *this );
+                        this->_cont_vtable->invoke( set_stopped_t{}, _cont_obj );
+                }
         }
 
+
+        ECOR_NO_UNIQUE_ADDRESS trace_type trace;
+
 private:
-        vtable const* _recv = nullptr;
-        void*         _obj  = nullptr;
+        vtable const* _cont_vtable = nullptr;
+        void*         _cont_obj    = nullptr;
 };
 
 /// Operation state for the task sender. This is the type returned by the connect() function of the
@@ -2602,7 +2807,7 @@ private:
 template < typename T, task_config CFG, typename R >
 struct _task_op
 {
-        using promise_type            = _promise_type< task< T, CFG >, CFG >;
+        using promise_type            = _promise_type< task< T, CFG > >;
         using operation_state_concept = operation_state_t;
 
         _task_op() noexcept = default;
@@ -2664,6 +2869,7 @@ struct _task_op
                                    never_stop_token > )
                         _h.promise().token = ecor::get_stop_token( ecor::get_env( _recv ) );
                 _h.promise().setup_continuable( _recv );
+                _h.promise().trace.on_op_start( *this );
                 _h.promise().core.reschedule( _h.promise() );
         }
 
@@ -2741,7 +2947,8 @@ struct task
 {
         using sender_concept = sender_t;
         using value_type     = T;
-        using promise_type   = _promise_type< task, CFG >;
+        using config_type    = CFG;
+        using promise_type   = _promise_type< task >;
 
         using _error_completions =
             _sigs_append_t< typename CFG::extra_error_signatures, set_error_t( task_error ) >;

@@ -1961,6 +1961,7 @@ TEST_CASE( "task - allocation error" )
 struct task_cfg
 {
         using extra_error_signatures = completion_signatures< set_error_t( std::string ) >;
+        using trace_type             = task_default_trace;
 };
 using my_task = ecor::task< void, task_cfg >;
 
@@ -2731,6 +2732,7 @@ struct custom_error
 struct custom_config
 {
         using extra_error_signatures = completion_signatures< set_error_t( custom_error ) >;
+        using trace_type             = task_default_trace;
 };
 
 static ecor::task< void, custom_config > yielding_task( task_ctx& )

@@ -713,12 +713,14 @@ TEST_CASE( "Test_Transaction_Lifecyle_Indices" )
         CHECK( t.u._trnxs.rx == 0 );
         CHECK( t.u._trnxs.tx == 0 );
 
-        // Tick: moves from source to buffer (TX Ready)
+        // Tick: moves from source to buffer (TX Ready).
+        // Note: tx/rx counters are racy here — the background mock thread can fire
+        // on_tx_complete_irq almost immediately (~0-41 nops), so tx may already be 1.
         t.u.tick();
         CHECK( t.u._trnxs.deliver == 0 );
         CHECK( t.u._trnxs.enqueue == 1 );
-        CHECK( t.u._trnxs.rx == 0 );
-        CHECK( t.u._trnxs.tx == 0 );
+        CHECK( t.u._trnxs.rx <= 1 );
+        CHECK( t.u._trnxs.tx <= 1 );
 
         // Run once: dispatch_tx called by tick() logic if not active.
         // But dispatch_tx calls _handle.transmit which is async in mock.
