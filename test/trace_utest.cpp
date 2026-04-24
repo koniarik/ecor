@@ -748,10 +748,10 @@ TEST_CASE( "trace - B4 two consecutive co_awaits" )
         auto svi = idx_of( log, ev::set_value );
         CHECK( log.evs[svi[0]].ival == 11 );
 
-        // The two await_suspend events have different `who` addresses (different awaitables)
+        // Optimized builds may reuse coroutine-frame storage, so awaiter addresses are not a
+        // stable cross-await identity.
         auto asui = idx_of( log, ev::await_suspend );
         REQUIRE( asui.size() == 2 );
-        CHECK( log.evs[asui[0]].who != log.evs[asui[1]].who );
 }
 
 // ─── Group C — Edge cases ────────────────────────────────────────────────────
