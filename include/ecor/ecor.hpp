@@ -2232,14 +2232,30 @@ struct _task_awaitable
                 template < typename... Ts >
                 void set_value( Ts&&... vals ) noexcept(
                     std::is_nothrow_constructible_v< value_type, Ts... > ||
-                    std::same_as< value_type, void > );
+                    std::same_as< value_type, void > )
+                {
+                        _self->_promise->trace.on_await_set_value( *_self, vals... );
+                        _self->_exp.set_value( (Ts&&) vals... );
+                        _self->_promise->core.reschedule( *_self->_promise );
+                }
 
                 template < typename E >
-                void set_error( E&& err );
+                void set_error( E&& err )
+                {
+                        _self->_promise->trace.on_await_set_error( *_self, err );
+                        _self->_promise->invoke_set_error( (E&&) err );
+                }
 
-                void set_stopped();
+                void set_stopped()
+                {
+                        _self->_promise->trace.on_await_set_stopped( *_self );
+                        _self->_promise->invoke_set_stopped();
+                }
 
-                [[nodiscard]] decltype( auto ) get_env() const noexcept;
+                [[nodiscard]] _env get_env() const noexcept
+                {
+                        return _self->_promise->get_env();
+                }
         };
 
 
@@ -2250,40 +2266,6 @@ private:
         using _op_t = connect_type< S, _receiver >;
         _op_t _op;
 };
-
-template < typename PromiseType, typename S >
-template < typename... Ts >
-void _task_awaitable< PromiseType, S >::_receiver::set_value( Ts&&... vals ) noexcept(
-    std::is_nothrow_constructible_v<
-        typename _task_awaitable< PromiseType, S >::value_type,
-        Ts... > ||
-    std::same_as< typename _task_awaitable< PromiseType, S >::value_type, void > )
-{
-        _self->_promise->trace.on_await_set_value( *_self, vals... );
-        _self->_exp.set_value( (Ts&&) vals... );
-        _self->_promise->core.reschedule( *_self->_promise );
-}
-
-template < typename PromiseType, typename S >
-template < typename E >
-void _task_awaitable< PromiseType, S >::_receiver::set_error( E&& err )
-{
-        _self->_promise->trace.on_await_set_error( *_self, err );
-        _self->_promise->invoke_set_error( (E&&) err );
-}
-
-template < typename PromiseType, typename S >
-void _task_awaitable< PromiseType, S >::_receiver::set_stopped()
-{
-        _self->_promise->trace.on_await_set_stopped( *_self );
-        _self->_promise->invoke_set_stopped();
-}
-
-template < typename PromiseType, typename S >
-decltype( auto ) _task_awaitable< PromiseType, S >::_receiver::get_env() const noexcept
-{
-        return _self->_promise->get_env();
-}
 
 template < class Alloc >
 concept simple_allocator = requires( Alloc alloc, size_t n ) {
@@ -2616,9 +2598,9 @@ struct _promise_base : schedulable
         task_core&         core;
         inplace_stop_token token;
 
-        using _env = stop_token_env< inplace_stop_token& >;
+        using _env = stop_token_env< inplace_stop_token >;
 
-        _env get_env() noexcept
+        _env get_env() const noexcept
         {
                 return { token };
         }
