@@ -2182,7 +2182,8 @@ struct _task_awaitable
 {
         _task_awaitable( S sender )
           : _exp()
-          , _op( std::move( sender ).connect( _receiver{ ._self = this } ) )
+          , _op( std::move( sender ).connect(
+                _receiver{ ._awaitable = this, ._promise = &_promise, ._exp = &_exp } ) )
         {
         }
 
@@ -2227,40 +2228,42 @@ struct _task_awaitable
         {
                 using receiver_concept = receiver_t;
 
-                _task_awaitable* _self;
+                _task_awaitable*                   _awaitable;
+                PromiseType**                      _promise;
+                _awaitable_expected< value_type >* _exp;
 
                 template < typename... Ts >
                 void set_value( Ts&&... vals ) noexcept(
                     std::is_nothrow_constructible_v< value_type, Ts... > ||
                     std::same_as< value_type, void > )
                 {
-                        _self->_promise->trace.on_await_set_value( *_self, vals... );
-                        _self->_exp.set_value( (Ts&&) vals... );
-                        _self->_promise->core.reschedule( *_self->_promise );
+                        ( *_promise )->trace.on_await_set_value( *_awaitable, vals... );
+                        _exp->set_value( (Ts&&) vals... );
+                        ( *_promise )->core.reschedule( **_promise );
                 }
 
                 template < typename E >
                 void set_error( E&& err )
                 {
-                        _self->_promise->trace.on_await_set_error( *_self, err );
-                        _self->_promise->invoke_set_error( (E&&) err );
+                        ( *_promise )->trace.on_await_set_error( *_awaitable, err );
+                        ( *_promise )->invoke_set_error( (E&&) err );
                 }
 
                 void set_stopped()
                 {
-                        _self->_promise->trace.on_await_set_stopped( *_self );
-                        _self->_promise->invoke_set_stopped();
+                        ( *_promise )->trace.on_await_set_stopped( *_awaitable );
+                        ( *_promise )->invoke_set_stopped();
                 }
 
                 [[nodiscard]] decltype( auto ) get_env() const noexcept
                 {
-                        return _self->_promise->get_env();
+                        return ( *_promise )->get_env();
                 }
         };
 
 
 private:
-        PromiseType*                      _promise;
+        PromiseType*                      _promise = nullptr;
         _awaitable_expected< value_type > _exp;
 
         using _op_t = connect_type< S, _receiver >;
