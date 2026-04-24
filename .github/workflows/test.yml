@@ -7,11 +7,31 @@ on:
     branches: [ "master", "main" ]
 
 jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: run pre-commit
+        uses: pre-commit/action@v3.0.1
+
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        compiler: [gcc, clang]
         preset: [debug, asan, ubsan, release]
+
+    env:
+      CC: ${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }}
+      CXX: ${{ matrix.compiler == 'clang' && 'clang++' || 'g++' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +39,7 @@ jobs:
           submodules: 'true'
 
       - name: install deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang
 
       - name: configure
         run: cmake --preset ${{ matrix.preset }}
