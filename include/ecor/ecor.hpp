@@ -172,11 +172,6 @@ struct noop_base
 {
 };
 
-/// Operation state type of a sender-receiver connection. The type returned by connecting a sender
-/// to a receiver.
-template < typename S, typename R >
-using connect_type = decltype( std::move( std::declval< S >() ).connect( std::declval< R >() ) );
-
 
 /// Thin wrapper over error value, used to tag value as an error for ecor library.
 template < typename E >
@@ -878,22 +873,27 @@ concept receiver =
     std::constructible_from< std::remove_cvref_t< T >, T >;
 
 template < typename S, typename R >
-concept _connectable = sender< S > && receiver< R > && requires( S&& s, R&& r ) {
-        { std::move( s ).connect( std::move( r ) ) };
+concept _connectable = sender< S > && receiver< R > && requires( S&& s, R r ) {
+        { ( (S&&) s ).connect( std::move( r ) ) };
 };
 
 struct _connect_t
 {
         template < typename S, typename R >
                 requires _connectable< S, R >
-        auto operator()( S&& s, R&& r ) const
-            noexcept( noexcept( std::move( s ).connect( std::move( r ) ) ) )
+        auto operator()( S&& s, R r ) const
+            noexcept( noexcept( ( (S&&) s ).connect( std::move( r ) ) ) )
         {
-                return std::move( s ).connect( std::move( r ) );
+                return ( (S&&) s ).connect( std::move( r ) );
         }
 };
 /// Connect CPO for connecting senders to receivers.
 inline constexpr _connect_t connect{};
+
+/// Operation state type of a sender-receiver connection. The type returned by connecting a sender
+/// to a receiver.
+template < typename S, typename R >
+using connect_type = decltype( connect( std::declval< S >(), std::declval< R >() ) );
 
 template < typename R, typename T >
 struct _receiver_sig_callable;
@@ -3731,7 +3731,7 @@ struct _wait_until_stopped
         };
 
         template < receiver R >
-        auto connect( R receiver ) &&
+        auto connect( R receiver )
         {
                 static_assert(
                     receiver_for< R, _wait_until_stopped >,
