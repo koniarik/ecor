@@ -48,7 +48,7 @@
 #else
 
 #ifndef ECOR_ASSERT
-#define ECOR_ASSERT( expr ) ( (void) sizeof( expr ) )
+#define ECOR_ASSERT( expr ) ( (void) sizeof( expr ) )  // NOLINT(bugprone-sizeof-expression)
 #endif
 
 #endif
@@ -2600,7 +2600,7 @@ struct _promise_base : schedulable
 
         using _env = stop_token_env< inplace_stop_token >;
 
-        _env get_env() const noexcept
+        [[nodiscard]] _env get_env() const noexcept
         {
                 return { token };
         }
@@ -4407,12 +4407,12 @@ struct trnx_circular_buffer
                 _data[enqueue++ % N] = val;
         }
 
-        bool empty() const noexcept
+        [[nodiscard]] bool empty() const noexcept
         {
                 return deliver == enqueue;
         }
 
-        bool has_tx() const noexcept
+        [[nodiscard]] bool has_tx() const noexcept
         {
                 return tx != enqueue;
         }
@@ -4427,7 +4427,7 @@ struct trnx_circular_buffer
                 tx++;
         }
 
-        bool has_rx() const noexcept
+        [[nodiscard]] bool has_rx() const noexcept
         {
                 return rx != tx;
         }
@@ -4442,7 +4442,7 @@ struct trnx_circular_buffer
                 rx++;
         }
 
-        bool has_deliver() const noexcept
+        [[nodiscard]] bool has_deliver() const noexcept
         {
                 return deliver != rx;
         }
