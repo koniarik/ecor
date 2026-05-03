@@ -640,6 +640,61 @@ ecor::task<void> example(ecor::task_ctx& ctx) {
 
 If the callable returns `void`, the output sender emits `set_value_t()`.
 
+## Custom Senders
+
+Writing a sender from scratch requires a `sender` struct, an op-state struct, and a `connect`
+method — boilerplate that grows quickly. `sender_from<T>` is an alternative: provide a payload
+type `T` with a `completion_signatures` typedef and a `start(op&)` method, and the library
+handles the rest.
+
+This is the natural way to integrate external event sources (hardware peripherals, OS APIs,
+third-party callbacks) into the sender/receiver model.
+
+```cpp
+struct async_c_ctx { /*...*/ };
+
+int some_async_c_api(
+    struct async_c_ctx* ctx,
+    void (*callback)(int result, void* user_data),
+    void* user_data){
+        /*...*/
+        return 42;
+    }
+
+struct some_async_payload {
+    using completion_signatures =
+        ecor::completion_signatures< ecor::set_value_t(), ecor::set_error_t(int) >;
+
+    async_c_ctx* c_ctx;
+
+    void start(auto& op) {
+        // &op is stable until set_value/set_error is called.
+        int res = some_async_c_api(c_ctx, [](int result, void* user_data) {
+            using op_t = std::remove_reference_t<decltype(op)>;
+            auto& op = *static_cast<op_t*>(user_data);
+            if (result >= 0)
+                op.receiver.set_value();
+            else
+                op.receiver.set_error(result);
+        }, &op);
+        if (res < 0)
+            op.receiver.set_error(res);  // immediate error
+    }
+};
+
+using some_async_sender = ecor::sender_from<some_async_payload>;
+
+// `some_async_payload` wraps a C callback API: `start()` registers the callback and passes
+// `&op` as user data so the callback can signal the receiver when the operation completes.
+// The alias `some_async_sender` gives the type a stable name for use at call sites.
+// `sink_err` converts the `set_error_t(int)` completion into an optional so the task
+// doesn't need a custom error configuration.
+ecor::task<void> use_async_api(ecor::task_ctx& ctx, async_c_ctx& c_ctx) {
+    co_await (some_async_sender{ { .c_ctx = &c_ctx } } | ecor::sink_err);
+}
+```
+
+
 ## Task Holder - Automatic Restart
 
 `task_holder` owns a `task<void, CFG>` and restarts it automatically every time it completes,

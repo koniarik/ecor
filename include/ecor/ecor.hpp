@@ -4533,4 +4533,73 @@ private:
         zll::ll_list< trnx_entry< T > > _pending_tx;
 };
 
+/// -------------------------------------------------------------------------------
+/// sender_from — convenience shim for building senders without boilerplate
+
+/// Operation state for `sender_from<T>`. Address-stable after `start()` is called.
+template < typename T, typename R >
+struct _sender_from_op
+{
+        using operation_state_concept = operation_state_t;
+
+        ECOR_NO_UNIQUE_ADDRESS T ctx;
+        R                        receiver;
+
+        void start()
+        {
+                ctx.start( *this );
+        }
+};
+
+/// Checks that `T` can act as the start-body of a `sender_from` connected to receiver `R`:
+/// move-constructible, has `completion_signatures`, and provides `void start(op&)`.
+template < typename T, typename R >
+concept sender_from_context =
+    std::move_constructible< T > && requires( T x, _sender_from_op< T, R > op ) {
+            typename T::completion_signatures;
+            { x.start( op ) } -> std::same_as< void >;
+    };
+
+/// Checks that `T` is a valid `sender_from` payload independent of any receiver:
+/// move-constructible and has a `completion_signatures` typedef.
+/// `start` is not checked here — use `sender_from_context<T,R>` for the full check.
+template < typename T >
+concept sender_from_payload =
+    std::move_constructible< T > && requires { typename T::completion_signatures; };
+
+/// Convenience sender wrapper. Turns any `sender_from_payload` type `T` into a fully
+/// conforming sender without hand-writing `connect`, op-state, or `sender_concept` boilerplate.
+///
+/// To define a sender, provide a struct `T` with:
+///   - `using completion_signatures = ecor::completion_signatures< ... >;`
+///   - `void start(auto& op)` — called by the op-state's `start()`.
+///     Invoke `op.receiver.set_value/set_error/set_stopped` synchronously, or store `&op`
+///     for async completion. The op address is stable until the receiver has been signalled.
+///
+template < sender_from_payload T >
+struct sender_from
+{
+        using sender_concept = ecor::sender_t;
+        using context_type   = T;
+
+        T ctx;
+
+        sender_from( T ctx )
+          : ctx( std::move( ctx ) )
+        {
+        }
+
+        using completion_signatures = T::completion_signatures;
+
+        template < receiver R >
+                requires sender_from_context< T, R >
+        auto connect( R receiver ) &&
+        {
+                static_assert(
+                    receiver_for< R, sender_from >,
+                    "Receiver does not satisfy the requirements for sender_from's completion signatures" );
+                return _sender_from_op< T, R >{ std::move( ctx ), std::move( receiver ) };
+        }
+};
+
 }  // namespace ecor

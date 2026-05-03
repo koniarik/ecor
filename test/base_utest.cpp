@@ -4858,4 +4858,246 @@ TEST_CASE( "async_arena - task_holder lifecycle, freed after last ptr dropped" )
         CHECK( done );
 }
 
+// -----------------------------------------------------------------------
+// sender_from tests
+// -----------------------------------------------------------------------
+
+namespace
+{
+
+        // Concept correctness checks
+        struct _sf_good_payload
+        {
+                using completion_signatures = ecor::completion_signatures< set_value_t( int ) >;
+                void start( auto& op )
+                {
+                        op.receiver.set_value( 0 );
+                }
+        };
+
+        struct _sf_no_sigs
+        {
+                void start( auto& )
+                {
+                }
+        };
+
+        static_assert( sender_from_payload< _sf_good_payload > );
+        static_assert( !sender_from_payload< _sf_no_sigs > );
+        static_assert( sender< sender_from< _sf_good_payload > > );
+
+        // --- sync value ---
+        struct _sf_sync_ctx
+        {
+                using completion_signatures = ecor::completion_signatures< set_value_t( int ) >;
+                int  value;
+                void start( auto& op )
+                {
+                        op.receiver.set_value( value );
+                }
+        };
+
+        struct _sf_int_recv
+        {
+                using receiver_concept = receiver_t;
+                int* result;
+                void set_value( int v ) noexcept
+                {
+                        *result = v;
+                }
+                void set_error( auto&& ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+                empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        // --- sync error ---
+        struct _sf_error_ctx
+        {
+                using completion_signatures =
+                    ecor::completion_signatures< set_value_t(), set_error_t( int ) >;
+                int  err_val;
+                void start( auto& op )
+                {
+                        op.receiver.set_error( err_val );
+                }
+        };
+
+        struct _sf_error_recv
+        {
+                using receiver_concept = receiver_t;
+                int* error_result;
+                void set_value() noexcept
+                {
+                }
+                void set_error( int e ) noexcept
+                {
+                        *error_result = e;
+                }
+                void set_stopped() noexcept
+                {
+                }
+                empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        // --- async value ---
+        struct _sf_async_ctx
+        {
+                using completion_signatures = ecor::completion_signatures< set_value_t( int ) >;
+                int                      value;
+                std::function< void() >* fire;
+                void                     start( auto& op )
+                {
+                        *fire = [&op, v = value] {
+                                op.receiver.set_value( v );
+                        };
+                }
+        };
+
+        // --- stop token ---
+        struct _sf_stop_ctx
+        {
+                using completion_signatures =
+                    ecor::completion_signatures< set_value_t( int ), set_stopped_t() >;
+                int  value;
+                void start( auto& op )
+                {
+                        if ( get_stop_token( get_env( op.receiver ) ).stop_requested() )
+                                op.receiver.set_stopped();
+                        else
+                                op.receiver.set_value( value );
+                }
+        };
+
+        struct _sf_stop_recv
+        {
+                using receiver_concept = receiver_t;
+                int*                 result;
+                bool*                stopped;
+                inplace_stop_source* src;
+                void                 set_value( int v ) noexcept
+                {
+                        *result = v;
+                }
+                void set_error( auto&& ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                        *stopped = true;
+                }
+                struct _env
+                {
+                        inplace_stop_token token;
+                        inplace_stop_token query( get_stop_token_t ) const noexcept
+                        {
+                                return token;
+                        }
+                };
+                _env get_env() const noexcept
+                {
+                        return _env{ src->get_token() };
+                }
+        };
+
+        // --- co_await inside task ---
+        struct _sf_coro_ctx
+        {
+                using completion_signatures = ecor::completion_signatures< set_value_t( int ) >;
+                int  value;
+                void start( auto& op )
+                {
+                        op.receiver.set_value( value );
+                }
+        };
+
+}  // anonymous namespace
+
+static task< int > _sf_coro_task( task_ctx&, int& result )
+{
+        result = co_await sender_from{ _sf_coro_ctx{ 77 } };
+        co_return result;
+}
+
+TEST_CASE( "sender_from - synchronous value delivery" )
+{
+        int  result = 0;
+        auto op     = sender_from{ _sf_sync_ctx{ 42 } }.connect( _sf_int_recv{ &result } );
+        op.start();
+        CHECK( result == 42 );
+}
+
+TEST_CASE( "sender_from - synchronous error delivery" )
+{
+        int  error_result = 0;
+        auto op = sender_from{ _sf_error_ctx{ 7 } }.connect( _sf_error_recv{ &error_result } );
+        op.start();
+        CHECK( error_result == 7 );
+}
+
+TEST_CASE( "sender_from - asynchronous value delivery" )
+{
+        int                     result = 0;
+        std::function< void() > fire;
+        auto op = sender_from{ _sf_async_ctx{ 99, &fire } }.connect( _sf_int_recv{ &result } );
+        op.start();
+        CHECK( result == 0 );  // not yet delivered
+        fire();
+        CHECK( result == 99 );
+}
+
+TEST_CASE( "sender_from - stop not requested: delivers value" )
+{
+        int                 result  = 0;
+        bool                stopped = false;
+        inplace_stop_source src;
+        auto                op =
+            sender_from{ _sf_stop_ctx{ 5 } }.connect( _sf_stop_recv{ &result, &stopped, &src } );
+        op.start();
+        CHECK( result == 5 );
+        CHECK_FALSE( stopped );
+}
+
+TEST_CASE( "sender_from - stop requested before start: fires set_stopped" )
+{
+        int                 result  = 0;
+        bool                stopped = false;
+        inplace_stop_source src;
+        src.request_stop();
+        auto op =
+            sender_from{ _sf_stop_ctx{ 5 } }.connect( _sf_stop_recv{ &result, &stopped, &src } );
+        op.start();
+        CHECK( result == 0 );
+        CHECK( stopped );
+}
+
+TEST_CASE( "sender_from - co_await inside task delivers value" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        int      result = 0;
+        auto     h      = _sf_coro_task( ctx, result ).connect( _dummy_receiver{} );
+        h.start();
+        ctx.core.run_once();  // task starts → sender_from fires → awaitable rescheduled
+        ctx.core.run_once();  // task resumes → co_return
+        CHECK( result == 77 );
+}
+
+TEST_CASE( "sender_from - CTAD deduces correct type" )
+{
+        static_assert( std::same_as<
+                       decltype( sender_from{ _sf_sync_ctx{ 0 } } ),
+                       sender_from< _sf_sync_ctx > > );
+        CHECK( true );
+}
+
 }  // namespace ecor
