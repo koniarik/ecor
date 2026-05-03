@@ -4589,7 +4589,7 @@ struct sender_from
         {
         }
 
-        using completion_signatures = T::completion_signatures;
+        using completion_signatures = typename T::completion_signatures;
 
         template < receiver R >
                 requires sender_from_context< T, R >
