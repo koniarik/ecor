@@ -1071,6 +1071,25 @@ ecor::task<void, my_cfg> traced_task(ecor::task_ctx& ctx) { co_return; }
 > **Unstable:** the set of hooks, their signatures, and the surrounding API may change
 > drastically between releases. Pin a version if you depend on the exact shape.
 
+## GDB Pretty Printer
+
+`pprinter.py` in the repository root provides a GDB Python pretty printer for
+`ecor::_promise_type<Task>`. When loaded, `p promise` prints a human-readable
+summary instead of a raw struct dump:
+
+```
+(gdb) source /path/to/ecor/pprinter.py
+(gdb) p *my_promise
+$1 = ecor::_promise_type [my_coro()] @ src/my_coro.cpp:42
+```
+
+Load it once per GDB session, or add it to your `.gdbinit`:
+
+```
+source /path/to/ecor/pprinter.py
+```
+
+
 ## Credits
 
 Created by `veverak` (koniarik). Questions? Find me on [#include discord](https://discord.gg/vSYgpmPrra).

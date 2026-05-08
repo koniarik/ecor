@@ -77,6 +77,11 @@
 #endif
 #endif
 
+/// Define ECOR_DEBUG_PARENT to enable the _debug_parent pointer in task promises.
+/// When set, each suspended promise records a pointer to its parent promise (the
+/// task that is co_awaiting it), enabling GDB pretty-printers to walk the full
+/// coroutine awaiter chain. Zero runtime overhead when not defined.
+
 namespace ecor
 {
 
@@ -2197,6 +2202,10 @@ struct _task_awaitable
         {
                 _promise = &ch.promise();
                 _promise->trace.on_await_suspend( *this );
+#ifdef ECOR_DEBUG_PARENT
+                if constexpr ( requires { _op._debug_promise(); } )
+                        _op._debug_promise()._debug_parent = _promise;
+#endif
                 _op.start();
         }
 
@@ -2205,6 +2214,10 @@ struct _task_awaitable
         /// operation completed with an error or was stopped.
         decltype( auto ) await_resume() noexcept
         {
+#ifdef ECOR_DEBUG_PARENT
+                if constexpr ( requires { _op._debug_promise(); } )
+                        _op._debug_promise()._debug_parent = nullptr;
+#endif
                 _promise->trace.on_await_resume( *this );
                 ECOR_ASSERT( _exp.state == _awaitable_state_e::value );
                 if constexpr ( std::same_as< value_type, void > )
@@ -2242,12 +2255,20 @@ struct _task_awaitable
                 template < typename E >
                 void set_error( E&& err )
                 {
+#ifdef ECOR_DEBUG_PARENT
+                        if constexpr ( requires { _self->_op._debug_promise(); } )
+                                _self->_op._debug_promise()._debug_parent = nullptr;
+#endif
                         _self->_promise->trace.on_await_set_error( *_self, err );
                         _self->_promise->invoke_set_error( (E&&) err );
                 }
 
                 void set_stopped()
                 {
+#ifdef ECOR_DEBUG_PARENT
+                        if constexpr ( requires { _self->_op._debug_promise(); } )
+                                _self->_op._debug_promise()._debug_parent = nullptr;
+#endif
                         _self->_promise->trace.on_await_set_stopped( *_self );
                         _self->_promise->invoke_set_stopped();
                 }
@@ -2597,6 +2618,9 @@ struct _promise_base : schedulable
 
         task_core&         core;
         inplace_stop_token token;
+#ifdef ECOR_DEBUG_PARENT
+        _promise_base* _debug_parent = nullptr;
+#endif
 
         using _env = stop_token_env< inplace_stop_token >;
 
@@ -2872,6 +2896,13 @@ struct _task_op
                 _h.promise().trace.on_op_start( *this );
                 _h.promise().core.reschedule( _h.promise() );
         }
+
+#ifdef ECOR_DEBUG_PARENT
+        promise_type& _debug_promise() noexcept
+        {
+                return _h.promise();
+        }
+#endif
 
         void clear()
         {
