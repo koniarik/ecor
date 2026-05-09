@@ -1823,7 +1823,7 @@ struct _ll_sender
 
         template < receiver R >
         _ll_op< R, T, S... > connect( R receiver ) noexcept(
-            noexcept( _ll_op< R, T, S... >{ std::move( _val ), _ll, std::move( receiver ) } ) )
+            std::is_nothrow_move_constructible_v< T > && std::is_nothrow_move_constructible_v< R > )
         {
                 static_assert(
                     receiver_for_sigs< R, S... >,
