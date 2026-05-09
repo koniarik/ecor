@@ -1864,10 +1864,11 @@ struct _sh_sender
                 static_assert(
                     receiver_for_sigs< R, S... >,
                     "Receiver does not satisfy the requirements for the sender's completion signatures" );
+                static constexpr bool is_rval = std::is_rvalue_reference_v< decltype( self ) >;
                 return {
                     self._sh,
-                    std::forward_like< decltype( self ) >( self._key ),
-                    std::forward_like< decltype( self ) >( self._val ),
+                    static_cast< std::conditional_t< is_rval, K&&, K& > >( self._key ),
+                    static_cast< std::conditional_t< is_rval, T&&, T& > >( self._val ),
                     std::move( receiver ) };
         }
 
