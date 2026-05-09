@@ -1670,7 +1670,8 @@ struct _ll_entry< Node, D, completion_signatures< S... > > : _vtable_mixin< S...
                                                              zll::ll_base< Node >
 {
         static constexpr bool has_get_stopped = _contains_type< get_stopped_t(), S... >::value;
-        using completion_signatures = _filter_basic_signatures_t< completion_signatures< S... > >;
+        using completion_signatures =
+            _filter_basic_signatures_t< ecor::completion_signatures< S... > >;
 
         ECOR_NO_UNIQUE_ADDRESS D data;
 
@@ -1782,7 +1783,8 @@ struct _sh_entry< Node, K, D, completion_signatures< S... > > : _vtable_mixin< S
                                                                 zll::sh_base< Node >
 {
         static constexpr bool has_get_stopped = _contains_type< get_stopped_t(), S... >::value;
-        using completion_signatures = _filter_basic_signatures_t< completion_signatures< S... > >;
+        using completion_signatures =
+            _filter_basic_signatures_t< ecor::completion_signatures< S... > >;
 
         ECOR_NO_UNIQUE_ADDRESS D data;
         K                        key;
