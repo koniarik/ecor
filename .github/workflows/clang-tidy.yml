@@ -15,11 +15,11 @@ jobs:
           submodules: 'true'
 
       - name: install deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-tidy-15 parallel
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-tidy parallel
 
       - name: configure
         run: make configure
 
       - name: clang-tidy
         # Workaround parallel to not fail if there's no output
-        run: find include/ \( -iname "*.hpp" -or -iname "*.cpp" \) -print0 | parallel -0 clang-tidy-15 -p build {}
+        run: find include/ \( -iname "*.hpp" -or -iname "*.cpp" \) -print0 | parallel -0 clang-tidy -p build {}
