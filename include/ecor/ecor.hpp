@@ -1857,12 +1857,9 @@ struct _sh_sender
         using completion_signatures = ecor::completion_signatures< S... >;
 
         template < receiver R >
-        _sh_op< R, K, T, S... >
-        connect( this auto&& self, R receiver ) noexcept( noexcept( _sh_op< R, K, T, S... >{
-            self._sh,
-            std::forward_like< decltype( self ) >( self._key ),
-            std::forward_like< decltype( self ) >( self._val ),
-            std::move( receiver ) } ) )
+        _sh_op< R, K, T, S... > connect( this auto&& self, R receiver ) noexcept(
+            std::is_nothrow_move_constructible_v< K > &&
+            std::is_nothrow_move_constructible_v< T > && std::is_nothrow_move_constructible_v< R > )
         {
                 static_assert(
                     receiver_for_sigs< R, S... >,
