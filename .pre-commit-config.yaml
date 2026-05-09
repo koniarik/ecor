@@ -31,7 +31,7 @@ repos:
         entry: scripts/check_md_line_length.py
         language: script
         types: [markdown]
-        exclude: "^.github/copilot-instructions.md$|^doc/README.md$"
+        exclude: "^.github/copilot-instructions.md$"
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.5
     hooks:
