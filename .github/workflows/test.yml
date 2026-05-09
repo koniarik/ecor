@@ -2,9 +2,9 @@ name: test
 
 on:
   push:
-    branches: [ "master", "main" ]
+    branches: ["master", "main"]
   pull_request:
-    branches: [ "master", "main" ]
+    branches: ["master", "main"]
 
 jobs:
   pre-commit:
@@ -13,11 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: 'true'
+          submodules: "true"
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: "3.x"
 
       - name: run pre-commit
         uses: pre-commit/action@v3.0.1
@@ -30,16 +30,16 @@ jobs:
         preset: [debug, asan, ubsan, release]
 
     env:
-      CC: ${{ matrix.compiler == 'clang' && 'clang' || 'gcc' }}
-      CXX: ${{ matrix.compiler == 'clang' && 'clang++' || 'g++' }}
+      CC: ${{ matrix.compiler == 'clang' && 'clang' || 'gcc-14' }}
+      CXX: ${{ matrix.compiler == 'clang' && 'clang++' || 'g++-14' }}
 
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: 'true'
+          submodules: "true"
 
       - name: install deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang gcc-14 g++-14
 
       - name: configure
         run: cmake --preset ${{ matrix.preset }}
