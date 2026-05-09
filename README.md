@@ -380,10 +380,84 @@ using stoppable_events = ecor::ll_source<
 ```
 
 Adding `ecor::get_stopped_t()` to the signature list enables automatic stop-polling in
-`query_next()`: when the driver calls `query_next()`, any entry whose stop token is already
-triggered is silently completed with `set_stopped()` and skipped — the driver never sees
-that entry and the waiting task is cancelled. Omit `get_stopped_t()` when cancellation is
-handled entirely by the driver.
+`query_next()`: consecutive stopped entries are drained from the front — each front entry
+whose stop token is triggered is completed with `set_stopped()` and removed, until the front
+entry is live or the queue is empty. Only entries that surface at the front are examined;
+entries deeper in the list are not touched until they reach the front. Omit `get_stopped_t()`
+when cancellation is handled entirely by the driver.
+
+### Descriptor Types
+
+A *descriptor* is a payload type that also declares its own completion signatures as a
+nested `completion_signatures` type alias. Any type satisfying this shape meets the
+`event_descriptor` concept and can be passed as the **sole** template argument to
+`ll_source<D>` or `seq_source<K, D>`:
+
+```cpp
+struct uart_transaction {
+    uint8_t cmd;
+
+    // Completion signatures live on the payload type itself
+    using completion_signatures = ecor::completion_signatures<
+        ecor::set_value_t(uint8_t),   // reply byte on success
+        ecor::set_error_t(uint8_t),   // hardware error code
+        ecor::set_stopped_t(),        // cancellation
+        ecor::get_stopped_t()         // enable stop-polling in query_next()
+    >;
+};
+
+// Descriptor form — signatures inferred from uart_transaction::completion_signatures
+using uart_desc = ecor::ll_source<uart_transaction>;
+
+// Explicit-sig form — same behaviour, just written out inline
+using uart_explicit = ecor::ll_source<
+    uart_transaction,
+    ecor::set_value_t(uint8_t),
+    ecor::set_error_t(uint8_t),
+    ecor::set_stopped_t(),
+    ecor::get_stopped_t()
+>;
+
+// Override: if explicit S... are given, descriptor's sigs are ignored entirely
+using uart_reply_only = ecor::ll_source<
+    uart_transaction,
+    ecor::set_value_t(uint8_t)   // only this signature; rest of descriptor's sigs discarded
+>;
+```
+
+Both `uart_desc` and `uart_explicit` produce identical behaviour. The descriptor form
+co-locates signatures with the payload type, reducing duplication when the same transaction
+type is reused across multiple sources.
+
+#### `get_stopped_t()` and stop-polling
+
+`get_stopped_t()` may appear in a descriptor's `completion_signatures` to enable automatic
+stop-polling. It is **never** part of the public sender `completion_signatures` exposed to
+coroutines — it is stripped before the sender type is presented to `co_await`.
+
+The behaviour is identical across both source types, with one important constraint:
+
+| Source | `get_stopped_t()` present | Effect on `query_next()` |
+|--------|---------------------------|---------------------------|
+| `ll_source<D>` | yes | drains consecutive stopped **front** entries (cancel each), returns first live entry or `nullptr` if empty |
+| `seq_source<K, D>` | yes | drains consecutive stopped **top** (min-key) entries (cancel each), returns first live entry or `nullptr` if empty |
+
+> **Front-draining semantics:** `query_next()` drains stopped entries from the front/top
+> in a loop — cancelling each one until a live entry is found or the source is empty. Entries
+> deeper in the queue/heap are not examined until they surface at the front.
+
+```cpp
+struct timed_event {
+    int event_id;
+    using completion_signatures = ecor::completion_signatures<
+        ecor::set_value_t(uint64_t),
+        ecor::get_stopped_t()   // stop-poll active; drains stopped entries from the front/top
+    >;
+};
+
+ecor::ll_source<timed_event>            ll;  // front entry checked on each query_next()
+ecor::seq_source<uint64_t, timed_event> sq;  // top (min-key) entry checked on each query_next()
+```
 
 ### ISR Pipeline — `pipeline_buffer`
 
@@ -399,7 +473,7 @@ struct buf_trnx {
 };
 
 void buffer_example() {
-    using entry_t = ecor::_ll_entry<
+    using entry_t = ecor::ll_entry<
         buf_trnx,
         ecor::set_value_t(int),
         ecor::set_error_t(uint8_t),
@@ -494,11 +568,10 @@ public:
 
     // Called periodically from main loop
     void tick(uint64_t current_time) {
-        // Fire all timers that are due
-        // Keep firing until we've processed all events with time <= current_time
+        // Fire all timers that are due (min-key entry first)
         while (!source.empty() && source.front().key <= current_time) {
-            uint64_t event_time = source.front().key;
-            source.set_value(current_time);
+            auto* entry = source.query_next();
+            entry->set_value(entry->key);
         }
     }
 
@@ -570,8 +643,8 @@ ecor::task<void> low_priority_handler(
 }
 
 ecor::task<void> producer(ecor::task_ctx& ctx, priority_queue& queue) {
-    // Send a message - it goes to the task with lowest priority key (highest priority)
-    queue.set_value("urgent message");
+    // Send a message — it goes to the task with lowest priority key (highest priority)
+    if (auto* e = queue.query_next()) e->set_value("urgent message");
     co_return;
 }
 ```

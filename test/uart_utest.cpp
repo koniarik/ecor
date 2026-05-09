@@ -43,7 +43,7 @@
 ///   uart_peripheral  — mock hardware that simulates async TX/RX with background
 ///                       threads (stands in for DMA + ISR on real hardware)
 ///   uart_trans       — transaction payload: buffer, TX/RX sizes, error, timeout
-///   uart             — the driver: owns a trnx_source and a
+///   uart             — the driver: owns an ll_source and a
 ///                       trnx_circular_buffer, wires ISR callbacks to the
 ///                       pipeline_buffer cursors, and delivers completions in tick()
 ///
@@ -242,7 +242,8 @@ struct uart_trans
         using completion_signatures = completion_signatures<
             set_value_t( std::span< uint8_t > ),
             set_error_t( uart_error ),
-            set_stopped_t() >;
+            set_stopped_t(),
+            get_stopped_t() >;
 
         // Buffer for message
         std::span< uint8_t > buffer;
@@ -258,7 +259,7 @@ struct uart_trans
 
 /// UART driver built on top of ecor's transaction abstraction.
 ///
-/// Owns a `trnx_source<uart_trans>` for scheduling transactions and a
+/// Owns an `ll_source<uart_trans>` for scheduling transactions and a
 /// `pipeline_buffer` (capacity 4) for managing in-flight ones. The driver
 /// wires four ISR callbacks from `uart_peripheral` to advance the buffer cursors:
 ///
@@ -344,7 +345,7 @@ struct uart
         void tick()
         {
                 while ( !_trnxs.full() ) {
-                        auto* n = _source.query_next_trnx();
+                        auto* n = _source.query_next();
                         if ( !n )
                                 break;
                         _trnxs.push( n );
@@ -363,8 +364,8 @@ struct uart
                 }
         }
 
-        trnx_source< uart_trans >                       _source;
-        pipeline_buffer< trnx_entry< uart_trans >*, 4 > _trnxs;
+        ll_source< uart_trans >                       _source;
+        pipeline_buffer< ll_entry< uart_trans >*, 4 > _trnxs;
 
         uart_peripheral _handle{
             [this] {
@@ -936,10 +937,10 @@ TEST_CASE( "Test_Transaction_Destruction_Cleanup" )
 
 TEST_CASE( "Test_Transaction_Empty_Source" )
 {
-        trnx_source< uart_trans > source;
+        ll_source< uart_trans > source;
 
-        // query_next_trnx on a fresh, empty source should return nullptr.
-        CHECK( source.query_next_trnx() == nullptr );
+        // query_next on a fresh, empty source should return nullptr.
+        CHECK( source.query_next() == nullptr );
 
         // Schedule one transaction, take it, then verify empty again.
         uint8_t buffer[16]{};
@@ -948,9 +949,9 @@ TEST_CASE( "Test_Transaction_Empty_Source" )
                       .connect( capturing_receiver{ .value_count = &value_count } );
         op.start();
 
-        auto* entry = source.query_next_trnx();
+        auto* entry = source.query_next();
         CHECK( entry != nullptr );
-        CHECK( source.query_next_trnx() == nullptr );
+        CHECK( source.query_next() == nullptr );
 
         // Complete the taken entry so the op_state can be destroyed cleanly.
         entry->set_value( std::span< uint8_t >{} );
@@ -959,7 +960,7 @@ TEST_CASE( "Test_Transaction_Empty_Source" )
 
 TEST_CASE( "Test_Transaction_Destruction_With_Pending" )
 {
-        // Destroy a trnx_source while transactions are still pending.
+        // Destroy an ll_source while transactions are still pending.
         // The pending ops hold references (via ll_base) into the source's list.
         // On destruction, each op_state unlinks itself from the list automatically.
 
@@ -970,7 +971,7 @@ TEST_CASE( "Test_Transaction_Destruction_With_Pending" )
         uint8_t buf_b[16]{};
 
         {
-                trnx_source< uart_trans > source;
+                ll_source< uart_trans > source;
 
                 auto op_a = source.schedule( uart_trans{ .buffer = buf_a, .tx_used = 4 } )
                                 .connect( capturing_receiver{ .value_count = &value_a } );

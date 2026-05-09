@@ -224,30 +224,62 @@ concept signature = _is_signature< T >::value;
 template < typename T >
 concept _op_signature = signature< T > || std::same_as< T, get_stopped_t() >;
 
-template < typename Acc, typename... Sigs >
+/// A descriptor defines its own completion signatures as a nested type alias and is
+/// move-constructible.  The descriptor IS the payload stored in each entry.
+///
+/// Satisfied by any move-constructible payload type.  Use as a constraint when you only
+/// need to store and move the payload, without caring about its completion signatures.
+template < typename T >
+concept event_payload = std::move_constructible< T >;
+
+/// Satisfied by a payload type that also carries its own completion signatures in a nested
+/// `::completion_signatures` type alias.  When `ll_source<D>` (single-arg) is used with
+/// an `event_descriptor`, those signatures are derived from `D::completion_signatures`
+/// automatically.  Providing explicit `S...` args overrides them.
+///
+/// NOTE: `get_stopped_t()` may be included in `D::completion_signatures` to enable
+/// stop-polling in `ll_source::query_next()`.
+template < typename T >
+concept event_descriptor = event_payload< T > && requires { typename T::completion_signatures; };
+
+template < typename Acc, typename Sigs >
 struct _filter_basic_signatures;
 
 template < typename... Acc, signature S, typename... Sigs >
-struct _filter_basic_signatures< completion_signatures< Acc... >, S, Sigs... >
-  : _filter_basic_signatures< completion_signatures< Acc..., S >, Sigs... >
+struct _filter_basic_signatures<
+    completion_signatures< Acc... >,
+    completion_signatures< S, Sigs... > >
+  : _filter_basic_signatures< completion_signatures< Acc..., S >, completion_signatures< Sigs... > >
 {
 };
 
 template < typename... Acc, _op_signature S, typename... Sigs >
-struct _filter_basic_signatures< completion_signatures< Acc... >, S, Sigs... >
-  : _filter_basic_signatures< completion_signatures< Acc... >, Sigs... >
+struct _filter_basic_signatures<
+    completion_signatures< Acc... >,
+    completion_signatures< S, Sigs... > >
+  : _filter_basic_signatures< completion_signatures< Acc... >, completion_signatures< Sigs... > >
 {
 };
 
 template < typename... Acc >
-struct _filter_basic_signatures< completion_signatures< Acc... > >
+struct _filter_basic_signatures< completion_signatures< Acc... >, completion_signatures<> >
 {
         using type = completion_signatures< Acc... >;
 };
 
-template < typename... Sigs >
+template < typename Sigs >
 using _filter_basic_signatures_t =
-    typename _filter_basic_signatures< completion_signatures<>, Sigs... >::type;
+    typename _filter_basic_signatures< completion_signatures<>, Sigs >::type;
+
+/// Check whether a `completion_signatures<S...>` type contains `get_stopped_t()`.
+template < typename Sigs >
+struct _sigs_contains_get_stopped;
+
+template < _op_signature... S >
+struct _sigs_contains_get_stopped< completion_signatures< S... > >
+{
+        static constexpr bool value = _contains_type< get_stopped_t(), S... >::value;
+};
 
 template < typename T >
 struct _value_setter
@@ -1626,18 +1658,25 @@ struct stop_token_env
 
 /// ------------------------------------------------------------------------------
 
-/// Base class for linked list entries which can be invoked with the completion signals.
-/// `T` is the payload data type stored inside the node. Use `unit` when no payload is needed.
-/// `S...` are the completion signatures. May include `get_stopped_t()` to enable stop-polling
-/// at dequeue time.
-template < typename T, _op_signature... S >
-struct _ll_entry : _vtable_mixin< S... >, zll::ll_base< _ll_entry< T, S... > >
-{
-        ECOR_NO_UNIQUE_ADDRESS T data;
+/// Internal base for all linked-list entry types.
+/// `Node` is passed as the CRTP type to `zll::ll_base` — it must be the most-derived
+/// public entry type (`ll_entry<T,S...>` or `ll_entry<D>`).
+/// `D` is the payload data type; `Sigs` is `completion_signatures<...>`.
+template < typename Node, typename D, typename Sigs >
+struct _ll_entry;
 
-        template < typename D >
-        _ll_entry( _tag< D >, T d ) noexcept( std::is_nothrow_move_constructible_v< T > )
-          : _vtable_mixin< S... >( _tag< D >{} )
+template < typename Node, typename D, _op_signature... S >
+struct _ll_entry< Node, D, completion_signatures< S... > > : _vtable_mixin< S... >,
+                                                             zll::ll_base< Node >
+{
+        static constexpr bool has_get_stopped = _contains_type< get_stopped_t(), S... >::value;
+        using completion_signatures = _filter_basic_signatures_t< completion_signatures< S... > >;
+
+        ECOR_NO_UNIQUE_ADDRESS D data;
+
+        template < typename Derived >
+        _ll_entry( _tag< Derived >, D d ) noexcept( std::is_nothrow_move_constructible_v< D > )
+          : _vtable_mixin< S... >( _tag< Derived >{} )
           , data( std::move( d ) )
         {
         }
@@ -1660,25 +1699,43 @@ struct _ll_entry : _vtable_mixin< S... >, zll::ll_base< _ll_entry< T, S... > >
         }
 };
 
+/// Linked-list entry node with explicit completion signatures.
+/// `T` is the payload data type. Use `unit` when no payload is needed.
+/// `S...` are completion signatures. May include `get_stopped_t()` to enable stop-polling.
+template < typename T, _op_signature... S >
+struct ll_entry : _ll_entry< ll_entry< T, S... >, T, completion_signatures< S... > >
+{
+        using _base = _ll_entry< ll_entry< T, S... >, T, completion_signatures< S... > >;
+        using _base::_base;
+};
+
+/// Descriptor specialisation: when `D` satisfies `event_descriptor`, signatures come from
+/// `D::completion_signatures`.  The single-argument form `ll_entry<D>` keeps error messages short.
+template < event_descriptor D >
+struct ll_entry< D > : _ll_entry< ll_entry< D >, D, typename D::completion_signatures >
+{
+        using _base = _ll_entry< ll_entry< D >, D, typename D::completion_signatures >;
+        using _base::_base;
+};
+
 /// Operation state for list-based senders. This is the type of the object that is linked into the
 /// list of the scheduler, and contains the receiver and the vtable for dispatching the completion
 /// signals to the receiver.
 template < typename R, typename T, _op_signature... S >
-struct _ll_op : _ll_entry< T, S... >
+struct _ll_op : ll_entry< T, S... >
 {
-        using operation_state_concept          = operation_state_t;
-        static constexpr bool _has_get_stopped = _contains_type< get_stopped_t(), S... >::value;
+        using operation_state_concept = operation_state_t;
 
         _ll_op( T data, auto& list, R receiver ) noexcept(
             std::is_nothrow_move_constructible_v< R > && std::is_nothrow_move_constructible_v< T > )
-          : _ll_entry< T, S... >( _tag< _ll_op >{}, std::move( data ) )
+          : ll_entry< T, S... >( _tag< _ll_op >{}, std::move( data ) )
           , _r( std::move( receiver ) )
           , _list( list )
         {
         }
 
         // Forward vtable-dispatched calls to the receiver.  These explicit methods disambiguate
-        // from _ll_entry's identically-named helpers (which route back through the vtable).
+        // from ll_entry's identically-named helpers (which route back through the vtable).
         template < typename... Args >
         void set_value( Args&&... args )
         {
@@ -1703,31 +1760,37 @@ struct _ll_op : _ll_entry< T, S... >
 
         [[nodiscard]] constexpr bool get_stopped() const noexcept
         {
-                if constexpr ( _has_get_stopped )
+                if constexpr ( ll_entry< T, S... >::has_get_stopped )
                         return get_stop_token( get_env( _r ) ).stop_requested();
                 else
                         return false;
         }
 
 private:
-        ECOR_NO_UNIQUE_ADDRESS R              _r;
-        zll::ll_list< _ll_entry< T, S... > >& _list;
+        ECOR_NO_UNIQUE_ADDRESS R             _r;
+        zll::ll_list< ll_entry< T, S... > >& _list;
 };
 
-/// Base class for skew heap entries which can be invoked with the completion signals.
-/// `K` is the key type used for ordering in the min-heap.
-/// `T` is the payload data type embedded in each entry (`unit` for no-data use-cases).
-/// `S...` are the completion signatures.
-template < typename K, typename T, signature... S >
-struct _sh_entry : _vtable_mixin< S... >, zll::sh_base< _sh_entry< K, T, S... > >
+/// Internal base for all skew-heap entry types.
+/// `Node` is the CRTP type for `zll::sh_base`; `K` is the ordering key; `D` is the payload;
+/// `Sigs` is `completion_signatures<...>`.
+template < typename Node, typename K, typename D, typename Sigs >
+struct _sh_entry;
+
+template < typename Node, typename K, typename D, _op_signature... S >
+struct _sh_entry< Node, K, D, completion_signatures< S... > > : _vtable_mixin< S... >,
+                                                                zll::sh_base< Node >
 {
-        ECOR_NO_UNIQUE_ADDRESS T data;
+        static constexpr bool has_get_stopped = _contains_type< get_stopped_t(), S... >::value;
+        using completion_signatures = _filter_basic_signatures_t< completion_signatures< S... > >;
+
+        ECOR_NO_UNIQUE_ADDRESS D data;
         K                        key;
 
-        template < typename D >
-        _sh_entry( K k, T d, _tag< D > ) noexcept(
-            std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< T > )
-          : _vtable_mixin< S... >{ _tag< D >{} }
+        template < typename Derived >
+        _sh_entry( K k, D d, _tag< Derived > ) noexcept(
+            std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< D > )
+          : _vtable_mixin< S... >{ _tag< Derived >{} }
           , data( std::move( d ) )
           , key( std::move( k ) )
         {
@@ -1757,11 +1820,31 @@ struct _sh_entry : _vtable_mixin< S... >, zll::sh_base< _sh_entry< K, T, S... > 
         }
 };
 
+
+/// Skew-heap entry node with explicit completion signatures.
+/// `K` is the ordering key, `T` the payload (`unit` for no-data sources), `S...` the signatures.
+/// May include `get_stopped_t()` to enable stop-polling in `seq_source::query_next()`.
+template < typename K, typename T, _op_signature... S >
+struct seq_entry : _sh_entry< seq_entry< K, T, S... >, K, T, completion_signatures< S... > >
+{
+        using _base = _sh_entry< seq_entry< K, T, S... >, K, T, completion_signatures< S... > >;
+        using _base::_base;
+};
+
+/// Descriptor specialisation: signatures (filtered, no `get_stopped_t()`) come from
+/// `D::completion_signatures`.  The two-argument form `seq_entry<K, D>` keeps error messages short.
+template < typename K, event_descriptor D >
+struct seq_entry< K, D > : _sh_entry< seq_entry< K, D >, K, D, typename D::completion_signatures >
+{
+        using _base = _sh_entry< seq_entry< K, D >, K, D, typename D::completion_signatures >;
+        using _base::_base;
+};
+
 /// Operation state for skew heap-based senders. This is the type of the object that is linked into
 /// the skew heap of the scheduler, and contains the receiver, the key for ordering in the heap, and
 /// the vtable for dispatching the completion signals to the receiver.
-template < typename R, typename K, typename T, signature... S >
-struct _sh_op : _sh_entry< K, T, S... >
+template < typename R, typename K, typename T, _op_signature... S >
+struct _sh_op : seq_entry< K, T, S... >
 {
         using operation_state_concept = operation_state_t;
 
@@ -1784,10 +1867,18 @@ struct _sh_op : _sh_entry< K, T, S... >
                 _r.set_stopped();
         }
 
+        [[nodiscard]] constexpr bool get_stopped() const noexcept
+        {
+                if constexpr ( seq_entry< K, T, S... >::has_get_stopped )
+                        return get_stop_token( get_env( _r ) ).stop_requested();
+                else
+                        return false;
+        }
+
         _sh_op( auto& heap, K key, T val, R receiver ) noexcept(
             std::is_nothrow_move_constructible_v< R > &&
             std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< T > )
-          : _sh_entry< K, T, S... >( std::move( key ), std::move( val ), _tag< _sh_op >{} )
+          : seq_entry< K, T, S... >( std::move( key ), std::move( val ), _tag< _sh_op >{} )
           , _r( std::move( receiver ) )
           , _heap( heap )
         {
@@ -1799,41 +1890,44 @@ struct _sh_op : _sh_entry< K, T, S... >
         }
 
 private:
-        zll::sh_heap< _sh_entry< K, T, S... > >& _heap;
+        zll::sh_heap< seq_entry< K, T, S... > >& _heap;
 };
+
+// ---------------------------------------------------------------------------
 
 /// Sender type for linked-list-based schedulers. This is the type returned by the schedule()
 /// function of a linked-list-based scheduler, and contains a reference to the list of the
 /// scheduler and the data value to store in the entry.
-/// `T` is the payload type (`unit` for no-data sources).
-/// `S...` are the completion signatures.
+/// `T` is the payload type (`unit` for no-data sources), or an `event_descriptor` (single-arg).
+/// `S...` are optional explicit completion signatures (override descriptor sigs when provided).
 template < typename T, _op_signature... S >
 struct _ll_sender
 {
         using sender_concept = sender_t;
+        using entry_type     = ll_entry< T, S... >;
 
-        _ll_sender( T val, zll::ll_list< _ll_entry< T, S... > >& ll ) noexcept(
+        _ll_sender( T val, zll::ll_list< ll_entry< T, S... > >& ll ) noexcept(
             std::is_nothrow_move_constructible_v< T > )
           : _val( std::move( val ) )
           , _ll( ll )
         {
         }
 
-        using completion_signatures = _filter_basic_signatures_t< S... >;
+        using completion_signatures = typename entry_type::completion_signatures;
 
         template < receiver R >
         _ll_op< R, T, S... > connect( R receiver ) noexcept(
             std::is_nothrow_move_constructible_v< R > && std::is_nothrow_move_constructible_v< T > )
         {
                 static_assert(
-                    receiver_for_sigs< R, S... >,
+                    _receiver_for_impl< R, completion_signatures >::value,
                     "Receiver does not satisfy the requirements for the sender's completion signatures" );
                 return { std::move( _val ), _ll, std::move( receiver ) };
         }
 
 private:
-        ECOR_NO_UNIQUE_ADDRESS T              _val;
-        zll::ll_list< _ll_entry< T, S... > >& _ll;
+        ECOR_NO_UNIQUE_ADDRESS T             _val;
+        zll::ll_list< ll_entry< T, S... > >& _ll;
 };
 
 /// Sender type for skew-heap-based schedulers. This is the type returned by the schedule() function
@@ -1841,12 +1935,14 @@ private:
 /// for ordering in the heap, and an optional data payload stored in the entry.
 /// `K` is the key type, `T` is the payload type (`unit` for no-data sources), `S...` are the
 /// completion signatures.
-template < typename K, typename T, signature... S >
+template < typename K, typename T, _op_signature... S >
 struct _sh_sender
 {
-        using sender_concept = sender_t;
+        using sender_concept        = sender_t;
+        using entry_type            = seq_entry< K, T, S... >;
+        using completion_signatures = typename entry_type::completion_signatures;
 
-        _sh_sender( K key, T val, zll::sh_heap< _sh_entry< K, T, S... > >& sh ) noexcept(
+        _sh_sender( K key, T val, zll::sh_heap< seq_entry< K, T, S... > >& sh ) noexcept(
             std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< T > )
           : _key( std::move( key ) )
           , _val( std::move( val ) )
@@ -1854,15 +1950,13 @@ struct _sh_sender
         {
         }
 
-        using completion_signatures = ecor::completion_signatures< S... >;
-
         template < receiver R >
         _sh_op< R, K, T, S... > connect( this auto&& self, R receiver ) noexcept(
             std::is_nothrow_move_constructible_v< K > &&
             std::is_nothrow_move_constructible_v< T > && std::is_nothrow_move_constructible_v< R > )
         {
                 static_assert(
-                    receiver_for_sigs< R, S... >,
+                    _receiver_for_impl< R, completion_signatures >::value,
                     "Receiver does not satisfy the requirements for the sender's completion signatures" );
                 static constexpr bool is_rval = std::is_rvalue_reference_v< decltype( self ) >;
                 return {
@@ -1875,7 +1969,7 @@ struct _sh_sender
 private:
         K                                        _key;
         ECOR_NO_UNIQUE_ADDRESS T                 _val;
-        zll::sh_heap< _sh_entry< K, T, S... > >& _sh;
+        zll::sh_heap< seq_entry< K, T, S... > >& _sh;
 };
 
 
@@ -1894,8 +1988,9 @@ private:
 template < typename T, _op_signature... S >
 struct ll_source
 {
-        using sender_type                    = _ll_sender< T, S... >;
-        static constexpr bool _has_stop_poll = _contains_type< get_stopped_t(), S... >::value;
+        using sender_type                     = _ll_sender< T, S... >;
+        using entry_type                      = ll_entry< T, S... >;
+        static constexpr bool has_get_stopped = entry_type::has_get_stopped;
 
         /// Schedule a new receiver with this source. For `T = unit`, `val` defaults to `unit{}`.
         _ll_sender< T, S... >
@@ -1912,7 +2007,7 @@ struct ll_source
 
         /// Peek at the front pending entry without removing it.
         /// Precondition: `!empty()` — behaviour is undefined if the source is empty.
-        [[nodiscard]] _ll_entry< T, S... >& front() noexcept
+        [[nodiscard]] ll_entry< T, S... >& front() noexcept
         {
                 return _ll.front();
         }
@@ -1920,7 +2015,7 @@ struct ll_source
         /// Transfer all pending entries out of this source into a snapshot list, leaving
         /// the source empty. Entries added to the source *after* this call are not included
         /// in the returned list.
-        [[nodiscard]] zll::ll_list< _ll_entry< T, S... > > take_all() noexcept
+        [[nodiscard]] zll::ll_list< ll_entry< T, S... > > take_all() noexcept
         {
                 return std::move( _ll );
         }
@@ -1928,19 +2023,15 @@ struct ll_source
         /// Remove and return the next pending entry for the caller to complete. Returns `nullptr`
         /// if the queue is empty.
         ///
-        /// When `get_stopped_t()` is in `S...`, entries whose stop token is already triggered
-        /// are automatically completed with `set_stopped()` and skipped before returning the
-        /// first live entry. Use `query_next_unchecked()` to skip this filtering.
-        [[nodiscard]] _ll_entry< T, S... >* query_next()
+        /// When `get_stopped_t()` is in `S...`, consecutive stopped entries are drained from the
+        /// front: each front entry whose stop token is triggered is completed with `set_stopped()`
+        /// and removed, until the front entry is live or the queue is empty. Only entries that
+        /// surface at the front are examined. Use `query_next_unchecked()` to bypass this.
+        [[nodiscard]] ll_entry< T, S... >* query_next()
         {
-                if constexpr ( _has_stop_poll ) {
-                        _ll.remove_if( []( _ll_entry< T, S... >& e ) {
-                                if ( !e._get_stopped() )
-                                        return false;
-                                e._set_stopped();
-                                return true;
-                        } );
-                }
+                if constexpr ( has_get_stopped )
+                        while ( !_ll.empty() && _ll.front()._get_stopped() )
+                                _ll.take_front()._set_stopped();
                 if ( _ll.empty() )
                         return nullptr;
                 return &_ll.take_front();
@@ -1948,7 +2039,7 @@ struct ll_source
 
         /// Remove and return the front entry unconditionally, without checking stop tokens.
         /// Returns `nullptr` if the queue is empty.
-        [[nodiscard]] _ll_entry< T, S... >* query_next_unchecked() noexcept
+        [[nodiscard]] ll_entry< T, S... >* query_next_unchecked() noexcept
         {
                 if ( _ll.empty() )
                         return nullptr;
@@ -1956,8 +2047,9 @@ struct ll_source
         }
 
 private:
-        zll::ll_list< _ll_entry< T, S... > > _ll;
+        zll::ll_list< ll_entry< T, S... > > _ll;
 };
+
 
 /// Dispatch all pending entries from `src` to `f` in FIFO order.
 ///
@@ -1968,7 +2060,7 @@ private:
 /// When `get_stopped_t()` is in `S...`, entries whose stop token is already triggered
 /// are completed with `set_stopped()` and skipped (not passed to `f`).
 ///
-/// `f` is called as `f(entry)` where `entry` is an `_ll_entry<T,S...>&`.
+/// `f` is called as `f(entry)` where `entry` is an `ll_entry<T,S...>&`.
 /// Returns the number of live entries dispatched.
 template < typename T, signature... S, typename F >
 std::size_t broadcast( ll_source< T, S... >& src, F&& f )
@@ -1977,7 +2069,7 @@ std::size_t broadcast( ll_source< T, S... >& src, F&& f )
         std::size_t count    = 0;
         while ( !snapshot.empty() ) {
                 auto& e = snapshot.take_front();
-                if constexpr ( ll_source< T, S... >::_has_stop_poll ) {
+                if constexpr ( ll_source< T, S... >::has_get_stopped ) {
                         if ( e._get_stopped() ) {
                                 e._set_stopped();
                                 continue;
@@ -2002,10 +2094,12 @@ std::size_t broadcast( ll_source< T, S... >& src, F&& f )
 /// among multiple subscribers. It is the natural next step after `ll_source` in a reactor
 /// loop once ordering by a key becomes important.
 ///
-template < typename K, typename T, signature... S >
+template < typename K, typename T, _op_signature... S >
 struct seq_source
 {
-        using sender_type = _sh_sender< K, T, S... >;
+        using sender_type                     = _sh_sender< K, T, S... >;
+        using entry_type                      = seq_entry< K, T, S... >;
+        static constexpr bool has_get_stopped = entry_type::has_get_stopped;
 
         /// Schedule a new entry with this source, using `key` for heap ordering and `val` as the
         /// payload stored in the entry. For `T = unit`, `val` defaults to `unit{}`.
@@ -2015,85 +2109,57 @@ struct seq_source
                 return { std::move( key ), std::move( val ), _sh };
         }
 
-        /// Send a set_value signal to the scheduled receiver with the smallest key. The receiver is
-        /// unregistered before the signal is sent, so it will only receive the first set_value
-        /// signal sent after it is scheduled.
-        ///
-        /// Arguments are perfectly forwarded.
-        ///
-        template < typename... V >
-        void set_value( V&&... value )
-        {
-                static_assert(
-                    _vtable_can_call_value< _sig_vtable< S... >, V... >,
-                    "Completion signatures do not contain set_value_t(V)" );
-                do_f( [&]( auto& n ) {
-                        n._set_value( (V&&) value... );
-                } );
-        }
-
-        /// Send a set_error signal to the scheduled receiver with the smallest key. The receiver is
-        /// unregistered before the signal is sent, so it will only receive the first set_error
-        /// signal sent after it is scheduled.
-        ///
-        /// The error is perfectly forwarded.
-        ///
-        template < typename E1 >
-        void set_error( E1&& err )
-        {
-                static_assert(
-                    _vtable_can_call_error< _sig_vtable< S... >, E1 >,
-                    "Completion signatures do not contain set_error_t(E1)" );
-                // XXX: should this treat all entries or just the front one?
-                do_f( [&]( auto& n ) {
-                        n._set_error( (E1&&) err );
-                } );
-        }
-
-        /// Send a set_stopped signal to the scheduled receiver with the smallest key. The receiver
-        /// is unregistered before the signal is sent, so it will only receive the first set_stopped
-        /// signal sent after it is scheduled.
-        ///
-        void set_stopped()
-        {
-                static_assert(
-                    _vtable_can_call_stopped< _sig_vtable< S... > >,
-                    "Completion signatures do not contain set_stopped_t()" );
-                // XXX: should this treat all entries or just the front one?
-                do_f( [&]( auto& n ) {
-                        n._set_stopped();
-                } );
-        }
-
-        /// Check if there are any scheduled receivers. This returns true if there are no scheduled
-        /// receivers, and false otherwise.
-        ///
-        [[nodiscard]] bool empty() const
+        /// Returns `true` if no receivers are currently pending.
+        [[nodiscard]] bool empty() const noexcept
         {
                 return _sh.empty();
         }
 
-        /// Get a reference to the scheduled receiver with the smallest key. This does not modify
-        /// the heap, so the receiver remains scheduled and will receive the next completion signal
-        /// sent to the source. The behavior is undefined if there are no scheduled receivers.
-        ///
-        [[nodiscard]] _sh_entry< K, T, S... > const& front() const
+        /// Peek at the min-key entry without removing it.
+        /// Precondition: `!empty()` — behaviour is undefined if the source is empty.
+        [[nodiscard]] seq_entry< K, T, S... > const& front() const noexcept
         {
                 return *_sh.top;
         }
 
-private:
-        void do_f( auto f )
+        /// Peek at the min-key entry without removing it (non-const overload).
+        /// Precondition: `!empty()` — behaviour is undefined if the source is empty.
+        [[nodiscard]] seq_entry< K, T, S... >& front() noexcept
         {
-                if ( _sh.empty() )
-                        return;
-
-                auto& n = _sh.take();
-                f( n );
+                return *_sh.top;
         }
 
-        zll::sh_heap< _sh_entry< K, T, S... > > _sh;
+        /// Remove and return the min-key entry for the caller to complete. Returns `nullptr`
+        /// if the heap is empty.
+        ///
+        /// When `get_stopped_t()` is in the effective signatures (via explicit `S...` or a
+        /// descriptor's `completion_signatures`), consecutive stopped entries are drained from
+        /// the top: each top (min-key) entry whose stop token is triggered is completed with
+        /// `set_stopped()` and removed, until the top entry is live or the heap is empty. Only
+        /// entries that surface at the top are examined. Use `query_next_unchecked()` to bypass.
+        [[nodiscard]] seq_entry< K, T, S... >* query_next()
+        {
+                if constexpr ( has_get_stopped )
+                        while ( !_sh.empty() && _sh.top->_get_stopped() )
+                                _sh.take()._set_stopped();
+                if ( _sh.empty() )
+                        return nullptr;
+                return &_sh.take();
+        }
+
+        /// Remove and return the min-key entry unconditionally, without checking stop tokens.
+        /// Returns `nullptr` if the heap is empty.
+        [[nodiscard]] seq_entry< K, T, S... >* query_next_unchecked() noexcept
+        {
+                if ( _sh.empty() )
+                        return nullptr;
+                return &_sh.take();
+        }
+
+private:
+        zll::sh_heap< seq_entry< K, T, S... > > _sh;
 };
+
 
 // ------------------------------------------------------------------------------
 
@@ -4374,42 +4440,7 @@ private:
 };
 
 /// -------------------------------------------------------------------------------
-/// Transaction controller
-
-/// Helper: given `T`'s completion signatures, produces the matching `ll_source` and `_ll_entry`
-/// types, auto-injecting `get_stopped_t()` when `set_stopped_t()` is present (preserves the
-/// stop-polling behaviour of the legacy `trnx_source`).
-template < typename T, typename Sigs >
-struct _trnx_sigs_helper;
-
-template < typename T, signature... S >
-        requires( !_contains_type< set_stopped_t(), S... >::value )
-struct _trnx_sigs_helper< T, completion_signatures< S... > >
-{
-        using source_type = ll_source< T, S... >;
-        using entry_type  = _ll_entry< T, S... >;
-};
-
-template < typename T, signature... S >
-        requires( _contains_type< set_stopped_t(), S... >::value )
-struct _trnx_sigs_helper< T, completion_signatures< S... > >
-{
-        using source_type = ll_source< T, S..., get_stopped_t() >;
-        using entry_type  = _ll_entry< T, S..., get_stopped_t() >;
-};
-
-/// Type-erased linked-list node for a pending transaction. Holds user data of type T and a vtable
-/// for dispatching completion signals (set_value, set_error, set_stopped) to the concrete receiver
-/// without knowing its type. Automatically unlinks from its list on destruction.
-///
-/// @deprecated Use `_ll_entry<T, S...>` and `ll_source<T, S...>` directly.
-///
-template < typename T >
-using trnx_entry [[deprecated( "use ll_source<T,S...> and _ll_entry<T,S...> directly" )]] =
-    typename _trnx_sigs_helper< T, _sender_completions_t< T, empty_env > >::entry_type;
-
-/// ISR-safe 4-cursor circular buffer for managing in-flight transactions.
-/// Cursors are: enqueue -> tx -> rx -> deliver
+/// pipeline_buffer — ISR-safe 4-cursor ring buffer
 ///   - enqueue - tx: Tasks ready to be transmitted (main loop pushes new entries here).
 ///   - tx - rx: Transactions that have been transmitted and are awaiting a reply.
 ///   - rx - deliver: Transactions that have received a reply and are awaiting to be taken out (main
@@ -4495,55 +4526,6 @@ struct pipeline_buffer
 
 private:
         T _data[N];
-};
-
-/// Source for scheduling transactions in a request-reply protocol (e.g. UART, SPI, I²C)
-/// where multiple transactions can be in flight simultaneously.
-///
-/// Thin wrapper around `ll_source<T, S...>` where S... is derived from T's completion signatures.
-/// When `set_stopped_t()` is in T's signatures, `get_stopped_t()` is auto-injected to enable
-/// stop-polling at `query_next_trnx()` time (same behaviour as the original implementation).
-///
-/// Architecture of the transaction abstraction:
-///   - trnx_source<T>              — schedules transactions, returns senders (this type)
-///   - trnx_entry<T>              — type-erased linked-list node holding user data T
-///   - pipeline_buffer<T, N>       — ISR-safe 4-cursor ring buffer for in-flight management
-///
-/// Usage:
-///   1. Call schedule(data) to get a sender representing the transaction.
-///   2. Connect the sender to a receiver and start().
-///   3. In the driver's tick loop, call query_next_trnx() to retrieve pending entries.
-///   4. Move entries into a circular buffer or process them directly.
-///   5. When the reply arrives, call set_value/set_error/set_stopped on the entry to complete.
-///
-/// @deprecated Use `ll_source<T, S...>` directly.
-template < typename T >
-struct [[deprecated( "use ll_source<T,S...> directly" )]] trnx_source
-{
-        using _helper     = _trnx_sigs_helper< T, _sender_completions_t< T, empty_env > >;
-        using _src_t      = typename _helper::source_type;
-        using entry_type  = typename _helper::entry_type;
-        using sender_type = typename _src_t::sender_type;
-
-        static constexpr bool _has_stop_sig = _src_t::_has_stop_poll;
-
-        /// Schedule a new transaction with the given user data. Returns a sender that completes
-        /// when the transaction is completed by the driver.
-        auto schedule( T val )
-        {
-                return _src.schedule( std::move( val ) );
-        }
-
-        /// Retrieve the next pending transaction entry for the driver to process. Returns nullptr
-        /// if there are no pending transactions. Entries whose stop token is already triggered are
-        /// automatically completed with set_stopped() and skipped.
-        entry_type* query_next_trnx()
-        {
-                return _src.query_next();
-        }
-
-private:
-        _src_t _src;
 };
 
 /// -------------------------------------------------------------------------------

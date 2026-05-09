@@ -457,8 +457,10 @@ struct timer
 
         void tick( time_point now )
         {
-                while ( !_es.empty() && _es.front().key <= now )
-                        _es.set_value( _es.front().key );
+                while ( !_es.empty() && _es.front().key <= now ) {
+                        auto* e = _es.query_next();
+                        e->set_value( e->key );
+                }
         }
 
 private:
@@ -689,8 +691,10 @@ TEST_CASE( "operator||" )
                 CHECK( !completed );
 
                 // Process time 5 - seq2 should win
-                while ( !seq2.empty() && seq2.front().key <= 5 )
-                        seq2.set_value( seq2.front().key );
+                while ( !seq2.empty() && seq2.front().key <= 5 ) {
+                        auto* e = seq2.query_next();
+                        e->set_value( e->key );
+                }
                 ctx.core.run_once();
 
                 CHECK( completed );
@@ -2766,6 +2770,140 @@ TEST_CASE( "ll_source - fifo cancellation" )
         ctx.core.run_once();
         CHECK( results.size() == 2 );
         CHECK( results[1] == 20 );
+}
+namespace
+{
+        struct query_counting_receiver
+        {
+                using receiver_concept = receiver_t;
+                int*                 value_count;
+                int*                 stopped_count;
+                inplace_stop_source* stop_src;
+
+                void set_value( int ) noexcept
+                {
+                        ++*value_count;
+                }
+
+                void set_error( auto&& ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                        ++*stopped_count;
+                }
+
+                auto get_env() const noexcept
+                {
+                        if ( stop_src )
+                                return stop_token_env{ stop_src->get_token() };
+                        return stop_token_env{ inplace_stop_token{} };
+                }
+        };
+}  // namespace
+
+TEST_CASE( "ll_source - query_next drains consecutive stopped front entries" )
+{
+        // Three entries A, B, C in FIFO order. A and B are stopped before query_next is called.
+        // query_next should drain A (set_stopped) and B (set_stopped), then return C live.
+        using source_t = ll_source< unit, set_value_t( int ), set_stopped_t(), get_stopped_t() >;
+
+        source_t            source;
+        inplace_stop_source stop_a, stop_b;
+        int                 stopped_a = 0, stopped_b = 0, value_c = 0;
+
+
+        auto oa = source.schedule().connect( query_counting_receiver{
+            .value_count = nullptr, .stopped_count = &stopped_a, .stop_src = &stop_a } );
+        auto ob = source.schedule().connect( query_counting_receiver{
+            .value_count = nullptr, .stopped_count = &stopped_b, .stop_src = &stop_b } );
+        auto oc = source.schedule().connect( query_counting_receiver{
+            .value_count = &value_c, .stopped_count = nullptr, .stop_src = nullptr } );
+
+        oa.start();
+        ob.start();
+        oc.start();
+
+        stop_a.request_stop();
+        stop_b.request_stop();
+
+        // Single query_next call: drains A, drains B, then returns C live.
+        auto* entry = source.query_next();
+        CHECK( stopped_a == 1 );
+        CHECK( stopped_b == 1 );
+        CHECK( entry != nullptr );
+
+        entry->set_value( 99 );
+        CHECK( value_c == 1 );
+
+        // Source is now empty.
+        CHECK( source.empty() );
+}
+
+TEST_CASE( "seq_source - query_next drains consecutive stopped top entries" )
+{
+        // Three entries with keys 1, 2, 3 in the heap. Keys 1 and 2 are stopped.
+        // query_next must drain entry(1) and entry(2), then return entry(3) live.
+        using source_t =
+            seq_source< uint32_t, unit, set_value_t( uint32_t ), set_stopped_t(), get_stopped_t() >;
+
+        source_t            source;
+        inplace_stop_source stop_1, stop_2;
+        int                 stopped_1 = 0, stopped_2 = 0, value_3 = 0;
+
+        auto o1 = source.schedule( 1 ).connect( query_counting_receiver{
+            .value_count = nullptr, .stopped_count = &stopped_1, .stop_src = &stop_1 } );
+        auto o2 = source.schedule( 2 ).connect( query_counting_receiver{
+            .value_count = nullptr, .stopped_count = &stopped_2, .stop_src = &stop_2 } );
+        auto o3 = source.schedule( 3 ).connect( query_counting_receiver{
+            .value_count = &value_3, .stopped_count = nullptr, .stop_src = nullptr } );
+
+        o1.start();
+        o2.start();
+        o3.start();
+
+        stop_1.request_stop();
+        stop_2.request_stop();
+
+        // Single query_next: drains key-1 and key-2, returns key-3 live.
+        auto* entry = source.query_next();
+        CHECK( stopped_1 == 1 );
+        CHECK( stopped_2 == 1 );
+        CHECK( entry != nullptr );
+        CHECK( entry->key == 3 );
+
+        entry->set_value( entry->key );
+        CHECK( value_3 == 1 );
+
+        CHECK( source.empty() );
+}
+
+TEST_CASE( "seq_source - query_next returns nullptr when all entries are stopped" )
+{
+        using source_t =
+            seq_source< uint32_t, unit, set_value_t( uint32_t ), set_stopped_t(), get_stopped_t() >;
+
+        source_t            source;
+        inplace_stop_source stop_1, stop_2;
+        int                 stopped_1 = 0, stopped_2 = 0;
+
+
+        auto o1 = source.schedule( 1 ).connect(
+            query_counting_receiver{ .stopped_count = &stopped_1, .stop_src = &stop_1 } );
+        auto o2 = source.schedule( 2 ).connect(
+            query_counting_receiver{ .stopped_count = &stopped_2, .stop_src = &stop_2 } );
+
+        o1.start();
+        o2.start();
+
+        stop_1.request_stop();
+        stop_2.request_stop();
+
+        auto* entry = source.query_next();
+        CHECK( entry == nullptr );
+        CHECK( stopped_1 == 1 );
+        CHECK( stopped_2 == 1 );
+        CHECK( source.empty() );
 }
 
 struct test_exception : std::exception
