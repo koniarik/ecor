@@ -25,6 +25,7 @@
 #include "doctest.h"
 #include "ecor/ecor.hpp"
 
+#include <exception>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -42,9 +43,9 @@
 ///   uart_peripheral  — mock hardware that simulates async TX/RX with background
 ///                       threads (stands in for DMA + ISR on real hardware)
 ///   uart_trans       — transaction payload: buffer, TX/RX sizes, error, timeout
-///   uart             — the driver: owns a trnx_controller_source and a
+///   uart             — the driver: owns a trnx_source and a
 ///                       trnx_circular_buffer, wires ISR callbacks to the
-///                       buffer cursors, and delivers completions in tick()
+///                       pipeline_buffer cursors, and delivers completions in tick()
 ///
 /// The test cases exercise the full lifecycle: basic exchange, cancellation
 /// (pending and in-flight), errors, FIFO ordering, flow control (buffer full),
@@ -257,8 +258,8 @@ struct uart_trans
 
 /// UART driver built on top of ecor's transaction abstraction.
 ///
-/// Owns a `trnx_controller_source<uart_trans>` for scheduling transactions and a
-/// `trnx_circular_buffer` (capacity 4) for managing in-flight ones. The driver
+/// Owns a `trnx_source<uart_trans>` for scheduling transactions and a
+/// `pipeline_buffer` (capacity 4) for managing in-flight ones. The driver
 /// wires four ISR callbacks from `uart_peripheral` to advance the buffer cursors:
 ///
 ///   on_tx_complete_irq  — TX DMA done, advance tx cursor
@@ -362,8 +363,8 @@ struct uart
                 }
         }
 
-        trnx_controller_source< uart_trans >                 _source;
-        trnx_circular_buffer< trnx_entry< uart_trans >*, 4 > _trnxs;
+        trnx_source< uart_trans >                       _source;
+        pipeline_buffer< trnx_entry< uart_trans >*, 4 > _trnxs;
 
         uart_peripheral _handle{
             [this] {
@@ -935,7 +936,7 @@ TEST_CASE( "Test_Transaction_Destruction_Cleanup" )
 
 TEST_CASE( "Test_Transaction_Empty_Source" )
 {
-        trnx_controller_source< uart_trans > source;
+        trnx_source< uart_trans > source;
 
         // query_next_trnx on a fresh, empty source should return nullptr.
         CHECK( source.query_next_trnx() == nullptr );
@@ -958,7 +959,7 @@ TEST_CASE( "Test_Transaction_Empty_Source" )
 
 TEST_CASE( "Test_Transaction_Destruction_With_Pending" )
 {
-        // Destroy a trnx_controller_source while transactions are still pending.
+        // Destroy a trnx_source while transactions are still pending.
         // The pending ops hold references (via ll_base) into the source's list.
         // On destruction, each op_state unlinks itself from the list automatically.
 
@@ -969,7 +970,7 @@ TEST_CASE( "Test_Transaction_Destruction_With_Pending" )
         uint8_t buf_b[16]{};
 
         {
-                trnx_controller_source< uart_trans > source;
+                trnx_source< uart_trans > source;
 
                 auto op_a = source.schedule( uart_trans{ .buffer = buf_a, .tx_used = 4 } )
                                 .connect( capturing_receiver{ .value_count = &value_a } );
@@ -1355,7 +1356,6 @@ TEST_CASE( "Test_Transaction_Stop_Requeue" )
         std::memcpy( bb, req.data(), req.size() );
 
         // Pre-construct op B (not started yet).
-        using followup_op_t = _trnx_controller_op< uart_trans, capturing_receiver >;
         auto followup =
             t.u.transact( bb, req.size() ).connect( capturing_receiver{ .value_count = &value_b } );
 
@@ -1365,7 +1365,7 @@ TEST_CASE( "Test_Transaction_Stop_Requeue" )
                           .stop_source    = &stop_a,
                           .followup_op    = &followup,
                           .start_followup = []( void* p ) {
-                                  static_cast< followup_op_t* >( p )->start();
+                                  static_cast< decltype( followup )* >( p )->start();
                           } } );
 
         oa.start();

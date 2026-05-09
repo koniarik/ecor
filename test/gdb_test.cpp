@@ -146,8 +146,8 @@ static test_task     gdb_coro_simple( ecor::task_ctx& )
 }
 
 // S3: inner coroutine awaited by outer — tests _debug_parent chain.
-// gdb_coro_inner suspends waiting for outer to drive it via broadcast_source.
-static ecor::broadcast_source< ecor::set_value_t() >* g_inner_src = nullptr;
+// gdb_coro_inner suspends waiting for outer to drive it via ll_source.
+static ecor::ll_source< ecor::unit, ecor::set_value_t() >* g_inner_src = nullptr;
 
 static constexpr int INNER_CORO_LINE = __LINE__ + 1;
 static test_task     gdb_coro_inner( ecor::task_ctx& )
@@ -204,7 +204,7 @@ void run_tests( mode m, auto& st )
 #ifdef ECOR_DEBUG_PARENT
         // S3: inner promise while suspended inside outer — _debug_parent chain
         {
-                ecor::broadcast_source< ecor::set_value_t() > src;
+                ecor::ll_source< ecor::unit, ecor::set_value_t() > src;
                 g_inner_src = &src;
 
                 ecor::nd_mem   mem;
@@ -230,7 +230,9 @@ void run_tests( mode m, auto& st )
                     std::to_string( OUTER_CORO_LINE );
                 CHECK( m, *inner_p, inner_expected, st );
 
-                src.set_value();      // unblock inner
+                ecor::broadcast( src, []( auto& e ) {
+                        e.set_value();
+                } );                  // unblock inner
                 ctx.core.run_once();  // inner completes, outer resumes
                 ctx.core.run_once();  // outer completes
                 g_inner_src = nullptr;

@@ -79,23 +79,23 @@ struct uart_task_cfg
 // Section A global sources
 // ─────────────────────────────────────────────────────────────────────────────
 
-// broadcast variants
+// broadcast (broadcast_source) variants
 static ecor::broadcast_source< ecor::set_value_t() >                        g_bcast_void;
 static ecor::broadcast_source< ecor::set_value_t( uint8_t ) >               g_bcast_u8;
 static ecor::broadcast_source< ecor::set_value_t( int ) >                   g_bcast_int;
 static ecor::broadcast_source< ecor::set_value_t(), ecor::set_stopped_t() > g_bcast_stoppable;
 static ecor::broadcast_source< ecor::set_error_t( uart_err ) >              g_bcast_err;
-// second void broadcast for operator|| racing
+// second void broadcast_source for operator|| racing
 static ecor::broadcast_source< ecor::set_value_t() > g_bcast_void2;
 
-// FIFO variants
+// FIFO variants (same underlying type, single-entry dispatch via query_next())
 static ecor::fifo_source< ecor::set_value_t() >                                g_fifo_void;
 static ecor::fifo_source< ecor::set_value_t( uint8_t ) >                       g_fifo_u8;
 static ecor::fifo_source< ecor::set_value_t(), ecor::set_error_t( uart_err ) > g_fifo_err;
 
 // Sequenced (skew-heap) variants — two key widths to quantify that cost
-static ecor::seq_source< uint32_t, ecor::set_value_t() > g_seq_u32;
-static ecor::seq_source< uint16_t, ecor::set_value_t() > g_seq_u16;
+static ecor::seq_source< uint32_t, ecor::unit, ecor::set_value_t() > g_seq_u32;
+static ecor::seq_source< uint16_t, ecor::unit, ecor::set_value_t() > g_seq_u16;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Receivers  (must be at file scope — templates not allowed in local classes)
@@ -249,7 +249,7 @@ static ecor::task< int > coro_trivial_int( ecor::task_ctx& )
         co_return 42;
 }
 
-// C-3: await a broadcast_source — minimal scheduler round-trip
+// C-3: await an ll_source — minimal scheduler round-trip
 static ecor::task< void > coro_await_bcast( ecor::task_ctx& )
 {
         co_await g_bcast_void.schedule();

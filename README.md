@@ -12,9 +12,13 @@ Single-header C++20 coroutine and async execution library for embedded systems
 
 </div>
 
-C++ has `std::execution` (P2300) for async operations, contains part of the implementation to provide additional embedded friendly abstractions. We need something lightweight, zero-allocation capable, and usable in resource-constrained systems.
+C++ has `std::execution` (P2300) for async operations, contains part of the implementation to
+provide additional embedded friendly abstractions. We need something lightweight,
+zero-allocation capable, and usable in resource-constrained systems.
 
-`ecor` is a **single-header** implementation of P2300 sender/receiver model with coroutine support, designed specifically for embedded systems. It provides zero-allocation async primitives, custom memory management, and additional abstractions missing from the standard.
+`ecor` is a **single-header** implementation of P2300 sender/receiver model with coroutine
+support, designed specifically for embedded systems. It provides zero-allocation async
+primitives, custom memory management, and additional abstractions missing from the standard.
 
 ## Quick Start
 
@@ -86,7 +90,8 @@ int my_main()
 
 ## Tasks - Coroutine-based Async
 
-Tasks are the **primary way** to write async code in ecor. They're coroutines that can `co_await` other async operations.
+Tasks are the **primary way** to write async code in ecor. They're coroutines that can
+`co_await` other async operations.
 
 ### Basic Task
 
@@ -139,9 +144,9 @@ Tasks can await any sender (P2300 concept):
 ```cpp
 ecor::task<void> wait_for_event(
     ecor::task_ctx& ctx,
-    ecor::broadcast_source<ecor::set_value_t(int)>& events)
+    ecor::ll_source<ecor::unit, ecor::set_value_t(int)>& events)
 {
-    // Await an event from broadcast source
+    // Await an event from an ll_source
     int value = co_await events.schedule();
 
     // Continue after event received
@@ -151,7 +156,8 @@ ecor::task<void> wait_for_event(
 
 ### Cooperative Scheduling — `ecor::suspend`
 
-Use `co_await ecor::suspend;` to yield from the current task, placing it at the back of the ready queue so other tasks get a chance to run first.
+Use `co_await ecor::suspend;` to yield from the current task, placing it at the back of the
+ready queue so other tasks get a chance to run first.
 
 ```cpp
 ecor::task<void> worker_a(ecor::task_ctx& ctx)
@@ -165,28 +171,100 @@ ecor::task<void> worker_a(ecor::task_ctx& ctx)
 }
 ```
 
-If a stop has already been requested at the point of suspension, the task completes with `set_stopped()` instead of resuming — no callbacks or extra allocations involved. Code that never uses `ecor::suspend` incurs zero overhead.
+If a stop has already been requested at the point of suspension, the task completes with
+`set_stopped()` instead of resuming — no callbacks or extra allocations involved.
 
-## Broadcast Source - One-to-Many Events
+## Event Sources — `ll_source`
 
-`broadcast_source` allows **one producer** to send events to **multiple subscribers**.
-After event is emitted, all waiting tasks receive the event. If no tasks are waiting, the event is dropped. After task receives the event, it must re-register to receive future events.
+`ll_source<T, S...>` is the core event source primitive in ecor. It maintains a doubly-linked
+list of pending scheduled operations — each one is an async receiver waiting for an event.
+The first template parameter `T` is a payload type embedded in each node by the caller of
+`schedule(T x)` — the same side that creates the sender and attaches the receiver. This lets the
+driver read per-request data from `entry->data` via `query_next()` without knowing the
+receiver type. `unit` is used when there is no payload. The remaining parameters `S...` are
+completion signatures (`set_value_t(...)`, `set_error_t(...)`, `set_stopped_t()`,
+`get_stopped_t()`).
 
-The template parameter defines the event signature (e.g., `set_value_t(Args...)`), see rest of the documentation for details.
+How entries are dispatched is up to the driver:
+- **`src.query_next()`** — returns the oldest waiting entry for the driver to complete
+  individually, enabling FIFO, priority, or any other policy.
+- **`ecor::broadcast(src, fn)`** — calls `fn` on every waiting entry, delivering the
+  event to all at once.
+
+Each `schedule()` + `connect()` + `start()` call creates an `_ll_op` on the caller's stack
+(or in a coroutine frame), linked into the source's doubly-linked list:
+
+```mermaid
+graph LR
+    subgraph source["ll_source"]
+        head["_ll\n(doubly-linked list)"]
+    end
+
+    head -- "front" --> op1
+
+    subgraph op1["_ll_op  ①  (oldest)"]
+        direction TB
+        f1["vtable ptrs\ndata: T\nll prev/next\nreceiver: R"]
+    end
+
+    op1 <-- "prev / next" --> op2
+
+    subgraph op2["_ll_op  ②"]
+        direction TB
+        f2["vtable ptrs\ndata: T\nll prev/next\nreceiver: R"]
+    end
+
+    op2 <-- "prev / next" --> op3
+
+    subgraph op3["_ll_op  ③  (newest)"]
+        direction TB
+        f3["vtable ptrs\ndata: T\nll prev/next\nreceiver: R"]
+    end
+
+```
+
+### Point-to-Point — FIFO Delivery
+
+`src.query_next()` removes and returns the oldest waiting entry. The driver then calls
+`set_value()`, `set_error()`, or `set_stopped()` on it, waking exactly that one task. If
+no tasks are waiting, `query_next()` returns `nullptr` and the event is dropped.
 
 ```cpp
 #include <ecor/ecor.hpp>
 
-// Define event signature: set_value_t(Args...)
-using button_event = ecor::broadcast_source<ecor::set_value_t(int)>;
+using job_queue = ecor::ll_source<ecor::unit, ecor::set_value_t(int)>;
+
+ecor::task<void> worker_task(ecor::task_ctx& ctx, int worker_id, job_queue& q)
+{
+    while (true) {
+        int job_id = co_await q.schedule();
+        // Only ONE worker receives this specific job_id
+    }
+}
+
+ecor::task<void> producer_task(ecor::task_ctx& ctx, job_queue& q)
+{
+    if (auto* e = q.query_next()) e->set_value(101); // Wakes the first waiting worker
+    if (auto* e = q.query_next()) e->set_value(102); // Wakes the second waiting worker
+    co_return;
+}
+```
+
+### Broadcast — One-to-Many Events
+
+`ecor::broadcast(src, fn)` calls `fn` on every entry currently waiting in `src`, delivering
+the event to all subscribers at once. If no tasks are waiting, the event is dropped. Each
+task must re-register with `schedule()` to receive future events.
+
+```cpp
+#include <ecor/ecor.hpp>
+
+using button_event = ecor::ll_source<ecor::unit, ecor::set_value_t(int)>;
 
 ecor::task<void> button_handler(ecor::task_ctx& ctx, button_event& btn)
 {
     while (true) {
-        // Wait for button press event
         int button_id = co_await btn.schedule();
-
-        // Handle button press
         // All subscribed tasks receive this event
     }
 }
@@ -194,26 +272,58 @@ ecor::task<void> button_handler(ecor::task_ctx& ctx, button_event& btn)
 ecor::task<void> led_controller(ecor::task_ctx& ctx, button_event& btn)
 {
     while (true) {
-        // Same event, different handler
         int button_id = co_await btn.schedule();
-
         // Update LEDs based on button
     }
 }
 
 ecor::task<void> system_task(ecor::task_ctx& ctx, button_event& btn)
 {
-    btn.set_value(1);  // Button 1 pressed - both handlers receive this
+    // Button 1 pressed — both handlers receive this
+    ecor::broadcast(btn, [](auto& entry) { entry.set_value(1); });
     co_return;
+}
+```
+
+### Request-Reply Protocol
+
+The payload `T` makes `ll_source` a natural fit for request-reply protocols (UART, SPI,
+I²C, …). The caller embeds per-request data in the node via `schedule(T{...})`; the driver
+reads it from `entry->data` and completes the entry when the reply arrives:
+
+```cpp
+struct uart_request { uint8_t cmd; };
+
+using uart_source = ecor::ll_source<
+    uart_request,
+    ecor::set_value_t(uint8_t)  // reply byte
+>;
+
+ecor::task<void> send_command(ecor::task_ctx& ctx, uart_source& uart)
+{
+    uint8_t reply = co_await uart.schedule(uart_request{.cmd = 0x42});
+    // reply contains the byte sent back by the device
+}
+
+// Called from the main loop / ISR:
+void uart_tick(uart_source& uart)
+{
+    auto* entry = uart.query_next();
+    if (!entry) return;
+
+    start_uart_tx(entry->data.cmd);   // use per-request data
+    uint8_t resp = wait_for_uart_rx();
+    entry->set_value(resp);
 }
 ```
 
 ### Multiple Value Types
 
-Broadcast sources can handle multiple value completion signatures:
+Sources can handle multiple value completion signatures:
 
 ```cpp
-using sensor_events = ecor::broadcast_source<
+using sensor_events = ecor::ll_source<
+    ecor::unit,
     ecor::set_value_t(int),    // Temperature reading
     ecor::set_value_t(float)   // Humidity reading
 >;
@@ -241,66 +351,120 @@ ecor::task<void> sensor_monitor(ecor::task_ctx& ctx, sensor_events& events)
 
 ### Custom error types
 
-Broadcast sources can also have custom error signatures:
+Sources can also have custom error signatures:
 
 ```cpp
-using error_events = ecor::broadcast_source<
+using error_events = ecor::ll_source<
+    ecor::unit,
     ecor::set_value_t(int),
     ecor::set_error_t(std::string)  // Custom error type
 >;
 ```
 
-This allows you to send error events to all waiting tasks, which can be useful for broadcasting system-wide errors or status updates. However, this is not compatible with standard configuration of `ecor::task` which expects only `set_error_t(ecor::task_error)` - broadcast source with any extra error can't be directly awaited. You have to use one of the sender combinators to handle this, e.g., `sink_err` to convert errors into optional.
+This allows you to send error events to all waiting tasks which can be useful for broadcasting
+system-wide errors or status updates. However, this is not compatible with the standard
+configuration of `ecor::task` which expects only `set_error_t(ecor::task_error)` — a source
+with any extra error signature can't be directly awaited. Use one of the sender combinators
+to handle this, e.g., `sink_err` to convert errors into optional.
 
 ### Stoppable signature
 
 You can also add a stoppable signature to allow waiting tasks to be cancelled:
 
 ```cpp
-using stoppable_events = ecor::broadcast_source<
+using stoppable_events = ecor::ll_source<
+    ecor::unit,
     ecor::set_value_t(int),
     ecor::set_stopped_t()  // Stoppable signature
 >;
 ```
 
-## FIFO Source - Point-to-Point Events
+Adding `ecor::get_stopped_t()` to the signature list enables automatic stop-polling in
+`query_next()`: when the driver calls `query_next()`, any entry whose stop token is already
+triggered is silently completed with `set_stopped()` and skipped — the driver never sees
+that entry and the waiting task is cancelled. Omit `get_stopped_t()` when cancellation is
+handled entirely by the driver.
 
-While `broadcast_source` delivers events to all waiting tasks, `fifo_source` delivers **each event to exactly one waiting task** (the one that has been waiting the longest). If no tasks are waiting when an event is emitted, the event is immediately dropped.
+### ISR Pipeline — `pipeline_buffer`
+
+`pipeline_buffer` is a 4-cursor ring buffer for managing `ll_source` entries that cross an
+ISR boundary. Once an entry is dequeued from an `ll_source` via `query_next()`, it can be
+placed in a `pipeline_buffer` to track it through the stages of a hardware pipeline:
+**enqueue → tx → rx → deliver**. The cursors use `std::atomic` for safe cross-context
+access between the main loop and ISRs.
 
 ```cpp
-#include <ecor/ecor.hpp>
+struct buf_trnx {
+    int request_id;
+};
 
-// Define event signature: set_value_t(int)
-using job_queue = ecor::fifo_source<ecor::set_value_t(int)>;
+void buffer_example() {
+    using entry_t = ecor::_ll_entry<
+        buf_trnx,
+        ecor::set_value_t(int),
+        ecor::set_error_t(uint8_t),
+        ecor::set_stopped_t(),
+        ecor::get_stopped_t()>;
 
-ecor::task<void> worker_task(ecor::task_ctx& ctx, int worker_id, job_queue& q)
-{
-    while (true) {
-        // Wait for next available job
-        // The longest waiting task receives the next job
-        int job_id = co_await q.schedule();
+    ecor::ll_source<
+        buf_trnx,
+        ecor::set_value_t(int),
+        ecor::set_error_t(uint8_t),
+        ecor::set_stopped_t(),
+        ecor::get_stopped_t()> source;
+    ecor::pipeline_buffer<entry_t*, 4> buffer;
 
-        // Only ONE worker receives this specific job_id
-        // Process job...
+    // Driver tick loop:
+    // 1. Move pending entries into the buffer
+    while (!buffer.full()) {
+        auto* entry = source.query_next();
+        if (!entry) break;
+        buffer.push(entry);
     }
-}
 
-ecor::task<void> producer_task(ecor::task_ctx& ctx, job_queue& q)
-{
-    // A task must be waiting before set_value is called, otherwise the event is ignored
-    q.set_value(101); // Wakes the first waiting worker
-    q.set_value(102); // Wakes the second waiting worker
-    co_return;
+    // 2. Start TX for queued entries
+    while (buffer.has_tx()) {
+        // Start hardware transmission for buffer.tx_front()
+        buffer.tx_done();
+    }
+
+    // 3. ISR marks RX complete
+    // buffer.rx_done();
+
+    // 4. Deliver completions back to receivers
+    while (buffer.has_deliver()) {
+        auto* entry = buffer.deliver_front();
+        entry->set_value(0);  // complete with reply
+        buffer.pop();
+    }
 }
 ```
 
+Once an entry is taken from the source's linked list and placed in a `pipeline_buffer`, the
+buffer's four atomic cursors partition in-flight entries into pipeline stages:
+
+```mermaid
+pie title pipeline_buffer (capacity 8, 3 in-flight)
+    "deliver→rx  (reply received, awaiting delivery)" : 1
+    "rx→tx  (sent, awaiting reply)" : 1
+    "tx→enqueue  (enqueued, ready to send)" : 1
+    "free slots" : 5
+```
+
+> **ISR safety:** `pipeline_buffer` uses `std::atomic` cursors. On single-word architectures
+> (e.g. ARM Cortex-M), these compile to plain loads/stores with no overhead. Stop tokens
+> are only checked while an entry is still in the `ll_source` linked list; once it is moved
+> into a `pipeline_buffer`, the driver is fully responsible for completing it.
+
 ## Sequential Source - Ordered Event Processing
 
-`seq_source` provides **ordered, keyed event processing**. Events with keys are processed in order of the keys.
+`seq_source` provides **ordered, keyed event processing**. Events with keys are processed in
+order of the keys.
 
 ```cpp
 using seq_source = ecor::seq_source<
     uint64_t,  // Key: timestamp or priority
+    ecor::unit,
     ecor::set_value_t(int)  // Value: event payload
 >;
 ```
@@ -313,6 +477,7 @@ using seq_source = ecor::seq_source<
 // Timer event: key is wake-up time, value is task ID
 using timer_source = ecor::seq_source<
     uint64_t,  // Key: timestamp when to wake
+    ecor::unit,
     ecor::set_value_t(uint64_t)  // Value: timestamp when timer fired
 >;
 
@@ -370,11 +535,13 @@ ecor::task<void> read_sensor(ecor::task_ctx& ctx, timer_manager& timer) {
 
 ### Priority Queue Pattern
 
-`seq_source` can implement priority-based message delivery where messages go to the highest priority (lowest key) waiter:
+`seq_source` can implement priority-based message delivery where messages go to the highest
+priority (lowest key) waiter:
 
 ```cpp
 using priority_queue = ecor::seq_source<
     uint32_t,  // Priority (lower = higher priority)
+    ecor::unit,  // No per-entry payload
     ecor::set_value_t(std::string)  // Message payload
 >;
 
@@ -411,7 +578,8 @@ ecor::task<void> producer(ecor::task_ctx& ctx, priority_queue& queue) {
 
 ## Stop Tokens - Cancellation
 
-ecor implements `inplace_stop_token` and `inplace_stop_source` from P2300, providing cooperative cancellation without allocation.
+ecor implements `inplace_stop_token` and `inplace_stop_source` from P2300, providing
+cooperative cancellation without allocation.
 
 ### Basic Cancellation
 
@@ -492,6 +660,50 @@ void example() {
     }};
 }
 ```
+
+### Stop Token from Receiver Environment
+
+The canonical way to obtain a stop token inside a sender or operation state is to query the
+receiver's environment. This lets the stop signal propagate automatically from whoever drives
+the receiver — for example, the enclosing `task` — without the sender needing to know who
+created the stop source:
+
+```cpp
+struct my_receiver {
+    using receiver_concept = ecor::receiver_t;
+    ecor::inplace_stop_source& stop_src;
+
+    void set_value() noexcept {}
+    template<typename E> void set_error(E&&) noexcept {}
+    void set_stopped() noexcept {}
+
+    // Environment carries the stop token so senders can register callbacks
+    auto get_env() const noexcept {
+        return ecor::stop_token_env{ stop_src.get_token() };
+    }
+};
+
+struct my_op {
+    my_receiver recv;
+    std::optional<ecor::inplace_stop_callback<std::function<void()>>> stop_cb;
+
+    void start() {
+        // Pull the token out of the receiver's environment
+        auto token = ecor::get_stop_token(ecor::get_env(recv));
+
+        // Register a callback: when the caller cancels, abort the operation
+        stop_cb.emplace(token, [this]() { abort_hardware(); });
+
+        begin_hardware_operation();
+    }
+
+    void abort_hardware() { /* cancel in-flight I/O */ }
+    void begin_hardware_operation() { /* start I/O */ }
+};
+```
+
+When writing a custom sender, query the token in `start()` after the receiver is in place.
+This is the pattern used throughout ecor's own op-state types.
 
 ## Memory Management
 
@@ -579,11 +791,13 @@ ecor::task<void> example(ecor::task_ctx& ctx, auto sender1, auto sender2) {
 
 ### as_variant - Handle Multiple Completions
 
-If a sender has multiple `set_value` signatures, `as_variant` converts them into a single `std::variant` - combining multiple value types into one.
+If a sender has multiple `set_value` signatures, `as_variant` converts them into a single
+`std::variant` - combining multiple value types into one.
 
 ```cpp
 ecor::task<void> example(ecor::task_ctx& ctx) {
-    ecor::broadcast_source<
+    ecor::ll_source<
+        ecor::unit,
         ecor::set_value_t(int),
         ecor::set_value_t(float)
     > source;
@@ -626,11 +840,12 @@ ecor::task<void> example_sink(ecor::task_ctx& ctx) {
 
 ### then - Transform Values
 
-`then` applies a callable to each `set_value` completion, passing errors and stop signals through unchanged:
+`then` applies a callable to each `set_value` completion, passing errors and stop signals
+through unchanged:
 
 ```cpp
 ecor::task<void> example(ecor::task_ctx& ctx) {
-    ecor::broadcast_source<ecor::set_value_t(int)> source;
+    ecor::ll_source<ecor::unit, ecor::set_value_t(int)> source;
 
     // Double every value; errors/stopped pass through as-is
     int result = co_await (source.schedule() | ecor::then([](int v) { return v * 2; }));
@@ -701,7 +916,7 @@ ecor::task<void> use_async_api(ecor::task_ctx& ctx, async_c_ctx& c_ctx) {
 providing a simple "never-stop service" abstraction with cooperative cancellation.
 
 ```cpp
-ecor::broadcast_source<ecor::set_value_t()> some_event;
+ecor::ll_source<ecor::unit, ecor::set_value_t()> some_event;
 
 ecor::task<void> my_service(ecor::task_ctx& ctx)
 {
@@ -733,7 +948,8 @@ void run()
 - Restarts on **any completion** (`set_value`, `set_error`, or `set_stopped` from the inner task).
 - Exits the loop only when `stop()` has been called **and** the next completion arrives —
   regardless of which signal that is.
-- Exceptions thrown inside the task are converted to `set_error(task_error::task_unhandled_exception)` and also trigger a restart.
+- Exceptions thrown inside the task are converted to
+  `set_error(task_error::task_unhandled_exception)` and also trigger a restart.
 
 ### Stopping
 
@@ -741,7 +957,7 @@ void run()
 fires once the loop has exited — safe to `co_await` from another task:
 
 ```cpp
-ecor::broadcast_source<ecor::set_value_t()> shutdown_src;
+ecor::ll_source<ecor::unit, ecor::set_value_t()> shutdown_src;
 
 ecor::task<void> watchdog(ecor::task_ctx& ctx, ecor::_task_holder_base<>& holder)
 {
@@ -777,7 +993,10 @@ void run_with_custom_cfg(my_ctx_type& ctx) {
 
 ## Async Arena - Managed Async Lifetimes
 
-`async_arena` provides reference-counted smart pointers (`async_ptr`) with **asynchronous destruction**. When the last pointer to an object is dropped, the arena runs a user-defined async destroy protocol before calling `~T()` and freeing memory — all driven through the same `task_core` scheduler.
+`async_arena` provides reference-counted smart pointers (`async_ptr`) with
+**asynchronous destruction**. When the last pointer to an object is dropped, the arena runs
+a user-defined async destroy protocol before calling `~T()` and freeing memory — all driven
+through the same `task_core` scheduler.
 
 ### Basic Usage
 
@@ -785,7 +1004,7 @@ void run_with_custom_cfg(my_ctx_type& ctx) {
 // 1. Define a type with an async_destroy free function
 struct my_device {
     int id;
-    ecor::broadcast_source<ecor::set_value_t()>& shutdown_source;
+    ecor::ll_source<ecor::unit, ecor::set_value_t()>& shutdown_source;
 
 };
 
@@ -808,7 +1027,7 @@ void arena_example() {
     my_mem mem;
     ecor::task_ctx ctx{mem};
 
-    ecor::broadcast_source<ecor::set_value_t()> shutdown_src;
+    ecor::ll_source<ecor::unit, ecor::set_value_t()> shutdown_src;
     ecor::async_arena<ecor::task_ctx, my_mem> arena(ctx, mem);
 
     auto ptr = arena.make<my_device>(42, shutdown_src);
@@ -833,13 +1052,13 @@ Provide either a member function or an ADL free function:
 ```cpp
 // Member:
 struct widget {
-    ecor::broadcast_source<ecor::set_value_t()> src;
+    ecor::ll_source<ecor::unit, ecor::set_value_t()> src;
     auto async_destroy(ecor::task_ctx& ctx) { return src.schedule(); }
 };
 
 // ADL free function:
 struct driver {};
-ecor::broadcast_source<ecor::set_value_t()> driver_src;
+ecor::ll_source<ecor::unit, ecor::set_value_t()> driver_src;
 auto async_destroy(ecor::task_ctx& ctx, driver& d) { return driver_src.schedule(); }
 ```
 
@@ -847,11 +1066,12 @@ The destroy sender can be a `task<void>` coroutine, a source's `schedule()`, or 
 
 ### Graceful Shutdown
 
-`async_destroy()` on the arena signals that no new objects will be created and returns a sender that completes when all pending destructions have finished:
+`async_destroy()` on the arena signals that no new objects will be created and returns a
+sender that completes when all pending destructions have finished:
 
 ```cpp
 struct arena_obj {
-    ecor::broadcast_source<ecor::set_value_t()> src;
+    ecor::ll_source<ecor::unit, ecor::set_value_t()> src;
     auto async_destroy(ecor::task_ctx& ctx) { return src.schedule(); }
 };
 
@@ -875,157 +1095,18 @@ ecor::task<void> shutdown(ecor::task_ctx& ctx, ecor::async_arena<ecor::task_ctx,
 
 ### Key Properties
 
-- **Single-threaded, not interrupt-safe** — all pointer operations and `run_once()` must happen on the same thread.
-- **Single allocation per object** — control block and `T` are allocated together (make_shared style).
-- **Two-phase cleanup** — the destroy sender's operation state is freed on a separate `run_once()` tick after completion, preventing use-after-free of the op_state during stack unwinding.
-
-## Transaction Controller - Request-Reply Protocols
-
-`trnx_controller_source` supports ordered request-reply protocols (UART, SPI, I²C, etc.) where multiple transactions can be in flight simultaneously.
-
-### Memory Layout
-
-Each `schedule()` + `connect()` + `start()` call creates a `_trnx_controller_op` on the caller's stack (or in a coroutine frame). The op is linked into the source's doubly-linked list. With 3 queued transactions, the memory looks like this:
-
-```mermaid
-graph LR
-    subgraph source["trnx_controller_source"]
-        head["_pending_tx\n(doubly-linked list)"]
-    end
-
-    head -- "front" --> op3
-
-    subgraph op3["_trnx_controller_op  ③  (newest)"]
-        direction TB
-        f3["vtable ptrs\ndata: T\nll prev/next\nreceiver: R"]
-    end
-
-    op3 <-- "prev / next" --> op2
-
-    subgraph op2["_trnx_controller_op  ②"]
-        direction TB
-        f2["vtable ptrs\ndata: T\nll prev/next\nreceiver: R"]
-    end
-
-    op2 <-- "prev / next" --> op1
-
-    subgraph op1["_trnx_controller_op  ①  (oldest)"]
-        direction TB
-        f1["vtable ptrs\ndata: T\nll prev/next\nreceiver: R"]
-    end
-
-```
-
-### Basic Usage
-
-Define a transaction data type with completion signatures, then schedule transactions through the source:
-
-```cpp
-// 1. Define the transaction payload
-struct my_trnx {
-    using completion_signatures = ecor::completion_signatures<
-        ecor::set_value_t(int),         // reply value
-        ecor::set_error_t(uint8_t),     // error code
-        ecor::set_stopped_t()>;         // cancellation
-
-    int request_id;
-};
-
-// 2. Create a source and schedule transactions
-void trnx_example() {
-    ecor::trnx_controller_source<my_trnx> source;
-
-    // schedule() returns a sender
-    auto sender = source.schedule(my_trnx{.request_id = 1});
-
-    // Connect to a receiver and start
-    int reply = 0;
-    struct recv {
-        using receiver_concept = ecor::receiver_t;
-        int* out;
-        void set_value(int v) noexcept { *out = v; }
-        void set_error(uint8_t) noexcept {}
-        void set_stopped() noexcept {}
-    };
-    auto op = std::move(sender).connect(recv{&reply});
-    op.start();
-
-    // 3. Driver picks up the pending transaction
-    auto* entry = source.query_next_trnx();
-    // entry->data.request_id == 1
-
-    // 4. Complete the transaction when the reply arrives
-    entry->set_value(42);
-    // reply == 42
-}
-```
-
-After `op.start()`, the transaction is pending in the source's linked list. The driver calls `query_next_trnx()` to get the oldest pending transaction, then completes it with `set_value()`, `set_error()`, or `set_stopped()`.
-
-In the example above, the transaction completes with `set_value(42)`, which calls the receiver's `set_value` and sets `reply` to 42. In practice the op would be created in other part of the program than which calls `query_next_trnx()` — e.g., the transaction could be scheduled from a task, while `query_next_trnx()` is called from the main loop.
-
-### Circular Buffer for In-Flight Transactions
-
-`trnx_circular_buffer` is a 4-cursor ring buffer for managing transactions that cross ISR boundaries. The cursors form a pipeline: **enqueue → tx → rx → deliver**.
-
-```cpp
-struct buf_trnx {
-    using completion_signatures = ecor::completion_signatures<
-        ecor::set_value_t(int),
-        ecor::set_error_t(uint8_t),
-        ecor::set_stopped_t()>;
-    int request_id;
-};
-
-void buffer_example() {
-    ecor::trnx_controller_source<buf_trnx> source;
-    ecor::trnx_circular_buffer<ecor::trnx_entry<buf_trnx>*, 4> buffer;
-
-    // Driver tick loop:
-    // 1. Move pending transactions into the buffer
-    while (!buffer.full()) {
-        auto* entry = source.query_next_trnx();
-        if (!entry) break;
-        buffer.push(entry);
-    }
-
-    // 2. Start TX for queued entries
-    while (buffer.has_tx()) {
-        // Start hardware transmission for buffer.tx_front()
-        buffer.tx_done();
-    }
-
-    // 3. ISR marks RX complete
-    // buffer.rx_done();
-
-    // 4. Deliver completions back to receivers
-    while (buffer.has_deliver()) {
-        auto* entry = buffer.deliver_front();
-        entry->set_value(0);  // complete with reply
-        buffer.pop();
-    }
-}
-```
-
-Once the driver calls `query_next_trnx()`, the oldest entry is unlinked and moved into a `trnx_circular_buffer`. The buffer's four atomic cursors partition in-flight transactions into pipeline stages:
-
-```mermaid
-pie title trnx_circular_buffer (capacity 8, 3 in-flight)
-    "deliver→rx  (reply received, awaiting delivery)" : 1
-    "rx→tx  (sent, awaiting reply)" : 1
-    "tx→enqueue  (enqueued, ready to send)" : 1
-    "free slots" : 5
-```
-
-### Stop Semantics
-
-Stop tokens are checked only for **pending** transactions (still in the source's linked list). `query_next_trnx()` automatically removes cancelled entries and calls `set_stopped()` on them. Once a transaction is taken from the list and moved into a circular buffer or handed to hardware, the driver is fully responsible for completing it — stop is no longer checked by the source.
-
-> **ISR safety:** `trnx_circular_buffer` uses `std::atomic` cursors. On single-word architectures (e.g. ARM Cortex-M), these compile to plain loads/stores with no overhead.
+- **Single-threaded, not interrupt-safe** — all pointer operations and `run_once()` must
+  happen on the same thread.
+- **Single allocation per object** — control block and `T` are allocated together
+  (make_shared style).
+- **Two-phase cleanup** — the destroy sender's operation state is freed on a separate
+  `run_once()` tick after completion, preventing use-after-free of the op_state during
+  stack unwinding.
 
 ## Assert customization
 
-By default, ecor uses `assert` for internal checks. You can customize this by defining `ECOR_ASSERT` before including the header:
+By default, ecor uses `assert` for internal checks. You can customize this by defining
+`ECOR_ASSERT` before including the header:
 
 ```cpp
 #define ECOR_ASSERT(expr) my_custom_assert(expr)
@@ -1092,7 +1173,8 @@ source /path/to/ecor/pprinter.py
 
 ## Credits
 
-Created by `veverak` (koniarik). Questions? Find me on [#include discord](https://discord.gg/vSYgpmPrra).
+Created by `veverak` (koniarik). Questions? Find me on
+[#include discord](https://discord.gg/vSYgpmPrra).
 
 ## License
 

@@ -212,15 +212,19 @@ TEST_CASE( "circular_buffer_allocator - std::allocator requirements" )
         }
 }
 
-static void test_simple_broadcast_source( task_ctx& ctx, auto& es, auto& val )
+static void test_simple_ll_source( task_ctx& ctx, auto& es, auto& val )
 {
         int value = 42;
-        es.set_value( value );
+        broadcast( es, [&]( auto& e ) {
+                e.set_value( value );
+        } );
         ctx.core.run_n( 10 );
         CHECK( value == val );
 
         value = 666;
-        es.set_value( value );
+        broadcast( es, [&]( auto& e ) {
+                e.set_value( value );
+        } );
         ctx.core.run_n( 10 );
         CHECK( value == val );
 }
@@ -236,16 +240,16 @@ static ecor::task< void > dyn_mem_f( task_ctx&, auto& es, int& y )
 
 TEST_CASE( "dyn_memory_base" )
 {
-        nd_mem                                                            mem;
-        task_ctx                                                          ctx{ mem };
-        broadcast_source< set_value_t( int ), set_error_t( task_error ) > es;
-        int                                                               y = -1;
+        nd_mem                                                           mem;
+        task_ctx                                                         ctx{ mem };
+        ll_source< unit, set_value_t( int ), set_error_t( task_error ) > es;
+        int                                                              y = -1;
 
 
         auto h = dyn_mem_f( ctx, es, y ).connect( _dummy_receiver{} );
         h.start();
         ctx.core.run_n( 10 );
-        test_simple_broadcast_source( ctx, es, y );
+        test_simple_ll_source( ctx, es, y );
 }
 
 
@@ -259,24 +263,24 @@ static ecor::task< void > void_error_f( task_ctx&, auto& es, int& y )
 
 TEST_CASE( "void error" )
 {
-        nd_mem                                 mem;
-        task_ctx                               ctx{ mem };
-        broadcast_source< set_value_t( int ) > es;
-        int                                    y = -1;
+        nd_mem                                mem;
+        task_ctx                              ctx{ mem };
+        ll_source< unit, set_value_t( int ) > es;
+        int                                   y = -1;
 
         auto h = void_error_f( ctx, es, y ).connect( _dummy_receiver{} );
         h.start();
 
         ctx.core.run_n( 10 );
-        test_simple_broadcast_source( ctx, es, y );
+        test_simple_ll_source( ctx, es, y );
 }
 
 TEST_CASE( "op" )
 {
-        nd_mem                                 mem;
-        task_ctx                               ctx{ mem };
-        broadcast_source< set_value_t( int ) > es;
-        int                                    y = -1;
+        nd_mem                                mem;
+        task_ctx                              ctx{ mem };
+        ll_source< unit, set_value_t( int ) > es;
+        int                                   y = -1;
 
         struct
         {
@@ -294,14 +298,16 @@ TEST_CASE( "op" )
 
         ctx.core.run_once();
         int value = 42;
-        es.set_value( value );
+        broadcast( es, [&]( auto& e ) {
+                e.set_value( value );
+        } );
         CHECK( value == y );
 }
 
 namespace
 {
         ecor::task< void >
-        rec_task( task_ctx& ctx, broadcast_source< set_value_t( int ) >& es, int& y )
+        rec_task( task_ctx& ctx, ll_source< unit, set_value_t( int ) >& es, int& y )
         {
                 for ( ;; ) {
                         int const x = co_await es.schedule();
@@ -314,15 +320,15 @@ namespace
 
 TEST_CASE( "recursive" )
 {
-        nd_mem                                 mem;
-        task_ctx                               ctx{ mem };
-        broadcast_source< set_value_t( int ) > es;
-        int                                    y = -1;
+        nd_mem                                mem;
+        task_ctx                              ctx{ mem };
+        ll_source< unit, set_value_t( int ) > es;
+        int                                   y = -1;
 
         auto h = rec_task( ctx, es, y ).connect( _dummy_receiver{} );
         h.start();
         ctx.core.run_n( 10 );
-        test_simple_broadcast_source( ctx, es, y );
+        test_simple_ll_source( ctx, es, y );
 }
 
 namespace
@@ -344,16 +350,16 @@ namespace
 
 TEST_CASE( "transitive noop" )
 {
-        nd_mem                                 mem;
-        task_ctx                               ctx{ mem };
-        broadcast_source< set_value_t( int ) > es;
-        int                                    y = -1;
+        nd_mem                                mem;
+        task_ctx                              ctx{ mem };
+        ll_source< unit, set_value_t( int ) > es;
+        int                                   y = -1;
 
 
         auto h = trans_f( ctx, es, y ).connect( _dummy_receiver{} );
         h.start();
         ctx.core.run_n( 10 );
-        test_simple_broadcast_source( ctx, es, y );
+        test_simple_ll_source( ctx, es, y );
 }
 
 namespace
@@ -384,7 +390,7 @@ namespace
         }
 
         ecor::task< void >
-        terror_b( task_ctx& ctx, broadcast_source< set_value_t() >& trig, int& b_count )
+        terror_b( task_ctx& ctx, ll_source< unit, set_value_t() >& trig, int& b_count )
         {
                 co_await trig.schedule();
                 ++b_count;
@@ -393,10 +399,10 @@ namespace
         }
 
         ecor::task< void > terror_a(
-            task_ctx&                          ctx,
-            broadcast_source< set_value_t() >& trig,
-            int&                               a_count,
-            int&                               b_count )
+            task_ctx&                         ctx,
+            ll_source< unit, set_value_t() >& trig,
+            int&                              a_count,
+            int&                              b_count )
         {
                 co_await trig.schedule();
                 ++a_count;
@@ -407,12 +413,12 @@ namespace
 
 TEST_CASE( "transitive error propagation" )
 {
-        nd_mem                            mem;
-        task_ctx                          ctx{ mem };
-        broadcast_source< set_value_t() > trig;
-        int                               a_count = 0;
-        int                               b_count = 0;
-        task_error                        err     = task_error::none;
+        nd_mem                           mem;
+        task_ctx                         ctx{ mem };
+        ll_source< unit, set_value_t() > trig;
+        int                              a_count = 0;
+        int                              b_count = 0;
+        task_error                       err     = task_error::none;
 
         auto h = terror_a( ctx, trig, a_count, b_count ).connect( _terror_receiver{ err } );
         h.start();
@@ -420,14 +426,18 @@ TEST_CASE( "transitive error propagation" )
                 ;
 
         // wake A
-        trig.set_value();
+        broadcast( trig, []( auto& e ) {
+                e.set_value();
+        } );
         while ( ctx.core.run_once() )
                 ;
         CHECK( a_count == 1 );
         CHECK( b_count == 0 );
 
         // wake B — B runs, increments b_count, then co_awaits C which errors
-        trig.set_value();
+        broadcast( trig, []( auto& e ) {
+                e.set_value();
+        } );
         while ( ctx.core.run_once() )
                 ;
         CHECK( b_count == 1 );
@@ -452,7 +462,7 @@ struct timer
         }
 
 private:
-        seq_source< time_point, set_value_t( time_point ) > _es;
+        seq_source< time_point, unit, set_value_t( time_point ) > _es;
 };
 
 static ecor::task< void > timer_f( task_ctx&, timer& tm, uint32_t& cnt )
@@ -587,10 +597,10 @@ TEST_CASE( "operator||" )
         task_ctx ctx{ mem };
 
         {
-                broadcast_source< set_value_t( int ) > es1;
-                broadcast_source< set_value_t( int ) > es2;
-                int                                    result    = -1;
-                bool                                   completed = false;
+                ll_source< unit, set_value_t( int ) > es1;
+                ll_source< unit, set_value_t( int ) > es2;
+                int                                   result    = -1;
+                bool                                  completed = false;
 
 
                 auto h = test_or_f( ctx, es1, es2, result, completed ).connect( _dummy_receiver{} );
@@ -599,24 +609,28 @@ TEST_CASE( "operator||" )
 
                 CHECK( !completed );
 
-                es1.set_value( 42 );
+                broadcast( es1, []( auto& e ) {
+                        e.set_value( 42 );
+                } );
                 ctx.core.run_once();
 
                 CHECK( completed );
                 CHECK( result == 42 );
 
                 completed = false;
-                es2.set_value( 99 );
+                broadcast( es2, []( auto& e ) {
+                        e.set_value( 99 );
+                } );
                 ctx.core.run_once();
 
                 CHECK( !completed );
         }
 
         {
-                broadcast_source< set_value_t( int ) > es1;
-                broadcast_source< set_value_t( int ) > es2;
-                int                                    result    = -1;
-                bool                                   completed = false;
+                ll_source< unit, set_value_t( int ) > es1;
+                ll_source< unit, set_value_t( int ) > es2;
+                int                                   result    = -1;
+                bool                                  completed = false;
 
 
                 auto h = test_or_f( ctx, es1, es2, result, completed ).connect( _dummy_receiver{} );
@@ -626,7 +640,9 @@ TEST_CASE( "operator||" )
                 CHECK( !completed );
 
                 // Second event source fires first
-                es2.set_value( 123 );
+                broadcast( es2, []( auto& e ) {
+                        e.set_value( 123 );
+                } );
                 ctx.core.run_once();
 
                 CHECK( completed );
@@ -634,10 +650,10 @@ TEST_CASE( "operator||" )
         }
 
         {
-                broadcast_source< set_value_t( int ) >         es_int;
-                broadcast_source< set_value_t( std::string ) > es_string;
-                std::variant< int, std::string >               result;
-                bool                                           completed = false;
+                ll_source< unit, set_value_t( int ) >         es_int;
+                ll_source< unit, set_value_t( std::string ) > es_string;
+                std::variant< int, std::string >              result;
+                bool                                          completed = false;
 
 
                 auto h = test_mixed_or_f( ctx, es_int, es_string, result, completed )
@@ -648,7 +664,9 @@ TEST_CASE( "operator||" )
                 CHECK( !completed );
 
                 // String event fires first
-                es_string.set_value( std::string( "hello" ) );
+                broadcast( es_string, []( auto& e ) {
+                        e.set_value( std::string( "hello" ) );
+                } );
                 ctx.core.run_once();
 
                 CHECK( completed );
@@ -657,10 +675,10 @@ TEST_CASE( "operator||" )
         }
 
         {
-                seq_source< uint32_t, set_value_t( uint32_t ) > seq1;
-                seq_source< uint32_t, set_value_t( uint32_t ) > seq2;
-                uint32_t                                        result    = 0;
-                bool                                            completed = false;
+                seq_source< uint32_t, unit, set_value_t( uint32_t ) > seq1;
+                seq_source< uint32_t, unit, set_value_t( uint32_t ) > seq2;
+                uint32_t                                              result    = 0;
+                bool                                                  completed = false;
 
 
                 auto h = test_seq_or_f( ctx, seq1, seq2, result, completed )
@@ -1025,7 +1043,9 @@ static ecor::task< void > data_processor_f(
         }
 
         // Signal completion by sending a message
-        message_source.set_value( "data_processing_complete" );
+        broadcast( message_source, []( auto& e ) {
+                e.set_value( "data_processing_complete" );
+        } );
 };
 
 static ecor::task< void > message_handler_f(
@@ -1053,7 +1073,9 @@ static ecor::task< void > data_sender_f( task_ctx&, auto& message_source, auto& 
         for ( int value : test_data ) {
                 // Yield control to allow other tasks to run
                 co_await message_source.schedule();  // Wait for any message to proceed
-                data_source.set_value( value );
+                broadcast( data_source, [&]( auto& e ) {
+                        e.set_value( value );
+                } );
         }
 };
 
@@ -1066,8 +1088,8 @@ TEST_CASE( "task_coroutine_with_circular_buffer_memory" )
         task_ctx                                                         ctx{ mem };
 
         // Create event sources for inter-task communication
-        broadcast_source< set_value_t( int ) >         data_source;
-        broadcast_source< set_value_t( std::string ) > message_source;
+        ll_source< unit, set_value_t( int ) >         data_source;
+        ll_source< unit, set_value_t( std::string ) > message_source;
 
         // Shared state to verify task execution
         std::vector< int >         processed_numbers;
@@ -1091,14 +1113,20 @@ TEST_CASE( "task_coroutine_with_circular_buffer_memory" )
         ctx.core.run_n( 10 );  // Initialize tasks
 
         // Send initial messages to trigger data sender
-        message_source.set_value( "start" );
+        broadcast( message_source, []( auto& e ) {
+                e.set_value( "start" );
+        } );
         ctx.core.run_n( 10 );
 
         // Send more trigger messages to continue the sequence
-        message_source.set_value( "continue1" );
+        broadcast( message_source, []( auto& e ) {
+                e.set_value( "continue1" );
+        } );
         ctx.core.run_n( 10 );
 
-        message_source.set_value( "continue2" );
+        broadcast( message_source, []( auto& e ) {
+                e.set_value( "continue2" );
+        } );
         ctx.core.run_n( 10 );
 
         // Allow final processing
@@ -1151,9 +1179,9 @@ TEST_CASE( "task_coroutine_circular_buffer_memory_stress" )
         circular_buffer_memory< smallest_index_type< 2048 >, noop_base > mem{ buffer_span };
         task_ctx                                                         ctx{ mem };
 
-        broadcast_source< set_value_t( int ) > trigger;
-        std::vector< int >                     execution_order;
-        int                                    task_counter = 0;
+        ll_source< unit, set_value_t( int ) > trigger;
+        std::vector< int >                    execution_order;
+        int                                   task_counter = 0;
 
 
         // Create several tasks
@@ -1169,11 +1197,15 @@ TEST_CASE( "task_coroutine_circular_buffer_memory_stress" )
         ctx.core.run_n( 10 );
 
         // Trigger all tasks
-        trigger.set_value( 1 );
+        broadcast( trigger, []( auto& e ) {
+                e.set_value( 1 );
+        } );
         ctx.core.run_n( 10 );
 
         // Trigger even tasks for second execution
-        trigger.set_value( 2 );
+        broadcast( trigger, []( auto& e ) {
+                e.set_value( 2 );
+        } );
         ctx.core.run_n( 10 );
 
         // Verify execution
@@ -1835,16 +1867,20 @@ TEST_CASE( "broadcast - multiple set_value" )
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        broadcast_source< set_value_t( int ), set_value_t( float ) > source;
+        ll_source< unit, set_value_t( int ), set_value_t( float ) > source;
 
 
         auto h = multiple_set_value_f( ctx, source ).connect( _dummy_receiver{} );
         h.start();
         ctx.core.run_n( 10 );
-        source.set_value( 42 );
+        broadcast( source, []( auto& e ) {
+                e.set_value( 42 );
+        } );
 
         ctx.core.run_n( 10 );
-        source.set_value( 3.14f );
+        broadcast( source, []( auto& e ) {
+                e.set_value( 3.14f );
+        } );
 
         ctx.core.run_n( 10 );
 }
@@ -1877,15 +1913,15 @@ namespace
         };
 }  // namespace
 
-TEST_CASE( "broadcast_source::set_value calls each subscriber exactly once" )
+TEST_CASE( "ll_source::broadcast calls each subscriber exactly once" )
 {
-        // Regression test: broadcast_source::for_each previously called for_each_node
+        // Regression test: broadcast() previously called for_each_node
         // (which visits all nodes) AND then ran a second manual loop over the same
         // nodes. Every subscriber was therefore invoked twice per set_value / set_error
         // / set_stopped call. The second invocation caused a placement-new on an already
         // constructed value inside _awaitable_expected, leaking the first allocation.
 
-        broadcast_source< set_value_t( std::string ) > src;
+        ll_source< unit, set_value_t( std::string ) > src;
 
         SUBCASE( "single subscriber" )
         {
@@ -1893,7 +1929,9 @@ TEST_CASE( "broadcast_source::set_value calls each subscriber exactly once" )
                 auto op    = src.schedule().connect( _broadcast_counting_receiver{ &count } );
                 op.start();
 
-                src.set_value( std::string( "hello" ) );
+                broadcast( src, []( auto& e ) {
+                        e.set_value( std::string( "hello" ) );
+                } );
 
                 CHECK( count == 1 );
         }
@@ -1906,7 +1944,9 @@ TEST_CASE( "broadcast_source::set_value calls each subscriber exactly once" )
                 auto op_b = src.schedule().connect( _broadcast_counting_receiver{ &count_b } );
                 op_b.start();
 
-                src.set_value( std::string( "hello" ) );
+                broadcast( src, []( auto& e ) {
+                        e.set_value( std::string( "hello" ) );
+                } );
 
                 CHECK( count_a == 1 );
                 CHECK( count_b == 1 );
@@ -2149,12 +2189,12 @@ static ecor::task< void > stop_token_env_f( task_ctx&, int& received_value, auto
 TEST_CASE( "stop_token - receiver with stop token environment" )
 {
         // Test a receiver that provides a stop token in its environment
-        nd_mem                                 mem;
-        task_ctx                               ctx{ mem };
-        inplace_stop_source                    stop_src;
-        broadcast_source< set_value_t( int ) > es;
-        int                                    received_value = -1;
-        bool                                   stopped        = false;
+        nd_mem                                mem;
+        task_ctx                              ctx{ mem };
+        inplace_stop_source                   stop_src;
+        ll_source< unit, set_value_t( int ) > es;
+        int                                   received_value = -1;
+        bool                                  stopped        = false;
 
         // Create a receiver with a stop token in its environment
         struct receiver_with_stop_token
@@ -2204,7 +2244,9 @@ TEST_CASE( "stop_token - receiver with stop token environment" )
         ctx.core.run_once();
 
         // Test that operation receives values normally
-        es.set_value( 42 );
+        broadcast( es, []( auto& e ) {
+                e.set_value( 42 );
+        } );
         ctx.core.run_once();
         CHECK( received_value == 42 );
 
@@ -2276,7 +2318,7 @@ TEST_CASE( "stop_token - manual cancellation check" )
                 }
         };
 
-        broadcast_source< set_value_t( int ) > values;
+        ll_source< unit, set_value_t( int ) > values;
 
 
         auto op = cancellable_operation_f( ctx, value_count, stop_src, values )
@@ -2285,11 +2327,15 @@ TEST_CASE( "stop_token - manual cancellation check" )
         ctx.core.run_once();
 
         // Send a few values
-        values.set_value( 1 );
+        broadcast( values, []( auto& e ) {
+                e.set_value( 1 );
+        } );
         ctx.core.run_once();
         CHECK( value_count == 1 );
 
-        values.set_value( 2 );
+        broadcast( values, []( auto& e ) {
+                e.set_value( 2 );
+        } );
         ctx.core.run_once();
         CHECK( value_count == 3 );
 
@@ -2297,7 +2343,9 @@ TEST_CASE( "stop_token - manual cancellation check" )
         stop_src.request_stop();
 
         // Send more values - but the loop should have exited
-        values.set_value( 10 );
+        broadcast( values, []( auto& e ) {
+                e.set_value( 10 );
+        } );
         ctx.core.run_once();
 
         // The operation should have stopped checking before processing the 10
@@ -2541,20 +2589,58 @@ TEST_CASE( "inplace_stop_callback - callback_type alias" )
 }
 
 
-static task< void >
-fifo_waiter_f( task_ctx&, fifo_source< set_value_t( int ) >& source, std::vector< int >& results )
+static task< void > fifo_waiter_f(
+    task_ctx&,
+    ll_source< unit, set_value_t( int ) >& source,
+    std::vector< int >&                    results )
 {
         int v = co_await source.schedule();
         results.push_back( v );
 }
 
-TEST_CASE( "fifo_source - basic ordering" )
+TEST_CASE( "ll_source - empty and front" )
+{
+        ll_source< unit, set_value_t( int ) > source;
+
+        CHECK( source.empty() );
+
+        auto op1 = source.schedule().connect( _dummy_receiver{} );
+        op1.start();
+
+        CHECK( !source.empty() );
+
+        // front() returns a reference to the front entry without removing it
+        auto& front_ref = source.front();
+        CHECK( !source.empty() );
+
+        // query_next_unchecked() pops the front — must be the same object
+        auto* popped = source.query_next_unchecked();
+        CHECK( popped == &front_ref );
+
+        CHECK( source.empty() );
+
+        // FIFO ordering: first connected is first dequeued
+        auto op2 = source.schedule().connect( _dummy_receiver{} );
+        op2.start();
+        auto op3 = source.schedule().connect( _dummy_receiver{} );
+        op3.start();
+
+        auto* first  = source.query_next_unchecked();
+        auto* second = source.query_next_unchecked();
+        CHECK( first != nullptr );
+        CHECK( second != nullptr );
+        CHECK( first != second );
+
+        CHECK( source.empty() );
+}
+
+TEST_CASE( "ll_source - fifo basic ordering" )
 {
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t( int ) > source;
-        std::vector< int >                results;
+        ll_source< unit, set_value_t( int ) > source;
+        std::vector< int >                    results;
 
         auto h1 = fifo_waiter_f( ctx, source, results ).connect( _dummy_receiver{} );
         h1.start();
@@ -2567,30 +2653,33 @@ TEST_CASE( "fifo_source - basic ordering" )
 
         CHECK( results.empty() );
 
-        source.set_value( 10 );
+        if ( auto* e = source.query_next() )
+                e->set_value( 10 );
         ctx.core.run_once();
         CHECK( results.size() == 1 );
         CHECK( results[0] == 10 );
 
-        source.set_value( 20 );
+        if ( auto* e = source.query_next() )
+                e->set_value( 20 );
         ctx.core.run_once();
         CHECK( results.size() == 2 );
         CHECK( results[1] == 20 );
 
         // No more waiters, third value lost
-        source.set_value( 30 );
+        if ( auto* e = source.query_next() )
+                e->set_value( 30 );
         ctx.core.run_once();
         CHECK( results.size() == 2 );
 }
 
-TEST_CASE( "fifo_source - set_error" )
+TEST_CASE( "ll_source - fifo set_error" )
 {
         struct helper
         {
                 static task< void > waiter(
                     task_ctx&,
-                    fifo_source< set_value_t(), set_error_t( int ) >& source,
-                    bool&                                             error_caught )
+                    ll_source< unit, set_value_t(), set_error_t( int ) >& source,
+                    bool&                                                 error_caught )
                 {
                         std::optional< std::variant< int > > e =
                             co_await ( source.schedule() | sink_err );
@@ -2602,26 +2691,27 @@ TEST_CASE( "fifo_source - set_error" )
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t(), set_error_t( int ) > source;
-        bool                                             error_caught = false;
+        ll_source< unit, set_value_t(), set_error_t( int ) > source;
+        bool                                                 error_caught = false;
 
         auto h = helper::waiter( ctx, source, error_caught ).connect( _dummy_receiver{} );
         h.start();
         ctx.core.run_once();
 
-        source.set_error( 42 );
+        if ( auto* e = source.query_next() )
+                e->set_error( 42 );
         ctx.core.run_once();
 
         CHECK( error_caught );
 }
 
-TEST_CASE( "fifo_source - set_stopped" )
+TEST_CASE( "ll_source - fifo set_stopped" )
 {
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t( int ), set_stopped_t() > source;
-        bool                                               stopped = false;
+        ll_source< unit, set_value_t( int ), set_stopped_t() > source;
+        bool                                                   stopped = false;
 
         // Receiver that detects stopped signal
         struct stopped_receiver : _dummy_receiver
@@ -2636,19 +2726,20 @@ TEST_CASE( "fifo_source - set_stopped" )
         auto op = source.schedule().connect( stopped_receiver{ ._stopped = &stopped } );
         op.start();
 
-        source.set_stopped();
+        if ( auto* e = source.query_next() )
+                e->set_stopped();
         ctx.core.run_once();
 
         CHECK( stopped );
 }
 
-TEST_CASE( "fifo_source - cancellation" )
+TEST_CASE( "ll_source - fifo cancellation" )
 {
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t( int ) > source;
-        std::vector< int >                results;
+        ll_source< unit, set_value_t( int ) > source;
+        std::vector< int >                    results;
 
         auto h1 = fifo_waiter_f( ctx, source, results ).connect( _dummy_receiver{} );
         h1.start();
@@ -2664,12 +2755,14 @@ TEST_CASE( "fifo_source - cancellation" )
 
         ctx.core.run_n( 5 );
 
-        source.set_value( 10 );  // Should go to h1
+        if ( auto* e = source.query_next() )
+                e->set_value( 10 );  // Should go to h1
         ctx.core.run_once();
         CHECK( results.size() == 1 );
         CHECK( results[0] == 10 );
 
-        source.set_value( 20 );  // Should go to h3 (h2 was cancelled/destroyed)
+        if ( auto* e = source.query_next() )
+                e->set_value( 20 );  // Should go to h3 (h2 was cancelled/destroyed)
         ctx.core.run_once();
         CHECK( results.size() == 2 );
         CHECK( results[1] == 20 );
@@ -2779,7 +2872,7 @@ TEST_CASE( "yield_value with error" )
         CHECK( error_caught );
 }
 
-static task< void > set_stopped_helper( task_ctx&, broadcast_source< set_value_t() >& src )
+static task< void > set_stopped_helper( task_ctx&, ll_source< unit, set_value_t() >& src )
 {
         co_await src.schedule();
 }
@@ -2810,7 +2903,7 @@ TEST_CASE( "~_task_op calls set_stopped" )
                 }
         };
 
-        broadcast_source< set_value_t() > src;
+        ll_source< unit, set_value_t() > src;
 
 
         {
@@ -2992,25 +3085,29 @@ TEST_CASE( "as_variant - error, stopped propagation and constraints" )
 
         // Test Error Propagation
         {
-                broadcast_source< set_value_t( int ), set_error_t( int ) > src;
-                bool                                                       error_called = false;
+                ll_source< unit, set_value_t( int ), set_error_t( int ) > src;
+                bool                                                      error_called = false;
 
                 auto op = as_variant( src.schedule() )
                               .connect( as_variant_test::error_receiver{ &error_called } );
                 op.start();
-                src.set_error( 42 );
+                broadcast( src, []( auto& e ) {
+                        e.set_error( 42 );
+                } );
                 CHECK( error_called );
         }
 
         // Test Stopped Propagation
         {
-                broadcast_source< set_value_t( int ), set_stopped_t() > src;
-                bool                                                    stopped_called = false;
+                ll_source< unit, set_value_t( int ), set_stopped_t() > src;
+                bool                                                   stopped_called = false;
 
                 auto op = as_variant( src.schedule() )
                               .connect( as_variant_test::stopped_receiver{ &stopped_called } );
                 op.start();
-                src.set_stopped();
+                broadcast( src, []( auto& e ) {
+                        e.set_stopped();
+                } );
                 CHECK( stopped_called );
         }
 
@@ -3022,7 +3119,7 @@ TEST_CASE( "as_variant - error, stopped propagation and constraints" )
                 // trait/concept check directly.
 
                 // Positive control: singular sender should be connectable
-                using singular_sender = broadcast_source< set_value_t( int ) >;
+                using singular_sender = ll_source< unit, set_value_t( int ) >;
                 using as_variant_singular =
                     decltype( as_variant( std::declval< singular_sender >().schedule() ) );
 
@@ -3105,44 +3202,50 @@ TEST_CASE( "err_to_val - basic operations" )
 
         SUBCASE( "error to value transformation" )
         {
-                broadcast_source< set_error_t( int ) > src;
-                bool                                   value_called   = false;
-                int                                    received_value = -1;
+                ll_source< unit, set_error_t( int ) > src;
+                bool                                  value_called   = false;
+                int                                   received_value = -1;
 
                 auto op = ( src.schedule() | err_to_val )
                               .connect( check_value_receiver{ &value_called, &received_value } );
                 op.start();
 
-                src.set_error( 42 );
+                broadcast( src, []( auto& e ) {
+                        e.set_error( 42 );
+                } );
                 CHECK( value_called );
                 CHECK( received_value == 42 );
         }
 
         SUBCASE( "value pass-through" )
         {
-                broadcast_source< set_value_t( std::string ) > src;
-                bool                                           value_called = false;
-                std::string                                    received_value;
+                ll_source< unit, set_value_t( std::string ) > src;
+                bool                                          value_called = false;
+                std::string                                   received_value;
 
                 auto op = ( src.schedule() | err_to_val )
                               .connect( check_string_receiver{ &value_called, &received_value } );
                 op.start();
 
-                src.set_value( "hello" );
+                broadcast( src, []( auto& e ) {
+                        e.set_value( "hello" );
+                } );
                 CHECK( value_called );
                 CHECK( received_value == "hello" );
         }
 
         SUBCASE( "stopped pass-through" )
         {
-                broadcast_source< set_stopped_t() > src;
-                bool                                stopped_called = false;
+                ll_source< unit, set_stopped_t() > src;
+                bool                               stopped_called = false;
 
                 auto op = ( src.schedule() | err_to_val )
                               .connect( check_stopped_receiver{ &stopped_called } );
                 op.start();
 
-                src.set_stopped();
+                broadcast( src, []( auto& e ) {
+                        e.set_stopped();
+                } );
                 CHECK( stopped_called );
         }
 }
@@ -3259,18 +3362,20 @@ TEST_CASE( "sink_err - basic operations" )
 
         SUBCASE( "error to value transformation" )
         {
-                broadcast_source< set_error_t( int ) > src;
-                bool                                   called    = false;
-                bool                                   has_value = false;
-                bool                                   holds_int = false;
-                int                                    val_int   = -1;
+                ll_source< unit, set_error_t( int ) > src;
+                bool                                  called    = false;
+                bool                                  has_value = false;
+                bool                                  holds_int = false;
+                int                                   val_int   = -1;
 
                 auto op =
                     ( src.schedule() | sink_err )
                         .connect( sink_err_recv{ &called, &has_value, &holds_int, &val_int } );
                 op.start();
 
-                src.set_error( 42 );
+                broadcast( src, []( auto& e ) {
+                        e.set_error( 42 );
+                } );
                 CHECK( called );
                 CHECK( has_value );
                 CHECK( holds_int );
@@ -3280,35 +3385,39 @@ TEST_CASE( "sink_err - basic operations" )
 
         SUBCASE( "value to nullopt transformation" )
         {
-                broadcast_source< set_value_t(), set_error_t( int ) > src;
-                bool                                                  called    = false;
-                bool                                                  has_value = true;
+                ll_source< unit, set_value_t(), set_error_t( int ) > src;
+                bool                                                 called    = false;
+                bool                                                 has_value = true;
 
                 auto op = ( src.schedule() | sink_err )
                               .connect( sink_err_recv_null{ &called, &has_value } );
                 op.start();
 
-                src.set_value();
+                broadcast( src, []( auto& e ) {
+                        e.set_value();
+                } );
                 CHECK( called );
                 CHECK( !has_value );
         }
 
         SUBCASE( "multiple error types" )
         {
-                broadcast_source< set_value_t(), set_error_t( int ), set_error_t( std::string ) >
+                ll_source< unit, set_value_t(), set_error_t( int ), set_error_t( std::string ) >
                                                  src;
                 bool                             called = false;
                 std::variant< int, std::string > val;
 
                 // Note: connect returns an op state that is typically not reusable for start().
                 // We need to re-connect for the second test or use two separate ops.
-                // But broadcast_source supports multiple receivers anyway.
+                // But ll_source supports multiple receivers anyway.
 
                 {
                         auto op = ( src.schedule() | sink_err )
                                       .connect( sink_err_multi_recv{ &called, &val } );
                         op.start();
-                        src.set_error( 123 );
+                        broadcast( src, []( auto& e ) {
+                                e.set_error( 123 );
+                        } );
                 }
                 CHECK( called );
                 CHECK( std::holds_alternative< int >( val ) );
@@ -3321,7 +3430,9 @@ TEST_CASE( "sink_err - basic operations" )
                         auto op = ( src.schedule() | sink_err )
                                       .connect( sink_err_multi_recv{ &called, &val } );
                         op.start();
-                        src.set_error( std::string( "oops" ) );
+                        broadcast( src, []( auto& e ) {
+                                e.set_error( std::string( "oops" ) );
+                        } );
                 }
                 CHECK( called );
                 CHECK( std::holds_alternative< std::string >( val ) );
@@ -3330,14 +3441,16 @@ TEST_CASE( "sink_err - basic operations" )
 
         SUBCASE( "stopped propagation" )
         {
-                broadcast_source< set_error_t( int ), set_value_t(), set_stopped_t() > src;
+                ll_source< unit, set_error_t( int ), set_value_t(), set_stopped_t() > src;
                 bool stopped_called = false;
 
                 auto op = ( src.schedule() | sink_err )
                               .connect( sink_err_stopped_recv{ &stopped_called } );
                 op.start();
 
-                src.set_stopped();
+                broadcast( src, []( auto& e ) {
+                        e.set_stopped();
+                } );
                 CHECK( stopped_called );
         }
 }
@@ -3453,9 +3566,9 @@ TEST_CASE( "then - basic operations" )
 
         SUBCASE( "value transformation" )
         {
-                broadcast_source< set_value_t( int ) > src;
-                bool                                   called = false;
-                int                                    result = -1;
+                ll_source< unit, set_value_t( int ) > src;
+                bool                                  called = false;
+                int                                   result = -1;
 
                 auto op = ( src.schedule() | then( []( int v ) {
                                     return v * 2;
@@ -3463,16 +3576,18 @@ TEST_CASE( "then - basic operations" )
                               .connect( then_int_recv{ &called, &result } );
                 op.start();
 
-                src.set_value( 21 );
+                broadcast( src, []( auto& e ) {
+                        e.set_value( 21 );
+                } );
                 CHECK( called );
                 CHECK( result == 42 );
         }
 
         SUBCASE( "type change" )
         {
-                broadcast_source< set_value_t( int ) > src;
-                bool                                   called = false;
-                std::string                            result;
+                ll_source< unit, set_value_t( int ) > src;
+                bool                                  called = false;
+                std::string                           result;
 
                 auto op = ( src.schedule() | then( []( int v ) {
                                     return std::to_string( v );
@@ -3480,29 +3595,33 @@ TEST_CASE( "then - basic operations" )
                               .connect( then_string_recv{ &called, &result } );
                 op.start();
 
-                src.set_value( 7 );
+                broadcast( src, []( auto& e ) {
+                        e.set_value( 7 );
+                } );
                 CHECK( called );
                 CHECK( result == "7" );
         }
 
         SUBCASE( "void return becomes set_value()" )
         {
-                broadcast_source< set_value_t( int ) > src;
-                bool                                   called = false;
+                ll_source< unit, set_value_t( int ) > src;
+                bool                                  called = false;
 
                 auto op =
                     ( src.schedule() | then( []( int ) {} ) ).connect( then_void_recv{ &called } );
                 op.start();
 
-                src.set_value( 99 );
+                broadcast( src, []( auto& e ) {
+                        e.set_value( 99 );
+                } );
                 CHECK( called );
         }
 
         SUBCASE( "error pass-through" )
         {
-                broadcast_source< set_error_t( int ) > src;
-                bool                                   called = false;
-                int                                    err    = -1;
+                ll_source< unit, set_error_t( int ) > src;
+                bool                                  called = false;
+                int                                   err    = -1;
 
                 auto op = ( src.schedule() | then( []( auto v ) {
                                     return v;
@@ -3510,15 +3629,17 @@ TEST_CASE( "then - basic operations" )
                               .connect( then_error_recv{ &called, &err } );
                 op.start();
 
-                src.set_error( 77 );
+                broadcast( src, []( auto& e ) {
+                        e.set_error( 77 );
+                } );
                 CHECK( called );
                 CHECK( err == 77 );
         }
 
         SUBCASE( "stopped pass-through" )
         {
-                broadcast_source< set_stopped_t() > src;
-                bool                                called = false;
+                ll_source< unit, set_stopped_t() > src;
+                bool                               called = false;
 
                 auto op = ( src.schedule() | then( []( auto v ) {
                                     return v;
@@ -3526,13 +3647,15 @@ TEST_CASE( "then - basic operations" )
                               .connect( then_stopped_recv{ &called } );
                 op.start();
 
-                src.set_stopped();
+                broadcast( src, []( auto& e ) {
+                        e.set_stopped();
+                } );
                 CHECK( called );
         }
 
         SUBCASE( "signature check" )
         {
-                using src_t = broadcast_source< set_value_t( int ) >;
+                using src_t = ll_source< unit, set_value_t( int ) >;
                 using then_sender_t =
                     decltype( std::declval< src_t >().schedule() | then( []( int v ) {
                                       return v * 2;
@@ -3571,7 +3694,7 @@ namespace
 
 /// Waits for a void trigger, increments a counter, then completes with set_value.
 static ecor::task< void >
-th_count_task( task_ctx& ctx, broadcast_source< set_value_t() >& trig, int& count )
+th_count_task( task_ctx& ctx, ll_source< unit, set_value_t() >& trig, int& count )
 {
         co_await trig.schedule();
         ++count;
@@ -3580,7 +3703,7 @@ th_count_task( task_ctx& ctx, broadcast_source< set_value_t() >& trig, int& coun
 
 /// Waits for a void trigger, increments a counter, then completes with set_error.
 static ecor::task< void >
-th_error_task( task_ctx& ctx, broadcast_source< set_value_t() >& trig, int& count )
+th_error_task( task_ctx& ctx, ll_source< unit, set_value_t() >& trig, int& count )
 {
         co_await trig.schedule();
         ++count;
@@ -3589,7 +3712,7 @@ th_error_task( task_ctx& ctx, broadcast_source< set_value_t() >& trig, int& coun
 
 /// Waits for a void trigger, then throws — causes set_error(task_unhandled_exception).
 static ecor::task< void >
-th_throwing_task( task_ctx&, broadcast_source< set_value_t() >& trig, int& count )
+th_throwing_task( task_ctx&, ll_source< unit, set_value_t() >& trig, int& count )
 {
         co_await trig.schedule();
         ++count;
@@ -3607,8 +3730,8 @@ static ecor::task< void > th_stop_aware_task( task_ctx& )
 /// Waits on a source that can deliver set_value or set_stopped. Increments counter on set_value.
 static ecor::task< void > th_cancel_task(
     task_ctx&,
-    broadcast_source< set_value_t(), set_stopped_t() >& cancel_src,
-    int&                                                count )
+    ll_source< unit, set_value_t(), set_stopped_t() >& cancel_src,
+    int&                                               count )
 {
         co_await cancel_src.schedule();
         ++count;
@@ -3626,10 +3749,10 @@ TEST_CASE( "task_holder - basic operations" )
 {
         SUBCASE( "restarts on set_value" )
         {
-                nd_mem                            mem;
-                task_ctx                          ctx{ mem };
-                broadcast_source< set_value_t() > trig;
-                int                               count = 0;
+                nd_mem                           mem;
+                task_ctx                         ctx{ mem };
+                ll_source< unit, set_value_t() > trig;
+                int                              count = 0;
 
                 task_holder h{ ctx, [&]( task_ctx& c ) {
                                       return th_count_task( c, trig, count );
@@ -3640,17 +3763,23 @@ TEST_CASE( "task_holder - basic operations" )
 
                 CHECK( count == 0 );
 
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 CHECK( count == 1 );
 
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 CHECK( count == 2 );
 
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 CHECK( count == 3 );
@@ -3659,7 +3788,9 @@ TEST_CASE( "task_holder - basic operations" )
                 bool done = false;
                 auto d    = h.stop().connect( th_done_recv{ &done } );
                 d.start();
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 REQUIRE( done );
@@ -3667,10 +3798,10 @@ TEST_CASE( "task_holder - basic operations" )
 
         SUBCASE( "restarts on set_error" )
         {
-                nd_mem                            mem;
-                task_ctx                          ctx{ mem };
-                broadcast_source< set_value_t() > trig;
-                int                               count = 0;
+                nd_mem                           mem;
+                task_ctx                         ctx{ mem };
+                ll_source< unit, set_value_t() > trig;
+                int                              count = 0;
 
                 task_holder h{ ctx, [&]( task_ctx& c ) {
                                       return th_error_task( c, trig, count );
@@ -3681,17 +3812,23 @@ TEST_CASE( "task_holder - basic operations" )
 
                 CHECK( count == 0 );
 
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 CHECK( count == 1 );
 
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 CHECK( count == 2 );
 
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 CHECK( count == 3 );
@@ -3700,7 +3837,9 @@ TEST_CASE( "task_holder - basic operations" )
                 bool done = false;
                 auto d    = h.stop().connect( th_done_recv{ &done } );
                 d.start();
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 REQUIRE( done );
@@ -3761,11 +3900,11 @@ TEST_CASE( "task_holder - basic operations" )
         {
                 // stop() is called while the task is waiting. The task then completes with
                 // set_value. Because stop was requested, the holder exits instead of restarting.
-                nd_mem                            mem;
-                task_ctx                          ctx{ mem };
-                broadcast_source< set_value_t() > trig;
-                int                               count = 0;
-                bool                              done  = false;
+                nd_mem                           mem;
+                task_ctx                         ctx{ mem };
+                ll_source< unit, set_value_t() > trig;
+                int                              count = 0;
+                bool                             done  = false;
 
                 task_holder h{ ctx, [&]( task_ctx& c ) {
                                       return th_count_task( c, trig, count );
@@ -3777,7 +3916,9 @@ TEST_CASE( "task_holder - basic operations" )
                 auto d = h.stop().connect( th_done_recv{ &done } );
                 d.start();
 
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
 
@@ -3785,7 +3926,9 @@ TEST_CASE( "task_holder - basic operations" )
                 CHECK( count == 1 );
 
                 // no further restarts: another trigger does nothing
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 CHECK( count == 1 );
@@ -3794,11 +3937,11 @@ TEST_CASE( "task_holder - basic operations" )
         SUBCASE( "stop wins on next set_error" )
         {
                 // Same as above but task exits via set_error.
-                nd_mem                            mem;
-                task_ctx                          ctx{ mem };
-                broadcast_source< set_value_t() > trig;
-                int                               count = 0;
-                bool                              done  = false;
+                nd_mem                           mem;
+                task_ctx                         ctx{ mem };
+                ll_source< unit, set_value_t() > trig;
+                int                              count = 0;
+                bool                             done  = false;
 
                 task_holder h{ ctx, [&]( task_ctx& c ) {
                                       return th_error_task( c, trig, count );
@@ -3810,7 +3953,9 @@ TEST_CASE( "task_holder - basic operations" )
                 auto d = h.stop().connect( th_done_recv{ &done } );
                 d.start();
 
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
 
@@ -3823,10 +3968,10 @@ TEST_CASE( "task_holder - basic operations" )
                 // The inner source fires set_stopped, propagating set_stopped to the holder's
                 // _recv. Because stop() has NOT been called, the holder restarts the task
                 // rather than exiting.
-                nd_mem                                             mem;
-                task_ctx                                           ctx{ mem };
-                broadcast_source< set_value_t(), set_stopped_t() > cancel_src;
-                int                                                count = 0;
+                nd_mem                                            mem;
+                task_ctx                                          ctx{ mem };
+                ll_source< unit, set_value_t(), set_stopped_t() > cancel_src;
+                int                                               count = 0;
 
                 task_holder h{ ctx, [&]( task_ctx& c ) {
                                       return th_cancel_task( c, cancel_src, count );
@@ -3835,7 +3980,9 @@ TEST_CASE( "task_holder - basic operations" )
                 while ( ctx.core.run_once() )
                         ;  // task suspended at co_await cancel_src
 
-                cancel_src.set_stopped();  // propagates set_stopped → reschedule holder
+                broadcast( cancel_src, []( auto& e ) {
+                        e.set_stopped();
+                } );  // propagates set_stopped → reschedule holder
                 while ( ctx.core.run_once() )
                         ;  // holder restarts; new task suspended at co_await
 
@@ -3843,7 +3990,9 @@ TEST_CASE( "task_holder - basic operations" )
                 CHECK( count == 0 );
 
                 // new task is running; deliver set_value → task completes → restart again
-                cancel_src.set_value();
+                broadcast( cancel_src, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 CHECK( count == 1 );
@@ -3852,7 +4001,9 @@ TEST_CASE( "task_holder - basic operations" )
                 bool done = false;
                 auto d    = h.stop().connect( th_done_recv{ &done } );
                 d.start();
-                cancel_src.set_value();
+                broadcast( cancel_src, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 REQUIRE( done );
@@ -3863,11 +4014,11 @@ TEST_CASE( "task_holder - basic operations" )
                 // stop() is called, then the inner source fires set_stopped. The holder's
                 // _recv.set_stopped() reschedules the holder, and resume() sees stop_requested
                 // → exits the loop and fires the done sender.
-                nd_mem                                             mem;
-                task_ctx                                           ctx{ mem };
-                broadcast_source< set_value_t(), set_stopped_t() > cancel_src;
-                int                                                count = 0;
-                bool                                               done  = false;
+                nd_mem                                            mem;
+                task_ctx                                          ctx{ mem };
+                ll_source< unit, set_value_t(), set_stopped_t() > cancel_src;
+                int                                               count = 0;
+                bool                                              done  = false;
 
                 task_holder h{ ctx, [&]( task_ctx& c ) {
                                       return th_cancel_task( c, cancel_src, count );
@@ -3879,7 +4030,9 @@ TEST_CASE( "task_holder - basic operations" )
                 auto d = h.stop().connect( th_done_recv{ &done } );
                 d.start();
 
-                cancel_src.set_stopped();
+                broadcast( cancel_src, []( auto& e ) {
+                        e.set_stopped();
+                } );
                 while ( ctx.core.run_once() )
                         ;
 
@@ -3893,10 +4046,10 @@ TEST_CASE( "task_holder - basic operations" )
                 // invoke_set_error(task_error::task_unhandled_exception), which reaches
                 // _recv::set_error and reschedules the holder — verifying that an exception
                 // is treated as an error and the holder restarts transparently.
-                nd_mem                            mem;
-                task_ctx                          ctx{ mem };
-                broadcast_source< set_value_t() > trig;
-                int                               count = 0;
+                nd_mem                           mem;
+                task_ctx                         ctx{ mem };
+                ll_source< unit, set_value_t() > trig;
+                int                              count = 0;
 
                 task_holder h{ ctx, [&]( task_ctx& c ) {
                                       return th_throwing_task( c, trig, count );
@@ -3908,13 +4061,17 @@ TEST_CASE( "task_holder - basic operations" )
                 CHECK( count == 0 );
 
                 // first run: task throws → set_error → restart
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 CHECK( count == 1 );
 
                 // second run: task throws again → restarted again
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 ;
@@ -3924,7 +4081,9 @@ TEST_CASE( "task_holder - basic operations" )
                 bool done = false;
                 auto d    = h.stop().connect( th_done_recv{ &done } );
                 d.start();
-                trig.set_value();
+                broadcast( trig, []( auto& e ) {
+                        e.set_value();
+                } );
                 while ( ctx.core.run_once() )
                         ;
                 REQUIRE( done );
@@ -4174,9 +4333,9 @@ namespace sender_receiver_concepts_test
 TEST_CASE( "sender concept" )
 {
         // Standard built-in senders all satisfy the concept
-        static_assert( sender< _ll_sender< set_value_t( int ) > > );
+        static_assert( sender< _ll_sender< unit, set_value_t( int ) > > );
         static_assert(
-            sender< _ll_sender< set_value_t( int ), set_error_t( int ), set_stopped_t() > > );
+            sender< _ll_sender< unit, set_value_t( int ), set_error_t( int ), set_stopped_t() > > );
         static_assert( sender< _just_error< int > > );
         static_assert( sender< task< void > > );
         static_assert( sender< task< int > > );
@@ -4198,7 +4357,7 @@ TEST_CASE( "receiver concept" )
 
         // Scalars, senders, and structs without receiver_concept are not receivers
         static_assert( !receiver< int > );
-        static_assert( !receiver< _ll_sender< set_value_t( int ) > > );
+        static_assert( !receiver< _ll_sender< unit, set_value_t( int ) > > );
         static_assert( !receiver< no_concept_recv > );
         // receiver_concept present but points to sender_t, not receiver_t
         static_assert( !receiver< wrong_concept_recv > );
@@ -4208,9 +4367,9 @@ TEST_CASE( "receiver_for concept" )
 {
         using namespace sender_receiver_concepts_test;
 
-        using val_sender  = _ll_sender< set_value_t( int ) >;
+        using val_sender  = _ll_sender< unit, set_value_t( int ) >;
         using err_sender  = _just_error< task_error >;
-        using stop_sender = _ll_sender< set_stopped_t() >;
+        using stop_sender = _ll_sender< unit, set_stopped_t() >;
 
         // Full match: receiver handles every signature the sender declares
         static_assert( receiver_for< int_recv, val_sender > );
@@ -4283,7 +4442,7 @@ TEST_CASE( "connect CPO" )
         using namespace connect_cpo_test;
 
         // connect CPO returns the same type as member .connect()
-        using src_t    = broadcast_source< set_value_t( int ) >;
+        using src_t    = ll_source< unit, set_value_t( int ) >;
         using sender_t = decltype( std::declval< src_t >().schedule() );
         static_assert(
             std::is_same_v<
@@ -4299,7 +4458,9 @@ TEST_CASE( "connect CPO" )
         auto op = ecor::connect( src.schedule(), test_recv{ .val = result } );
         op.start();
         ctx.core.run_once();
-        src.set_value( 42 );
+        broadcast( src, []( auto& e ) {
+                e.set_value( 42 );
+        } );
         CHECK( result == 42 );
 
         // _connectable concept holds for valid sender-receiver pairs
@@ -4317,13 +4478,13 @@ TEST_CASE( "connect CPO" )
 namespace async_arena_test
 {
 
-        /// A simple managed type whose async_destroy returns a sender from a fifo_source.
+        /// A simple managed type whose async_destroy returns a sender from an ll_source.
         /// Tracks destruction order via a shared log vector.
         struct tracked_obj
         {
-                int                           id;
-                std::vector< int >&           log;
-                fifo_source< set_value_t() >& destroy_src;
+                int                               id;
+                std::vector< int >&               log;
+                ll_source< unit, set_value_t() >& destroy_src;
 
                 auto async_destroy()
                 {
@@ -4424,8 +4585,8 @@ TEST_CASE( "async_arena - basic lifecycle" )
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t() > destroy_src;
-        std::vector< int >           log;
+        ll_source< unit, set_value_t() > destroy_src;
+        std::vector< int >               log;
 
         async_arena< task_ctx, nd_mem > arena( ctx, mem );
 
@@ -4444,7 +4605,8 @@ TEST_CASE( "async_arena - basic lifecycle" )
         CHECK( log.empty() );  // async_destroy sender still pending
 
         // external code fires the destroy sender
-        destroy_src.set_value();
+        if ( auto* e = destroy_src.query_next() )
+                e->set_value();
 
         // run_once: arena calls finish_cleanup — destroys op, ~T(), deallocs
         ctx.core.run_once();
@@ -4468,8 +4630,8 @@ TEST_CASE( "async_arena - copy semantics" )
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t() > destroy_src;
-        std::vector< int >           log;
+        ll_source< unit, set_value_t() > destroy_src;
+        std::vector< int >               log;
 
         async_arena< task_ctx, nd_mem > arena( ctx, mem );
 
@@ -4483,9 +4645,10 @@ TEST_CASE( "async_arena - copy semantics" )
 
         p1.reset();  // refcount→0, destroy enqueued
 
-        ctx.core.run_once();      // start_destroy
-        destroy_src.set_value();  // async_destroy completes
-        ctx.core.run_once();      // finish_cleanup
+        ctx.core.run_once();  // start_destroy
+        if ( auto* e = destroy_src.query_next() )
+                e->set_value();  // async_destroy completes
+        ctx.core.run_once();     // finish_cleanup
 
         CHECK( log.size() == 1 );
         CHECK( log[0] == 1 );
@@ -4504,8 +4667,8 @@ TEST_CASE( "async_arena - move semantics" )
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t() > destroy_src;
-        std::vector< int >           log;
+        ll_source< unit, set_value_t() > destroy_src;
+        std::vector< int >               log;
 
         async_arena< task_ctx, nd_mem > arena( ctx, mem );
 
@@ -4519,7 +4682,8 @@ TEST_CASE( "async_arena - move semantics" )
         p2.reset();
 
         ctx.core.run_once();
-        destroy_src.set_value();
+        if ( auto* e = destroy_src.query_next() )
+                e->set_value();
         ctx.core.run_once();
 
         CHECK( log.size() == 1 );
@@ -4539,9 +4703,9 @@ TEST_CASE( "async_arena - multiple objects" )
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t() > destroy_src_a;
-        fifo_source< set_value_t() > destroy_src_b;
-        std::vector< int >           log;
+        ll_source< unit, set_value_t() > destroy_src_a;
+        ll_source< unit, set_value_t() > destroy_src_b;
+        std::vector< int >               log;
 
         async_arena< task_ctx, nd_mem > arena( ctx, mem );
 
@@ -4551,7 +4715,8 @@ TEST_CASE( "async_arena - multiple objects" )
         pa.reset();  // only Foo queued
 
         ctx.core.run_once();  // start_destroy for object 1
-        destroy_src_a.set_value();
+        if ( auto* e = destroy_src_a.query_next() )
+                e->set_value();
         ctx.core.run_once();  // finish_cleanup for object 1
 
         CHECK( log.size() == 1 );
@@ -4560,7 +4725,8 @@ TEST_CASE( "async_arena - multiple objects" )
         pb.reset();  // now object 2 queued
 
         ctx.core.run_once();  // start_destroy for object 2
-        destroy_src_b.set_value();
+        if ( auto* e = destroy_src_b.query_next() )
+                e->set_value();
         ctx.core.run_once();  // finish_cleanup for object 2
 
         CHECK( log.size() == 2 );
@@ -4580,8 +4746,8 @@ TEST_CASE( "async_arena - destroy as plain sender" )
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t() > destroy_src;
-        std::vector< int >           log;
+        ll_source< unit, set_value_t() > destroy_src;
+        std::vector< int >               log;
 
         async_arena< task_ctx, nd_mem > arena( ctx, mem );
 
@@ -4592,7 +4758,8 @@ TEST_CASE( "async_arena - destroy as plain sender" )
 
         CHECK( log.empty() );  // async_destroy not yet fired
 
-        destroy_src.set_value();  // external fire
+        if ( auto* e = destroy_src.query_next() )
+                e->set_value();  // external fire
 
         ctx.core.run_once();  // finish_cleanup
 
@@ -4645,7 +4812,7 @@ TEST_CASE( "async_arena - destroy as task<void>" )
 
 /// Helper coroutine for interleaving test.
 static ecor::task< void >
-interleave_coro( task_ctx&, broadcast_source< set_value_t( int ) >& src, int& result )
+interleave_coro( task_ctx&, ll_source< unit, set_value_t( int ) >& src, int& result )
 {
         result = co_await src.schedule();
 }
@@ -4657,10 +4824,10 @@ TEST_CASE( "async_arena - interleaving with normal tasks" )
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t() >           destroy_src;
-        std::vector< int >                     log;
-        broadcast_source< set_value_t( int ) > task_src;
-        int                                    task_result = -1;
+        ll_source< unit, set_value_t() >      destroy_src;
+        std::vector< int >                    log;
+        ll_source< unit, set_value_t( int ) > task_src;
+        int                                   task_result = -1;
 
         async_arena< task_ctx, nd_mem > arena( ctx, mem );
 
@@ -4677,14 +4844,17 @@ TEST_CASE( "async_arena - interleaving with normal tasks" )
         ctx.core.run_once();  // arena: start_destroy
 
         int v = 42;
-        task_src.set_value( v );  // fire broadcast — task gets rescheduled
+        broadcast( task_src, [&]( auto& e ) {
+                e.set_value( v );
+        } );  // fire broadcast — task gets rescheduled
 
         CHECK( task_result == -1 );  // not yet run
 
         ctx.core.run_once();  // task resumes with value 42
         CHECK( task_result == 42 );
 
-        destroy_src.set_value();
+        if ( auto* e = destroy_src.query_next() )
+                e->set_value();
         ctx.core.run_once();  // arena: finish_cleanup
 
         CHECK( log.size() == 1 );
@@ -4704,9 +4874,9 @@ TEST_CASE( "async_arena - reentrancy during cleanup" )
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t() > destroy_src_a;
-        fifo_source< set_value_t() > destroy_src_b;
-        std::vector< int >           log;
+        ll_source< unit, set_value_t() > destroy_src_a;
+        ll_source< unit, set_value_t() > destroy_src_b;
+        std::vector< int >               log;
 
         async_arena< task_ctx, nd_mem > arena( ctx, mem );
 
@@ -4718,7 +4888,7 @@ TEST_CASE( "async_arena - reentrancy during cleanup" )
         {
                 int                                        id;
                 std::vector< int >&                        log;
-                fifo_source< set_value_t() >&              destroy_src;
+                ll_source< unit, set_value_t() >&          destroy_src;
                 async_ptr< tracked_obj, task_ctx, nd_mem > other;
 
                 auto async_destroy()
@@ -4738,7 +4908,8 @@ TEST_CASE( "async_arena - reentrancy during cleanup" )
 
         // run_once: arena picks up A's destroy
         ctx.core.run_once();
-        destroy_src_a.set_value();
+        if ( auto* e = destroy_src_a.query_next() )
+                e->set_value();
 
         // run_once: arena calls finish_cleanup → ~A runs → drops B → B queued
         ctx.core.run_once();
@@ -4748,7 +4919,8 @@ TEST_CASE( "async_arena - reentrancy during cleanup" )
 
         // B's destroy now in queue — arena should process it
         ctx.core.run_once();  // start_destroy for B
-        destroy_src_b.set_value();
+        if ( auto* e = destroy_src_b.query_next() )
+                e->set_value();
         ctx.core.run_once();  // finish_cleanup for B
 
         CHECK( log.size() == 2 );
@@ -4768,9 +4940,9 @@ TEST_CASE( "async_arena - async_destroy() completes after all objects destroyed"
         nd_mem   mem;
         task_ctx ctx{ mem };
 
-        fifo_source< set_value_t() > destroy_src_a;
-        fifo_source< set_value_t() > destroy_src_b;
-        std::vector< int >           log;
+        ll_source< unit, set_value_t() > destroy_src_a;
+        ll_source< unit, set_value_t() > destroy_src_b;
+        std::vector< int >               log;
 
         async_arena< task_ctx, nd_mem > arena( ctx, mem );
 
@@ -4787,7 +4959,8 @@ TEST_CASE( "async_arena - async_destroy() completes after all objects destroyed"
         pa.reset();
 
         ctx.core.run_once();  // start_destroy for A
-        destroy_src_a.set_value();
+        if ( auto* e = destroy_src_a.query_next() )
+                e->set_value();
         ctx.core.run_once();  // finish_cleanup for A
 
         CHECK( !done );  // B still alive
@@ -4795,7 +4968,8 @@ TEST_CASE( "async_arena - async_destroy() completes after all objects destroyed"
         pb.reset();
 
         ctx.core.run_once();  // start_destroy for B
-        destroy_src_b.set_value();
+        if ( auto* e = destroy_src_b.query_next() )
+                e->set_value();
 
         CHECK( !done );  // not yet — finish_cleanup hasn't run
 

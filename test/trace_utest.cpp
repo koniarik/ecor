@@ -291,7 +291,7 @@ static task< void, rec_cfg > tr_void( task_ctx& ctx )
 }
 
 static task< int, rec_cfg >
-tr_await_int( task_ctx& ctx, broadcast_source< set_value_t( int ) >& src )
+tr_await_int( task_ctx& ctx, ll_source< unit, set_value_t( int ) >& src )
 {
         int v = co_await src.schedule();
         co_return v;
@@ -305,23 +305,23 @@ static task< void, rec_cfg > tr_throw( task_ctx& ctx )
 }
 
 static task< void, rec_cfg >
-tr_await_err( task_ctx& ctx, broadcast_source< set_value_t(), set_error_t( task_error ) >& src )
+tr_await_err( task_ctx& ctx, ll_source< unit, set_value_t(), set_error_t( task_error ) >& src )
 {
         co_await src.schedule();
         co_return;
 }
 
 static task< void, rec_cfg >
-tr_await_stop( task_ctx& ctx, broadcast_source< set_value_t(), set_stopped_t() >& src )
+tr_await_stop( task_ctx& ctx, ll_source< unit, set_value_t(), set_stopped_t() >& src )
 {
         co_await src.schedule();
         co_return;
 }
 
 static task< int, rec_cfg > tr_two_awaits(
-    task_ctx&                               ctx,
-    broadcast_source< set_value_t( int ) >& a,
-    broadcast_source< set_value_t( int ) >& b )
+    task_ctx&                              ctx,
+    ll_source< unit, set_value_t( int ) >& a,
+    ll_source< unit, set_value_t( int ) >& b )
 {
         int x = co_await a.schedule();
         int y = co_await b.schedule();
@@ -537,8 +537,8 @@ TEST_CASE( "trace - B1 await child value" )
         trace_log log;
         g_log = &log;
 
-        broadcast_source< set_value_t( int ) > src;
-        int                                    out = 0;
+        ll_source< unit, set_value_t( int ) > src;
+        int                                   out = 0;
 
         {
                 auto op = tr_await_int( ctx, src ).connect( _tr_recv_int{ &out } );
@@ -548,7 +548,9 @@ TEST_CASE( "trace - B1 await child value" )
                 ctx.core.run_once();
 
                 // Fire the child sender
-                src.set_value( 11 );
+                broadcast( src, []( auto& e ) {
+                        e.set_value( 11 );
+                } );
 
                 // Second run_once: task resumes, runs to completion
                 ctx.core.run_once();
@@ -609,14 +611,16 @@ TEST_CASE( "trace - B2 await child error propagates" )
         trace_log log;
         g_log = &log;
 
-        broadcast_source< set_value_t(), set_error_t( task_error ) > src;
-        task_error                                                   err_out = task_error::none;
+        ll_source< unit, set_value_t(), set_error_t( task_error ) > src;
+        task_error                                                  err_out = task_error::none;
 
         {
                 auto op = tr_await_err( ctx, src ).connect( _tr_recv_void{ nullptr, &err_out } );
                 op.start();
                 ctx.core.run_once();
-                src.set_error( task_error::task_unfinished );
+                broadcast( src, []( auto& e ) {
+                        e.set_error( task_error::task_unfinished );
+                } );
                 ctx.core.run_once();
         }
 
@@ -655,15 +659,17 @@ TEST_CASE( "trace - B3 await child stop propagates" )
         trace_log log;
         g_log = &log;
 
-        broadcast_source< set_value_t(), set_stopped_t() > src;
-        bool                                               stopped = false;
+        ll_source< unit, set_value_t(), set_stopped_t() > src;
+        bool                                              stopped = false;
 
         {
                 auto op = tr_await_stop( ctx, src )
                               .connect( _tr_recv_void{ nullptr, nullptr, &stopped } );
                 op.start();
                 ctx.core.run_once();
-                src.set_stopped();
+                broadcast( src, []( auto& e ) {
+                        e.set_stopped();
+                } );
                 ctx.core.run_once();
         }
 
@@ -702,17 +708,21 @@ TEST_CASE( "trace - B4 two consecutive co_awaits" )
         trace_log log;
         g_log = &log;
 
-        broadcast_source< set_value_t( int ) > a;
-        broadcast_source< set_value_t( int ) > b;
-        int                                    out = 0;
+        ll_source< unit, set_value_t( int ) > a;
+        ll_source< unit, set_value_t( int ) > b;
+        int                                   out = 0;
 
         {
                 auto op = tr_two_awaits( ctx, a, b ).connect( _tr_recv_int{ &out } );
                 op.start();
                 ctx.core.run_once();  // initial resume → suspends on co_await a
-                a.set_value( 5 );
+                broadcast( a, []( auto& e ) {
+                        e.set_value( 5 );
+                } );
                 ctx.core.run_once();  // resumes → suspends on co_await b
-                b.set_value( 6 );
+                broadcast( b, []( auto& e ) {
+                        e.set_value( 6 );
+                } );
                 ctx.core.run_once();  // resumes → co_return 11
         }
 
@@ -763,7 +773,7 @@ TEST_CASE( "trace - C1 destroy_with_continuation when op destroyed before await 
         trace_log log;
         g_log = &log;
 
-        broadcast_source< set_value_t( int ) > src;
+        ll_source< unit, set_value_t( int ) > src;
 
         {
                 // Scope-limit the op_state so it is destroyed while the task is still

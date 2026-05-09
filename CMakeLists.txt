@@ -17,7 +17,7 @@ add_library(ecor INTERFACE include/ecor/ecor.hpp)
 target_include_directories(
   ecor INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                  $<INSTALL_INTERFACE:include>)
-target_compile_features(ecor INTERFACE cxx_std_20)
+target_compile_features(ecor INTERFACE cxx_std_23)
 target_link_libraries(ecor INTERFACE zll)
 
 add_library(ecor::ecor ALIAS ecor)
@@ -40,7 +40,7 @@ option(ECOR_SIZE_PROBE_ENABLED "Build the ARM code-size probe binary" OFF)
 if(ECOR_SIZE_PROBE_ENABLED)
   add_executable(ecor_size_probe test/size_probe.cpp)
   target_link_libraries(ecor_size_probe PRIVATE ecor)
-  target_compile_features(ecor_size_probe PRIVATE cxx_std_20)
+  target_compile_features(ecor_size_probe PRIVATE cxx_std_23)
 
   # Post-build: print section totals with arm-none-eabi-size
   find_program(ARM_SIZE arm-none-eabi-size)

@@ -68,6 +68,8 @@ def gen_cpp(lines):
     void close_file() {{}}
     void disable_interrupt() {{}}
     void flush_buffers() {{}}
+    void start_uart_tx(uint8_t) {{}}
+    uint8_t wait_for_uart_rx() {{ return 0; }}
     void* custom_alloc(size_t, size_t) {{ return nullptr; }}
     void custom_free(void*, size_t, size_t) {{}}
 
