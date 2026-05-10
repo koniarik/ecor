@@ -2283,6 +2283,8 @@ struct _awaitable_expected
         template < typename... Args >
         void set_value( Args&&... args ) noexcept( std::is_nothrow_constructible_v< T, Args... > )
         {
+                if ( state == _awaitable_state_e::value )
+                        val.~T();
                 new ( (void*) &val ) T( (Args&&) args... );
                 state = _awaitable_state_e::value;
         }

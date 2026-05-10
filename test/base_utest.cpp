@@ -5412,4 +5412,87 @@ TEST_CASE( "sender_from - CTAD deduces correct type" )
         CHECK( true );
 }
 
+// ---------------------------------------------------------------------------
+// _awaitable_expected<T> — construction/copy/move/destruction counting tests
+
+namespace
+{
+        struct _cv_counts
+        {
+                int constructs = 0;
+                int copies     = 0;
+                int moves      = 0;
+                int destructs  = 0;
+        };
+
+        struct _cv
+        {
+                _cv_counts* c;
+                int         id;
+
+                explicit _cv( int id, _cv_counts* c ) noexcept
+                  : c( c )
+                  , id( id )
+                {
+                        ++c->constructs;
+                }
+
+                _cv( _cv const& o ) noexcept
+                  : c( o.c )
+                  , id( o.id )
+                {
+                        ++c->constructs;
+                        ++c->copies;
+                }
+
+                _cv( _cv&& o ) noexcept
+                  : c( o.c )
+                  , id( o.id )
+                {
+                        ++c->constructs;
+                        ++c->moves;
+                }
+
+                ~_cv() noexcept
+                {
+                        ++c->destructs;
+                }
+        };
+}  // namespace
+
+TEST_CASE( "_awaitable_expected<T> - single set_value: one construct, one destruct" )
+{
+        _cv_counts cnt;
+        {
+                _awaitable_expected< _cv > exp;
+                exp.set_value( 1, &cnt );
+                CHECK( cnt.constructs == 1 );
+                CHECK( cnt.copies == 0 );
+                CHECK( cnt.moves == 0 );
+                CHECK( cnt.destructs == 0 );
+        }
+        CHECK( cnt.constructs == 1 );
+        CHECK( cnt.destructs == 1 );  // destructor cleaned up the single value
+}
+
+TEST_CASE(
+    "_awaitable_expected<T> - set_value twice: first value is destroyed before overwrite, no leak" )
+{
+        _cv_counts cnt;
+        {
+                _awaitable_expected< _cv > exp;
+
+                exp.set_value( 1, &cnt );
+                CHECK( cnt.constructs == 1 );
+                CHECK( cnt.destructs == 0 );
+
+                exp.set_value( 2, &cnt );  // must destroy the first value before placement-new
+                CHECK( cnt.constructs == 2 );
+                CHECK( cnt.destructs == 1 );  // first value destroyed before overwrite
+        }
+        // second value destroyed by ~_awaitable_expected — no net leak
+        CHECK( cnt.constructs == 2 );
+        CHECK( cnt.destructs == 2 );
+}
+
 }  // namespace ecor
