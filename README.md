@@ -1051,7 +1051,7 @@ struct my_error {};
 using my_ctx_type = ecor::task_ctx;
 
 struct my_cfg {
-    using extra_error_signatures = ecor::completion_signatures<ecor::set_error_t(my_error)>;
+    using error_signatures = ecor::completion_signatures<ecor::set_error_t(my_error), ecor::set_error_t(ecor::task_error)>;
     using trace_type = ecor::task_default_trace;
 };
 
@@ -1215,8 +1215,8 @@ struct my_trace : ecor::task_default_trace {
 };
 
 struct my_cfg {
-    using extra_error_signatures = ecor::completion_signatures<>;
-    using trace_type             = my_trace;
+    using error_signatures = ecor::completion_signatures<ecor::set_error_t(ecor::task_error)>;
+    using trace_type       = my_trace;
 };
 
 ecor::task<void, my_cfg> traced_task(ecor::task_ctx& ctx) { co_return; }

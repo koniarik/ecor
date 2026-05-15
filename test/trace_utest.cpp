@@ -214,16 +214,16 @@ struct rec_trace
 
 struct rec_cfg
 {
-        using extra_error_signatures = completion_signatures<>;
-        using trace_type             = rec_trace;
+        using error_signatures = completion_signatures< set_error_t( task_error ) >;
+        using trace_type       = rec_trace;
 };
 
 // ─── Zero-overhead static assertion (C.4) ────────────────────────────────────
 
 struct _empty_trace_cfg
 {
-        using extra_error_signatures = completion_signatures<>;
-        using trace_type             = task_default_trace;
+        using error_signatures = completion_signatures< set_error_t( task_error ) >;
+        using trace_type       = task_default_trace;
 };
 static_assert( sizeof( task< void, _empty_trace_cfg > ) == sizeof( task< void > ) );
 

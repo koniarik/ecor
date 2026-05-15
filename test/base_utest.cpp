@@ -2004,8 +2004,9 @@ TEST_CASE( "task - allocation error" )
 
 struct task_cfg
 {
-        using extra_error_signatures = completion_signatures< set_error_t( std::string ) >;
-        using trace_type             = task_default_trace;
+        using error_signatures =
+            completion_signatures< set_error_t( std::string ), set_error_t( task_error ) >;
+        using trace_type = task_default_trace;
 };
 using my_task = ecor::task< void, task_cfg >;
 
@@ -2048,6 +2049,68 @@ TEST_CASE( "task - error extension" )
         h.start();
         ctx.core.run_once();
         CHECK_EQ( err_msg, "custom error occurred" );
+}
+
+/// Error type that is constructible from task_error but is not task_error itself.
+struct task_error_wrap
+{
+        task_error inner;
+        /*implicit*/ task_error_wrap( task_error e ) noexcept
+          : inner( e )
+        {
+        }
+};
+
+struct task_cfg_convertible
+{
+        // No exact set_error_t(task_error) — only set_error_t(task_error_wrap) and
+        // set_error_t(std::string). The concept must accept this because task_error_wrap
+        // is constructible from task_error.
+        using error_signatures =
+            completion_signatures< set_error_t( task_error_wrap ), set_error_t( std::string ) >;
+        using trace_type = task_default_trace;
+};
+
+static_assert( ecor::task_config< task_cfg_convertible > );
+
+struct _convertible_cfg_receiver
+{
+        using receiver_concept = ecor::receiver_t;
+
+        task_error_wrap* result;
+
+        void set_value()
+        {
+        }
+        void set_error( task_error_wrap e )
+        {
+                *result = e;
+        }
+        void set_error( std::string )
+        {
+        }
+        void set_stopped()
+        {
+        }
+};
+
+static ecor::task< void, task_cfg_convertible > task_error_convertible_f( task_ctx& )
+{
+        throw 42;  // triggers unhandled_exception() →
+                   // invoke_set_error(task_error::task_unhandled_exception)
+        co_return;
+}
+
+TEST_CASE( "task_config - error_signatures with type constructible from task_error" )
+{
+        nd_mem          mem;
+        task_ctx        ctx{ mem };
+        task_error_wrap received{ task_error::none };
+
+        auto h = task_error_convertible_f( ctx ).connect( _convertible_cfg_receiver{ &received } );
+        h.start();
+        ctx.core.run_once();
+        CHECK_EQ( received.inner, task_error::task_unhandled_exception );
 }
 
 TEST_CASE( "inplace_stop_source - basic functionality" )
@@ -2962,8 +3025,9 @@ struct custom_error
 
 struct custom_config
 {
-        using extra_error_signatures = completion_signatures< set_error_t( custom_error ) >;
-        using trace_type             = task_default_trace;
+        using error_signatures =
+            completion_signatures< set_error_t( custom_error ), set_error_t( task_error ) >;
+        using trace_type = task_default_trace;
 };
 
 static ecor::task< void, custom_config > yielding_task( task_ctx& )

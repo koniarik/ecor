@@ -2699,29 +2699,6 @@ struct task_default_trace
         }
 };
 
-/// Task can be configured by passing type with configuration information. This is default value.
-struct task_default_cfg
-{
-        using extra_error_signatures = completion_signatures<>;
-        using trace_type             = task_default_trace;
-};
-
-/// Concept for the task configuration. A type is task configuration if:
-/// - It has a nested type `extra_error_signatures` that is a `completion_signatures` type, which
-///   specifies the additional error signatures that the task can complete with, in addition to the
-///   default set of error signatures defined by the library. This allows the user to customize the
-///   error handling of the task.
-/// - It has a nested type `trace_type` (EXPERIMENTAL — see `task_default_trace`) used by the
-///   promise to dispatch trace events. Use `task_default_trace` if you do not need tracing.
-template < typename T >
-concept task_config = requires() {
-        typename T::extra_error_signatures;
-        typename T::trace_type;
-};
-
-template < typename T, task_config CFG = task_default_cfg >
-struct task;
-
 /// Errors that can be emitted by the task implementation.
 enum class task_error : uint8_t
 {
@@ -2732,6 +2709,34 @@ enum class task_error : uint8_t
         task_unhandled_exception = 5,  ///< Task threw an exception that was not caught.
         task_missing             = 6,  ///< Coroutine task handle is empty.
 };
+
+/// Task can be configured by passing type with configuration information. This is default value.
+struct task_default_cfg
+{
+        using error_signatures = completion_signatures< set_error_t( task_error ) >;
+        using trace_type       = task_default_trace;
+};
+
+/// Concept for the task configuration. A type is task configuration if:
+/// - It has a nested type `error_signatures` that is a `completion_signatures` type specifying the
+///   full set of error signatures the task can complete with. It MUST contain at least one
+///   `set_error_t(E)` such that `task_error` is implicitly convertible to `E`, so the task
+///   implementation can signal internal errors. An exact `set_error_t(task_error)` satisfies
+///   this, but any error type constructible from `task_error` is also accepted.
+/// - It has a nested type `trace_type` (EXPERIMENTAL — see `task_default_trace`) used by the
+///   promise to dispatch trace events. Use `task_default_trace` if you do not need tracing.
+template < typename T >
+concept task_config =
+    requires() {
+            typename T::error_signatures;
+            typename T::trace_type;
+    } &&
+    _vtable_can_call_error<
+        _apply_to_sigs_t< _sig_vtable, typename T::error_signatures >,
+        task_error >;
+
+template < typename T, task_config CFG = task_default_cfg >
+struct task;
 
 /// Base class for task promises. This implements the common functionality for all task promises,
 /// such as memory allocation and deallocation, and provides the interface for rescheduling the task
@@ -3144,8 +3149,7 @@ struct task
         using config_type    = CFG;
         using promise_type   = _promise_type< task >;
 
-        using _error_completions =
-            _sigs_append_t< typename CFG::extra_error_signatures, set_error_t( task_error ) >;
+        using _error_completions = typename CFG::error_signatures;
 
         using completion_signatures =
             _sigs_append_t< _error_completions, _value_setter_t< T >, set_stopped_t() >;
