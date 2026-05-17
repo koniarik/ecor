@@ -112,9 +112,20 @@ ecor::task<int> compute_value(ecor::task_ctx& ctx)
 }
 ```
 
-### Awaiting Other Tasks
+### The Context Argument
 
-Tasks can await other tasks, creating async chains:
+Every task coroutine **must** take a value satisfying `ecor::task_context` as its **first
+argument**. `ecor::task_ctx` is the built-in type that satisfies this concept. The context
+carries the scheduler (`task_core`) and the memory resource used to allocate the coroutine
+frame.
+
+Because the first argument is special and resolved at coroutine instantiation time, **lambda
+functions cannot be tasks** — only named free functions or static member functions can have
+`ecor::task<T>` as their return type.
+
+> For how to implement a custom context type, see [Custom Task Context](#custom-task-context).
+
+### Awaiting Other Tasks
 
 ```cpp
 ecor::task<int> get_sensor_value(ecor::task_ctx& ctx)
@@ -1041,17 +1052,59 @@ ecor::task<void> watchdog(ecor::task_ctx& ctx, ecor::_task_holder_base<>& holder
 }
 ```
 
-### Custom configuration
+## Task Customization
 
-To use a custom task configuration (extra error signatures) or a custom context type, spell out
-the template parameters explicitly:
+### Custom Task Context
+
+The `ecor::task_context` concept requires a type to answer two CPO queries:
+
+| CPO | Returns | Purpose |
+|-----|---------|---------|
+| `ecor::get_task_core(ctx)` | `ecor::task_core&` | Scheduler that drives task execution |
+| `ecor::get_memory_resource(ctx)` | `ecor::task_memory_resource&` | Allocator for coroutine frames |
+
+Implement both as `query()` members to satisfy the concept. This lets you embed additional
+application state in the context and pass it to all tasks without extra arguments:
+
+```cpp
+struct my_mem_type { /* custom allocator */ };
+
+struct my_ctx_type {
+    ecor::task_core core;
+    ecor::task_memory_resource alloc;
+
+    uint32_t device_id = 0;  // extra state accessible to every task
+
+    my_ctx_type(my_mem_type& mem) : alloc(mem) {}
+
+    ecor::task_core&            query(ecor::get_task_core_t)       noexcept { return core; }
+    ecor::task_memory_resource& query(ecor::get_memory_resource_t) noexcept { return alloc; }
+};
+
+ecor::task<void> my_task(my_ctx_type& ctx)
+{
+    uint32_t id = ctx.device_id;
+    co_return;
+}
+```
+
+> The context is passed by reference and must outlive all tasks that hold a reference to it.
+
+### Custom Error Signatures
+
+By default, `task<T>` only signals `set_error_t(ecor::task_error)`. To allow a task to
+propagate additional error types, provide a `task_config` with a full `error_signatures`
+list that includes `set_error_t(ecor::task_error)` (or any type implicitly constructible
+from it):
 
 ```cpp
 struct my_error {};
 using my_ctx_type = ecor::task_ctx;
 
 struct my_cfg {
-    using error_signatures = ecor::completion_signatures<ecor::set_error_t(my_error), ecor::set_error_t(ecor::task_error)>;
+    using error_signatures = ecor::completion_signatures<
+        ecor::set_error_t(my_error),
+        ecor::set_error_t(ecor::task_error)>;
     using trace_type = ecor::task_default_trace;
 };
 
