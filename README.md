@@ -120,8 +120,7 @@ carries the scheduler (`task_core`) and the memory resource used to allocate the
 frame.
 
 Because the first argument is special and resolved at coroutine instantiation time, **lambda
-functions cannot be tasks** — only named free functions or static member functions can have
-`ecor::task<T>` as their return type.
+functions cannot be tasks**.
 
 > For how to implement a custom context type, see [Custom Task Context](#custom-task-context).
 
