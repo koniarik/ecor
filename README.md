@@ -1066,7 +1066,10 @@ Implement both as `query()` members to satisfy the concept. This lets you embed 
 application state in the context and pass it to all tasks without extra arguments:
 
 ```cpp
-struct my_mem_type { /* custom allocator */ };
+struct my_mem_type {
+    void* allocate(std::size_t bytes, std::size_t align) { return ::operator new(bytes, std::align_val_t(align)); }
+    void  deallocate(void* p, std::size_t, std::size_t align) { ::operator delete(p, std::align_val_t(align)); }
+};
 
 struct my_ctx_type {
     ecor::task_core core;
