@@ -2007,6 +2007,8 @@ struct task_cfg
         using error_signatures =
             completion_signatures< set_error_t( std::string ), set_error_t( task_error ) >;
         using trace_type = task_default_trace;
+
+        static task_error convert_error( task_error err ) noexcept { return err; }
 };
 using my_task = ecor::task< void, task_cfg >;
 
@@ -2069,6 +2071,8 @@ struct task_cfg_convertible
         using error_signatures =
             completion_signatures< set_error_t( task_error_wrap ), set_error_t( std::string ) >;
         using trace_type = task_default_trace;
+
+        static task_error_wrap convert_error( task_error err ) noexcept { return err; }
 };
 
 static_assert( ecor::task_config< task_cfg_convertible > );
@@ -3028,6 +3032,8 @@ struct custom_config
         using error_signatures =
             completion_signatures< set_error_t( custom_error ), set_error_t( task_error ) >;
         using trace_type = task_default_trace;
+
+        static task_error convert_error( task_error err ) noexcept { return err; }
 };
 
 static ecor::task< void, custom_config > yielding_task( task_ctx& )

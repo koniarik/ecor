@@ -1108,6 +1108,8 @@ struct my_cfg {
         ecor::set_error_t(my_error),
         ecor::set_error_t(ecor::task_error)>;
     using trace_type = ecor::task_default_trace;
+
+    static ecor::task_error convert_error(ecor::task_error err) noexcept { return err; }
 };
 
 ecor::task<void, my_cfg> cfg_service(my_ctx_type& ctx) { co_return; }
@@ -1272,6 +1274,8 @@ struct my_trace : ecor::task_default_trace {
 struct my_cfg {
     using error_signatures = ecor::completion_signatures<ecor::set_error_t(ecor::task_error)>;
     using trace_type       = my_trace;
+
+    static ecor::task_error convert_error(ecor::task_error err) noexcept { return err; }
 };
 
 ecor::task<void, my_cfg> traced_task(ecor::task_ctx& ctx) { co_return; }

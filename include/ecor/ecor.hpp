@@ -1210,40 +1210,34 @@ template < typename TL, typename Tag, typename Sigs, template < class... > class
 struct _filter_map_tag;
 
 template <
-    template < class... >
-    class Variant,
+    template < class... > class Variant,
     typename... S,
     typename Tag,
-    template < class... >
-    class Tuple >
+    template < class... > class Tuple >
 struct _filter_map_tag< Variant< S... >, Tag, completion_signatures<>, Tuple >
 {
         using type = Variant< S... >;
 };
 
 template <
-    template < class... >
-    class Variant,
+    template < class... > class Variant,
     typename... S,
     typename Tag,
     typename... Us,
     typename... Ts,
-    template < class... >
-    class Tuple >
+    template < class... > class Tuple >
 struct _filter_map_tag< Variant< S... >, Tag, completion_signatures< Tag( Us... ), Ts... >, Tuple >
   : _filter_map_tag< Variant< S..., Tuple< Us... > >, Tag, completion_signatures< Ts... >, Tuple >
 {
 };
 
 template <
-    template < class... >
-    class Variant,
+    template < class... > class Variant,
     typename... S,
     typename Tag,
     typename T,
     typename... Ts,
-    template < class... >
-    class Tuple >
+    template < class... > class Tuple >
 struct _filter_map_tag< Variant< S... >, Tag, completion_signatures< T, Ts... >, Tuple >
   : _filter_map_tag< Variant< S... >, Tag, completion_signatures< Ts... >, Tuple >
 {
@@ -2301,11 +2295,8 @@ struct _awaitable_expected< void >
 {
         _awaitable_expected() noexcept = default;
 
-        _awaitable_state_e state = _awaitable_state_e::empty;
-
         void set_value() noexcept
         {
-                state = _awaitable_state_e::value;
         }
 };
 
@@ -2339,37 +2330,16 @@ struct _awaitable_extract_type< std::variant<> >
         using type = void;
 };
 
-/// Awaitable type for co_awaiting on senders. This is the type returned by the operator co_await of
-/// senders, and contains the state for the awaitable operation, including the expected result of
-/// the operation and the operation state for the sender.
-///
-/// Awaitable resumes coroutine only on on_value signal.
-///
-template < typename PromiseType, typename S >
-struct _task_awaitable
+template < typename PromiseType, typename ValueType >
+struct _task_awaitable_base
 {
-        _task_awaitable( S sender )
-          : _exp()
-          , _op( std::move( sender ).connect( _receiver{ ._self = this } ) )
-        {
-        }
+        using value_type = ValueType;
+        using _env       = env_type< PromiseType >;
 
         /// Awaitable is never ready
-        [[nodiscard]] bool await_ready() const noexcept
+        [[nodiscard]] constexpr bool await_ready() const noexcept
         {
                 return false;
-        }
-
-        /// Starts the operation state on awaiter suspension.
-        void await_suspend( std::coroutine_handle< PromiseType > ch ) noexcept
-        {
-                _promise = &ch.promise();
-                _promise->trace.on_await_suspend( *this );
-#ifdef ECOR_DEBUG_PARENT
-                if constexpr ( requires { _op._debug_promise(); } )
-                        _op._debug_promise()._debug_parent = _promise;
-#endif
-                _op.start();
         }
 
         /// Resumes the coroutine when the operation completes. This assumes that the operation
@@ -2378,32 +2348,31 @@ struct _task_awaitable
         decltype( auto ) await_resume() noexcept
         {
 #ifdef ECOR_DEBUG_PARENT
-                if constexpr ( requires { _op._debug_promise(); } )
-                        _op._debug_promise()._debug_parent = nullptr;
+                _clear_debug_parent();
 #endif
                 _promise->trace.on_await_resume( *this );
-                ECOR_ASSERT( _exp.state == _awaitable_state_e::value );
                 if constexpr ( std::same_as< value_type, void > )
                         return;
-                else
+                else {
+                        ECOR_ASSERT( _exp.state == _awaitable_state_e::value );
                         return std::move( _exp.val );
+                }
         }
 
-        using _env         = env_type< PromiseType >;
-        using _completions = _sender_completions_t< std::remove_cvref_t< S >, _env >;
-        using _values      = _filter_values_as_variant_tuple_t< _completions >;
-        static_assert(
-            std::variant_size_v< _values > <= 1,
-            "Multiple set_value completions in awaitable not supported" );
-
-        /// Type of value returned by the awaitable when co_awaited.
-        using value_type = typename _awaitable_extract_type< _values >::type;
+        void await_suspend( std::coroutine_handle< PromiseType > ch ) noexcept
+        {
+                this->_promise = &ch.promise();
+                this->_promise->trace.on_await_suspend( *this );
+#ifdef ECOR_DEBUG_PARENT
+                _bind_debug_parent( *this );
+#endif
+        }
 
         struct _receiver
         {
                 using receiver_concept = receiver_t;
 
-                _task_awaitable* _self;
+                _task_awaitable_base* _self;
 
                 template < typename... Ts >
                 void set_value( Ts&&... vals ) noexcept(
@@ -2419,8 +2388,7 @@ struct _task_awaitable
                 void set_error( E&& err )
                 {
 #ifdef ECOR_DEBUG_PARENT
-                        if constexpr ( requires { _self->_op._debug_promise(); } )
-                                _self->_op._debug_promise()._debug_parent = nullptr;
+                        _self->_clear_debug_parent();
 #endif
                         _self->_promise->trace.on_await_set_error( *_self, err );
                         _self->_promise->invoke_set_error( (E&&) err );
@@ -2429,8 +2397,7 @@ struct _task_awaitable
                 void set_stopped()
                 {
 #ifdef ECOR_DEBUG_PARENT
-                        if constexpr ( requires { _self->_op._debug_promise(); } )
-                                _self->_op._debug_promise()._debug_parent = nullptr;
+                        _self->_clear_debug_parent();
 #endif
                         _self->_promise->trace.on_await_set_stopped( *_self );
                         _self->_promise->invoke_set_stopped();
@@ -2442,13 +2409,74 @@ struct _task_awaitable
                 }
         };
 
+protected:
+        PromiseType*           _promise = nullptr;
+        ECOR_NO_UNIQUE_ADDRESS _awaitable_expected< value_type > _exp;
 
-private:
-        PromiseType*                      _promise = nullptr;
-        _awaitable_expected< value_type > _exp;
+#ifdef ECOR_DEBUG_PARENT
+        template < typename Op >
+        void _bind_debug_parent( Op& op ) noexcept
+        {
+                if constexpr ( requires { op._debug_promise(); } ) {
+                        op._debug_promise()._debug_parent = _promise;
+                        _debug_child                      = static_cast< void* >( &op );
+                        _clear_debug_parent_fn            = +[]( void* child ) {
+                                static_cast< Op* >( child )->_debug_promise()._debug_parent =
+                                    nullptr;
+                        };
+                } else {
+                        _debug_child           = nullptr;
+                        _clear_debug_parent_fn = nullptr;
+                }
+        }
 
-        using _op_t = connect_type< S, _receiver >;
-        _op_t _op;
+        void _clear_debug_parent() noexcept
+        {
+                if ( _clear_debug_parent_fn ) {
+                        _clear_debug_parent_fn( _debug_child );
+                        _debug_child           = nullptr;
+                        _clear_debug_parent_fn = nullptr;
+                }
+        }
+
+        void* _debug_child                        = nullptr;
+        void ( *_clear_debug_parent_fn )( void* ) = nullptr;
+#endif
+};
+
+/// Awaitable type for co_awaiting on senders. This is the type returned by the operator co_await of
+/// senders, and contains the state for the awaitable operation, including the expected result of
+/// the operation and the operation state for the sender.
+///
+/// Awaitable resumes coroutine only on on_value signal.
+///
+template < typename PromiseType, typename ValueType, typename Op >
+struct _task_awaitable : _task_awaitable_base< PromiseType, ValueType >
+{
+        using value_type = ValueType;
+        using _base      = _task_awaitable_base< PromiseType, ValueType >;
+
+        template < typename S >
+        _task_awaitable( S&& sender )
+          : _base()
+          , _op( ( (S&&) sender ).connect( typename _base::_receiver{ ._self = this } ) )
+        {
+                static_assert(
+                    std::same_as< connect_type< S, typename _base::_receiver >, Op >,
+                    "Awaitable op type must match the connected sender op" );
+        }
+
+        using _base::await_ready;
+        using _base::await_resume;
+
+        /// Starts the operation state on awaiter suspension.
+        void await_suspend( std::coroutine_handle< PromiseType > ch ) noexcept
+        {
+                _base::await_suspend( ch );
+                _op.start();
+        }
+
+        Op _op;
 };
 
 template < class Alloc >
@@ -2715,14 +2743,22 @@ struct task_default_cfg
 {
         using error_signatures = completion_signatures< set_error_t( task_error ) >;
         using trace_type       = task_default_trace;
+
+        ECOR_FORCE_INLINE static task_error convert_error( task_error err ) noexcept
+        {
+                return err;
+        }
 };
+
+template < typename CFG >
+using _task_cfg_convert_error_t = decltype( CFG::convert_error( task_error{} ) );
 
 /// Concept for the task configuration. A type is task configuration if:
 /// - It has a nested type `error_signatures` that is a `completion_signatures` type specifying the
-///   full set of error signatures the task can complete with. It MUST contain at least one
-///   `set_error_t(E)` such that `task_error` is implicitly convertible to `E`, so the task
-///   implementation can signal internal errors. An exact `set_error_t(task_error)` satisfies
-///   this, but any error type constructible from `task_error` is also accepted.
+///   full set of error signatures the task can complete with.
+/// - It has a static `convert_error(task_error)` hook that maps internal task errors to one of the
+///   declared error signature types. The default configuration uses identity conversion, while a
+///   custom configuration can translate internal task errors before dispatch.
 /// - It has a nested type `trace_type` (EXPERIMENTAL — see `task_default_trace`) used by the
 ///   promise to dispatch trace events. Use `task_default_trace` if you do not need tracing.
 template < typename T >
@@ -2730,10 +2766,11 @@ concept task_config =
     requires() {
             typename T::error_signatures;
             typename T::trace_type;
+            typename _task_cfg_convert_error_t< T >;
     } &&
     _vtable_can_call_error<
         _apply_to_sigs_t< _sig_vtable, typename T::error_signatures >,
-        task_error >;
+        _task_cfg_convert_error_t< T > >;
 
 template < typename T, task_config CFG = task_default_cfg >
 struct task;
@@ -2906,7 +2943,11 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
                         static_assert(
                             std::variant_size_v< vals > <= 1,
                             "Sender used in co_await must only complete with a single set_value signature" );
-                        return _task_awaitable< _promise_type, T >{ (T&&) x };
+                        using value_type = typename _awaitable_extract_type< vals >::type;
+                        using recv_t =
+                            typename _task_awaitable_base< _promise_type, value_type >::_receiver;
+                        using op_t = connect_type< T, recv_t >;
+                        return _task_awaitable< _promise_type, value_type, op_t >{ (T&&) x };
                 } else {
                         return (T&&) x;
                 }
@@ -2915,7 +2956,8 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
         void unhandled_exception() noexcept
         {
                 trace.on_unhandled_exception( *this );
-                this->invoke_set_error( task_error::task_unhandled_exception );
+                this->invoke_set_error(
+                                        cfg_type::convert_error( task_error::task_unhandled_exception ) );
         }
 
         void resume() override
@@ -2962,7 +3004,10 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
                 trace.on_final_suspend( *this );
                 if ( _cont_vtable ) {
                         auto* r = std::exchange( this->_cont_vtable, nullptr );
-                        r->invoke( set_error_t{}, _cont_obj, task_error::task_unfinished );
+                        r->invoke(
+                            set_error_t{},
+                            _cont_obj,
+                                                        cfg_type::convert_error( task_error::task_unfinished ) );
                 }
                 return {};
         }
@@ -3045,15 +3090,15 @@ struct _task_op
         void start()
         {
                 if ( _error != task_error::none ) {
-                        _recv.set_error( _error );
+                        _recv.set_error( CFG::convert_error( _error ) );
                         return;
                 }
                 if ( !_h ) {
-                        _recv.set_error( task_error::task_missing );
+                        _recv.set_error( CFG::convert_error( task_error::task_missing ) );
                         return;
                 }
                 if ( _h.done() ) {
-                        _recv.set_error( task_error::task_already_started );
+                        _recv.set_error( CFG::convert_error( task_error::task_already_started ) );
                         return;
                 }
                 if constexpr ( !std::same_as<
@@ -3135,8 +3180,9 @@ struct _task_op
 ///     template parameter of the task. If the value type is void, then the set_value signature is
 ///     set_value_t().
 ///   - set_error_t( task_error ) - This is the default error signature that all tasks have, and it
-///     is used to report errors that occur during the execution of the task, such as allocation
-///     failures or unfinished
+///     is used to report internal task errors such as allocation failures or unfinished tasks.
+///     Custom task configurations map these internal errors to their own declared error type via
+///     `convert_error(task_error)`.
 ///   - Additional error signatures specified by the user in the task configuration.
 ///   - set_stopped_t() - This is used to report that the task was stopped before it could complete,
 ///     either by the user or by the library.
