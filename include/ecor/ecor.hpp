@@ -1210,40 +1210,34 @@ template < typename TL, typename Tag, typename Sigs, template < class... > class
 struct _filter_map_tag;
 
 template <
-    template < class... >
-    class Variant,
+    template < class... > class Variant,
     typename... S,
     typename Tag,
-    template < class... >
-    class Tuple >
+    template < class... > class Tuple >
 struct _filter_map_tag< Variant< S... >, Tag, completion_signatures<>, Tuple >
 {
         using type = Variant< S... >;
 };
 
 template <
-    template < class... >
-    class Variant,
+    template < class... > class Variant,
     typename... S,
     typename Tag,
     typename... Us,
     typename... Ts,
-    template < class... >
-    class Tuple >
+    template < class... > class Tuple >
 struct _filter_map_tag< Variant< S... >, Tag, completion_signatures< Tag( Us... ), Ts... >, Tuple >
   : _filter_map_tag< Variant< S..., Tuple< Us... > >, Tag, completion_signatures< Ts... >, Tuple >
 {
 };
 
 template <
-    template < class... >
-    class Variant,
+    template < class... > class Variant,
     typename... S,
     typename Tag,
     typename T,
     typename... Ts,
-    template < class... >
-    class Tuple >
+    template < class... > class Tuple >
 struct _filter_map_tag< Variant< S... >, Tag, completion_signatures< T, Ts... >, Tuple >
   : _filter_map_tag< Variant< S... >, Tag, completion_signatures< Ts... >, Tuple >
 {
@@ -2208,6 +2202,55 @@ template < typename T >
 _just_error< T > just_error( T err )
 {
         return _just_error< T >{ std::move( err ) };
+}
+
+template < typename... Ts >
+struct _just_value
+{
+        using sender_concept = sender_t;
+
+        std::tuple< Ts... > _vals;
+
+        template < receiver R >
+        struct _op
+        {
+                using operation_state_concept = operation_state_t;
+
+                std::tuple< Ts... > _vals;
+                R                   _receiver;
+
+                void start()
+                {
+                        std::apply(
+                            [&]( auto&&... args ) {
+                                    _receiver.set_value( std::move( args )... );
+                            },
+                            std::move( _vals ) );
+                }
+        };
+
+        template < receiver R >
+        auto connect( R receiver ) && noexcept(
+            std::is_nothrow_move_constructible_v< R > &&
+            ( std::is_nothrow_move_constructible_v< Ts > && ... ) )
+        {
+                static_assert(
+                    receiver_for< R, _just_value >,
+                    "Receiver does not satisfy the requirements for just()'s completion signatures" );
+                return _op< R >{ std::move( _vals ), std::move( receiver ) };
+        }
+
+        using completion_signatures = ecor::completion_signatures< set_value_t( Ts... ) >;
+};
+
+/// Returns a sender that immediately completes with set_value(values...) when started.
+/// Mirrors std::execution::just: stores the given values and delivers them to the receiver's
+/// set_value when the operation is started. With no arguments, completes with set_value().
+template < typename... Ts >
+_just_value< std::decay_t< Ts >... >
+just( Ts&&... ts ) noexcept( ( std::is_nothrow_constructible_v< std::decay_t< Ts >, Ts > && ... ) )
+{
+        return { std::tuple< std::decay_t< Ts >... >{ (Ts&&) ts... } };
 }
 
 // ------------------------------------------------------------------------------

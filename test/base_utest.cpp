@@ -1381,8 +1381,8 @@ static void sanity_check_buffer(
                 // Calculate where the node header should be
                 using buffer_type = std::remove_reference_t< decltype( buffer ) >;
                 auto* node_ptr    = reinterpret_cast< uint8_t* >( block.ptr ) -
-                                 sizeof( typename buffer_type::_node );
-                auto node_idx = node_ptr - buff_span.data();
+                                    sizeof( typename buffer_type::_node );
+                auto  node_idx    = node_ptr - buff_span.data();
 
                 INFO( context << ": Block " << block.id << " node header would be out of bounds" );
                 CHECK( node_idx >= 0 );
@@ -1800,9 +1800,9 @@ TEST_CASE( "circular_buffer_memory stress test" )
                         }
 
                         for ( int i = 0; i < deallocs_this_round && !active_ids.empty(); ++i ) {
-                                std::size_t idx = static_cast< std::size_t >( std::rand() ) %
-                                                  active_ids.size();  // NOLINT
-                                int id_to_free = active_ids[idx];
+                                std::size_t idx        = static_cast< std::size_t >( std::rand() ) %
+                                                         active_ids.size();  // NOLINT
+                                int         id_to_free = active_ids[idx];
 
                                 events.emplace_back( event_type::dealloc, 0, 0, id_to_free );
 
@@ -2886,12 +2886,15 @@ TEST_CASE( "ll_source - query_next drains consecutive stopped front entries" )
         int                 stopped_a = 0, stopped_b = 0, value_c = 0;
 
 
-        auto oa = source.schedule().connect( query_counting_receiver{
-            .value_count = nullptr, .stopped_count = &stopped_a, .stop_src = &stop_a } );
-        auto ob = source.schedule().connect( query_counting_receiver{
-            .value_count = nullptr, .stopped_count = &stopped_b, .stop_src = &stop_b } );
-        auto oc = source.schedule().connect( query_counting_receiver{
-            .value_count = &value_c, .stopped_count = nullptr, .stop_src = nullptr } );
+        auto oa = source.schedule().connect(
+            query_counting_receiver{
+                .value_count = nullptr, .stopped_count = &stopped_a, .stop_src = &stop_a } );
+        auto ob = source.schedule().connect(
+            query_counting_receiver{
+                .value_count = nullptr, .stopped_count = &stopped_b, .stop_src = &stop_b } );
+        auto oc = source.schedule().connect(
+            query_counting_receiver{
+                .value_count = &value_c, .stopped_count = nullptr, .stop_src = nullptr } );
 
         oa.start();
         ob.start();
@@ -2924,12 +2927,15 @@ TEST_CASE( "seq_source - query_next drains consecutive stopped top entries" )
         inplace_stop_source stop_1, stop_2;
         int                 stopped_1 = 0, stopped_2 = 0, value_3 = 0;
 
-        auto o1 = source.schedule( 1 ).connect( query_counting_receiver{
-            .value_count = nullptr, .stopped_count = &stopped_1, .stop_src = &stop_1 } );
-        auto o2 = source.schedule( 2 ).connect( query_counting_receiver{
-            .value_count = nullptr, .stopped_count = &stopped_2, .stop_src = &stop_2 } );
-        auto o3 = source.schedule( 3 ).connect( query_counting_receiver{
-            .value_count = &value_3, .stopped_count = nullptr, .stop_src = nullptr } );
+        auto o1 = source.schedule( 1 ).connect(
+            query_counting_receiver{
+                .value_count = nullptr, .stopped_count = &stopped_1, .stop_src = &stop_1 } );
+        auto o2 = source.schedule( 2 ).connect(
+            query_counting_receiver{
+                .value_count = nullptr, .stopped_count = &stopped_2, .stop_src = &stop_2 } );
+        auto o3 = source.schedule( 3 ).connect(
+            query_counting_receiver{
+                .value_count = &value_3, .stopped_count = nullptr, .stop_src = nullptr } );
 
         o1.start();
         o2.start();
@@ -5489,6 +5495,137 @@ TEST_CASE( "sender_from - CTAD deduces correct type" )
                        decltype( sender_from{ _sf_sync_ctx{ 0 } } ),
                        sender_from< _sf_sync_ctx > > );
         CHECK( true );
+}
+
+// ---------------------------------------------------------------------------
+// ecor::just tests
+
+TEST_CASE( "just - static assertions" )
+{
+        static_assert( sender< _just_value<> > );
+        static_assert( sender< _just_value< int > > );
+        static_assert( sender< _just_value< int, float > > );
+
+        static_assert( std::same_as<
+                       typename _just_value<>::completion_signatures,
+                       ecor::completion_signatures< set_value_t() > > );
+        static_assert( std::same_as<
+                       typename _just_value< int >::completion_signatures,
+                       ecor::completion_signatures< set_value_t( int ) > > );
+        static_assert( std::same_as<
+                       typename _just_value< int, float >::completion_signatures,
+                       ecor::completion_signatures< set_value_t( int, float ) > > );
+
+        static_assert( std::same_as< decltype( just( 42 ) ), _just_value< int > > );
+        static_assert( std::same_as< decltype( just( 42, 3.14f ) ), _just_value< int, float > > );
+
+        static_assert( noexcept( just() ) );
+        CHECK( true );
+}
+
+TEST_CASE( "just - zero arguments completes with set_value()" )
+{
+        bool called = false;
+        struct recv
+        {
+                using receiver_concept = receiver_t;
+                bool* called;
+                void  set_value() noexcept
+                {
+                        *called = true;
+                }
+                void set_error( task_error ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+        auto op = just().connect( recv{ &called } );
+        op.start();
+        CHECK( called );
+}
+
+TEST_CASE( "just - single value delivered to set_value" )
+{
+        int result = 0;
+        struct recv
+        {
+                using receiver_concept = receiver_t;
+                int* result;
+                void set_value( int v ) noexcept
+                {
+                        *result = v;
+                }
+                void set_error( task_error ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+        auto op = just( 42 ).connect( recv{ &result } );
+        op.start();
+        CHECK_EQ( result, 42 );
+}
+
+TEST_CASE( "just - multiple values delivered to set_value" )
+{
+        int   ri = 0;
+        float rf = 0.f;
+        struct recv
+        {
+                using receiver_concept = receiver_t;
+                int*   ri;
+                float* rf;
+                void   set_value( int i, float f ) noexcept
+                {
+                        *ri = i;
+                        *rf = f;
+                }
+                void set_error( task_error ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+        auto op = just( 7, 3.14f ).connect( recv{ &ri, &rf } );
+        op.start();
+        CHECK_EQ( ri, 7 );
+        CHECK_EQ( doctest::Approx( 3.14f ), rf );
+}
+
+static task< int > just_co_await_task( task_ctx& )
+{
+        co_return co_await just( 99 );
+}
+
+TEST_CASE( "just - co_await inside task delivers value" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        int      result = 0;
+        struct recv
+        {
+                using receiver_concept = receiver_t;
+                int* result;
+                void set_value( int v ) noexcept
+                {
+                        *result = v;
+                }
+                void set_error( task_error ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+        auto h = just_co_await_task( ctx ).connect( recv{ &result } );
+        h.start();
+        ctx.core.run_once();  // task runs to co_await just(99), value stored, task rescheduled
+        ctx.core.run_once();  // task resumes, co_return 99, receiver gets set_value(99)
+        CHECK_EQ( result, 99 );
 }
 
 // ---------------------------------------------------------------------------
