@@ -1210,34 +1210,40 @@ template < typename TL, typename Tag, typename Sigs, template < class... > class
 struct _filter_map_tag;
 
 template <
-    template < class... > class Variant,
+    template < class... >
+    class Variant,
     typename... S,
     typename Tag,
-    template < class... > class Tuple >
+    template < class... >
+    class Tuple >
 struct _filter_map_tag< Variant< S... >, Tag, completion_signatures<>, Tuple >
 {
         using type = Variant< S... >;
 };
 
 template <
-    template < class... > class Variant,
+    template < class... >
+    class Variant,
     typename... S,
     typename Tag,
     typename... Us,
     typename... Ts,
-    template < class... > class Tuple >
+    template < class... >
+    class Tuple >
 struct _filter_map_tag< Variant< S... >, Tag, completion_signatures< Tag( Us... ), Ts... >, Tuple >
   : _filter_map_tag< Variant< S..., Tuple< Us... > >, Tag, completion_signatures< Ts... >, Tuple >
 {
 };
 
 template <
-    template < class... > class Variant,
+    template < class... >
+    class Variant,
     typename... S,
     typename Tag,
     typename T,
     typename... Ts,
-    template < class... > class Tuple >
+    template < class... >
+    class Tuple >
 struct _filter_map_tag< Variant< S... >, Tag, completion_signatures< T, Ts... >, Tuple >
   : _filter_map_tag< Variant< S... >, Tag, completion_signatures< Ts... >, Tuple >
 {

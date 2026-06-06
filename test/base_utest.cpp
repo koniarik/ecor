@@ -1381,8 +1381,8 @@ static void sanity_check_buffer(
                 // Calculate where the node header should be
                 using buffer_type = std::remove_reference_t< decltype( buffer ) >;
                 auto* node_ptr    = reinterpret_cast< uint8_t* >( block.ptr ) -
-                                    sizeof( typename buffer_type::_node );
-                auto  node_idx    = node_ptr - buff_span.data();
+                                 sizeof( typename buffer_type::_node );
+                auto node_idx = node_ptr - buff_span.data();
 
                 INFO( context << ": Block " << block.id << " node header would be out of bounds" );
                 CHECK( node_idx >= 0 );
@@ -1800,9 +1800,9 @@ TEST_CASE( "circular_buffer_memory stress test" )
                         }
 
                         for ( int i = 0; i < deallocs_this_round && !active_ids.empty(); ++i ) {
-                                std::size_t idx        = static_cast< std::size_t >( std::rand() ) %
-                                                         active_ids.size();  // NOLINT
-                                int         id_to_free = active_ids[idx];
+                                std::size_t idx = static_cast< std::size_t >( std::rand() ) %
+                                                  active_ids.size();  // NOLINT
+                                int id_to_free = active_ids[idx];
 
                                 events.emplace_back( event_type::dealloc, 0, 0, id_to_free );
 
@@ -2886,15 +2886,12 @@ TEST_CASE( "ll_source - query_next drains consecutive stopped front entries" )
         int                 stopped_a = 0, stopped_b = 0, value_c = 0;
 
 
-        auto oa = source.schedule().connect(
-            query_counting_receiver{
-                .value_count = nullptr, .stopped_count = &stopped_a, .stop_src = &stop_a } );
-        auto ob = source.schedule().connect(
-            query_counting_receiver{
-                .value_count = nullptr, .stopped_count = &stopped_b, .stop_src = &stop_b } );
-        auto oc = source.schedule().connect(
-            query_counting_receiver{
-                .value_count = &value_c, .stopped_count = nullptr, .stop_src = nullptr } );
+        auto oa = source.schedule().connect( query_counting_receiver{
+            .value_count = nullptr, .stopped_count = &stopped_a, .stop_src = &stop_a } );
+        auto ob = source.schedule().connect( query_counting_receiver{
+            .value_count = nullptr, .stopped_count = &stopped_b, .stop_src = &stop_b } );
+        auto oc = source.schedule().connect( query_counting_receiver{
+            .value_count = &value_c, .stopped_count = nullptr, .stop_src = nullptr } );
 
         oa.start();
         ob.start();
@@ -2927,15 +2924,12 @@ TEST_CASE( "seq_source - query_next drains consecutive stopped top entries" )
         inplace_stop_source stop_1, stop_2;
         int                 stopped_1 = 0, stopped_2 = 0, value_3 = 0;
 
-        auto o1 = source.schedule( 1 ).connect(
-            query_counting_receiver{
-                .value_count = nullptr, .stopped_count = &stopped_1, .stop_src = &stop_1 } );
-        auto o2 = source.schedule( 2 ).connect(
-            query_counting_receiver{
-                .value_count = nullptr, .stopped_count = &stopped_2, .stop_src = &stop_2 } );
-        auto o3 = source.schedule( 3 ).connect(
-            query_counting_receiver{
-                .value_count = &value_3, .stopped_count = nullptr, .stop_src = nullptr } );
+        auto o1 = source.schedule( 1 ).connect( query_counting_receiver{
+            .value_count = nullptr, .stopped_count = &stopped_1, .stop_src = &stop_1 } );
+        auto o2 = source.schedule( 2 ).connect( query_counting_receiver{
+            .value_count = nullptr, .stopped_count = &stopped_2, .stop_src = &stop_2 } );
+        auto o3 = source.schedule( 3 ).connect( query_counting_receiver{
+            .value_count = &value_3, .stopped_count = nullptr, .stop_src = nullptr } );
 
         o1.start();
         o2.start();
