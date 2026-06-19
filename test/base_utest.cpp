@@ -2123,6 +2123,82 @@ TEST_CASE( "task_config - error_signatures with type constructible from task_err
         CHECK_EQ( received.inner, task_error::task_unhandled_exception );
 }
 
+// ---------------------------------------------------------------------------
+// co_yield with_error(E) where E is convertible to a configured error type
+// but E itself is NOT listed in error_signatures.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+        struct _yield_base_error
+        {
+                int code = 0;
+        };
+
+        /// Convertible to _yield_base_error but not the same type.
+        struct _yield_derived_error
+        {
+                int code = 0;
+                /*implicit*/ operator _yield_base_error() const noexcept
+                {
+                        return { code };
+                }
+        };
+
+        struct _task_cfg_yield_convertible
+        {
+                using error_signatures = completion_signatures<
+                    set_error_t( _yield_base_error ),
+                    set_error_t( task_error ) >;
+                using trace_type = task_default_trace;
+
+                static task_error convert_error( task_error err ) noexcept
+                {
+                        return err;
+                }
+        };
+
+        struct _yield_convertible_recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                _yield_base_error* received;
+
+                void set_value() noexcept
+                {
+                }
+                void set_error( _yield_base_error e ) noexcept
+                {
+                        *received = e;
+                }
+                void set_error( task_error ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+}  // namespace
+
+static ecor::task< void, _task_cfg_yield_convertible > yield_convertible_f( task_ctx& )
+{
+        // _yield_derived_error is NOT in error_signatures, but it is implicitly
+        // convertible to _yield_base_error which IS — this must compile and route
+        // the error through the _yield_base_error vtable slot.
+        co_yield with_error( _yield_derived_error{ 42 } );
+}
+
+TEST_CASE( "task - co_yield with_error type convertible to configured error type" )
+{
+        nd_mem            mem;
+        task_ctx          ctx{ mem };
+        _yield_base_error received{};
+
+        auto h = yield_convertible_f( ctx ).connect( _yield_convertible_recv{ &received } );
+        h.start();
+        ctx.core.run_once();
+        CHECK_EQ( received.code, 42 );
+}
+
 TEST_CASE( "inplace_stop_source - basic functionality" )
 {
         // Test initial state

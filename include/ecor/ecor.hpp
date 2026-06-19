@@ -2981,7 +2981,14 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
                 requires( _vtable_can_call_error< vtable, E > )
         auto yield_value( with_error< E > error )
         {
-                return await_transform( just_error( std::move( error.error ) ) );
+                // Bypass await_transform's exact-type signature check: _vtable_can_call_error
+                // already guarantees dispatch works (including implicit conversions). Build the
+                // _task_awaitable directly so the static_assert in await_transform is not hit.
+                using S      = _just_error< E >;
+                using recv_t = typename _task_awaitable_base< _promise_type, void >::_receiver;
+                using op_t   = connect_type< S, recv_t >;
+                return _task_awaitable< _promise_type, void, op_t >{
+                    just_error( std::move( error.error ) ) };
         }
 
         template < typename T >
