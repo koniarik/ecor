@@ -2199,6 +2199,84 @@ TEST_CASE( "task - co_yield with_error type convertible to configured error type
         CHECK_EQ( received.code, 42 );
 }
 
+// ---------------------------------------------------------------------------
+// task_context concept tests
+
+namespace
+{
+        /// Custom context with extra state — the pattern recommended in the README.
+        /// query() methods return task_core& and task_memory_resource& respectively,
+        /// which are convertible to (but not merely equal to) the erased types.
+        struct _custom_ctx
+        {
+                ecor::task_core            core;
+                ecor::task_memory_resource alloc;
+                int                        device_id = 7;
+
+                _custom_ctx( auto& mem )
+                  : alloc( mem )
+                {
+                }
+
+                ecor::task_core& query( ecor::get_task_core_t ) noexcept
+                {
+                        return core;
+                }
+                ecor::task_memory_resource& query( ecor::get_memory_resource_t ) noexcept
+                {
+                        return alloc;
+                }
+        };
+
+        static_assert( ecor::task_context< task_ctx > );
+        static_assert( ecor::task_context< _custom_ctx > );
+        // Negative: query exists but returns the wrong type — concept must be unsatisfied.
+        struct _wrong_ctx
+        {
+                int query( ecor::get_task_core_t )
+                {
+                        return 0;
+                }
+                int query( ecor::get_memory_resource_t )
+                {
+                        return 0;
+                }
+        };
+        static_assert( !ecor::task_context< _wrong_ctx > );
+}  // namespace
+
+static ecor::task< int > _custom_ctx_task( _custom_ctx& ctx )
+{
+        co_return ctx.device_id;
+}
+
+TEST_CASE( "task_context - custom context with extra state" )
+{
+        nd_mem      mem;
+        _custom_ctx ctx{ mem };
+        int         result = 0;
+        struct recv
+        {
+                using receiver_concept = ecor::receiver_t;
+                int* r;
+                void set_value( int v ) noexcept
+                {
+                        *r = v;
+                }
+                void set_error( ecor::task_error ) noexcept
+                {
+                }
+                void set_stopped() noexcept
+                {
+                }
+        };
+
+        auto h = _custom_ctx_task( ctx ).connect( recv{ &result } );
+        h.start();
+        ctx.core.run_once();
+        CHECK_EQ( result, 7 );
+}
+
 TEST_CASE( "inplace_stop_source - basic functionality" )
 {
         // Test initial state

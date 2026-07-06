@@ -2630,11 +2630,12 @@ struct task_ctx
 
 /// Concept for the task context. A type satisfies this concept if it provides a task core and a
 /// task memory resource that can be accessed through the get_task_core and get_memory_resource
-/// CPOs.
+/// CPOs. The return types may be references to task_core / task_memory_resource or to any type
+/// derived from them.
 template < typename T >
 concept task_context = requires( T t ) {
-        { get_task_core( t ) } -> std::same_as< task_core& >;
-        { get_memory_resource( t ) } -> std::same_as< task_memory_resource& >;
+        { get_task_core( t ) } -> std::convertible_to< task_core& >;
+        { get_memory_resource( t ) } -> std::convertible_to< task_memory_resource& >;
 };
 
 /// EXPERIMENTAL: the task tracing API (this type, the `trace_type` slot in `task_config`, and
