@@ -880,6 +880,34 @@ TEST_CASE( "circular_buffer_memory_wraparound" )
         mem.deallocate( wrap_ptr, 16, 1 );
 }
 
+TEST_CASE( "circular_buffer_memory_wraparound_partial" )
+{
+        // FIFO pattern: allocate until full, free only the oldest blocks, then allocate again.
+        // The buffer never becomes empty, so this exercises the wrap into the span in front of
+        // the oldest live block rather than the empty-buffer path.
+        std::array< uint8_t, 128 >                                      buffer_storage{};
+        circular_buffer_memory< smallest_index_type< 128 >, noop_base > mem{
+            std::span< uint8_t, 128 >{ buffer_storage } };
+
+        std::vector< void* > ptrs;
+        while ( void* p = mem.allocate( 24, 8 ) )
+                ptrs.push_back( p );
+        REQUIRE( ptrs.size() >= 2 );
+
+        // Free the oldest block only; the rest stay live at the end of the buffer.
+        mem.deallocate( ptrs.front(), 24, 8 );
+        ptrs.erase( ptrs.begin() );
+
+        void* reused = mem.allocate( 24, 8 );
+        CHECK( reused != nullptr );
+
+        if ( reused )
+                mem.deallocate( reused, 24, 8 );
+        for ( void* p : ptrs )
+                mem.deallocate( p, 24, 8 );
+        CHECK( mem.used_bytes() == 0 );
+}
+
 TEST_CASE( "circular_buffer_memory_fragmentation" )
 {
         std::array< uint8_t, 512 > buffer_storage;

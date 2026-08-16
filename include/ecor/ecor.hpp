@@ -112,6 +112,36 @@ struct _contains_type< T >
         static constexpr bool value = false;
 };
 
+/// Position of `T` within `Ts...`, `sizeof...(Ts)` when `T` is not in the pack.
+template < typename T, typename... Ts >
+struct _type_index;
+
+template < typename T >
+struct _type_index< T >
+{
+        static constexpr std::size_t value = 0;
+};
+
+template < typename T, typename U, typename... Ts >
+struct _type_index< T, U, Ts... >
+{
+        static constexpr std::size_t value =
+            std::same_as< T, U > ? 0 : 1 + _type_index< T, Ts... >::value;
+};
+
+/// True when no type occurs twice in `Ts...`.
+template < typename... Ts >
+struct _all_distinct : std::true_type
+{
+};
+
+template < typename T, typename... Ts >
+struct _all_distinct< T, Ts... >
+{
+        static constexpr bool value =
+            !_contains_type< T, Ts... >::value && _all_distinct< Ts... >::value;
+};
+
 /// Sender concept tag, used for marking types as senders.
 struct sender_t
 {
@@ -665,9 +695,10 @@ private:
                                         return idx - sizeof( _node );
                         }
                         // Non-overflow state, but overflow triggered: [ ][ ][ ][x][x][x]
+                        // The free region is the span in front of the oldest block, [idx, _first).
                         {
                                 idx      = _align_idx( buff.data(), sizeof( _node ), align );
-                                capacity = idx - _first;
+                                capacity = _first - idx;
                         }
 
                 } else {  // _first > _next
@@ -918,12 +949,19 @@ using _sender_completions_t =
 template < typename T >
 concept queryable = std::is_object_v< T >;
 
+/// Internal exposition only concept for sneders.
+///
+/// Note: in contrast to std:: version, we do not consider awaitables to be senders.
+template < typename T >
+concept _enable_sender = requires { typename T::sender_concept; } &&
+                         std::derived_from< typename T::sender_concept, sender_t >;
+
 /// Concept for senders, requires that the member type sneder_concept derives from sender_t, has a
 /// get_env member function that returns a queryable type, and is move constructible and
 /// constructible from itself.
 template < typename T >
-concept sender = std::derived_from< typename std::remove_cvref_t< T >::sender_concept, sender_t > &&
-                 requires( T const& s ) {
+concept sender = bool( _enable_sender< std::remove_cvref_t< T > > ) &&
+                 requires( std::remove_cvref_t< T > const& s ) {
                          { get_env( s ) } -> queryable;
                  } && std::move_constructible< std::remove_cvref_t< T > > &&
                  std::constructible_from< std::remove_cvref_t< T >, T >;
@@ -4712,6 +4750,1050 @@ struct sender_from
                     "Receiver does not satisfy the requirements for sender_from's completion signatures" );
                 return _sender_from_op< T, R >{ std::move( ctx ), std::move( receiver ) };
         }
+};
+
+/// -------------------------------------------------------------------------------
+/// inplace_variant — move-only tagged union
+
+/// Holds one value of any of the types `Ts...`, or nothing, in storage sized and aligned for
+/// the largest alternative. No dynamic allocation and no indirection: the value lives inside
+/// the variant object.
+///
+/// Differs from `std::variant` in ways that matter for this library: it is move-only (so
+/// alternatives need not be copyable), it has a genuine empty state rather than
+/// `valueless_by_exception`, and its `visit` is a member returning `bool` instead of a free
+/// function that must handle a valueless input.
+///
+/// Alternatives must be pairwise distinct — `get<T>()` and `holds<T>()` select by type, not by
+/// index.
+///
+template < typename... Ts >
+struct inplace_variant
+{
+        static_assert( sizeof...( Ts ) > 0, "inplace_variant requires at least one alternative" );
+        static_assert(
+            _all_distinct< Ts... >::value,
+            "inplace_variant alternatives must be pairwise distinct" );
+
+        /// Value of `index()` when no alternative is held.
+        static constexpr std::size_t npos = sizeof...( Ts );
+
+        static constexpr std::size_t storage_size = [] {
+                std::size_t r = 0;
+                ( ( r = sizeof( Ts ) > r ? sizeof( Ts ) : r ), ... );
+                return r;
+        }();
+
+        inplace_variant() noexcept = default;
+
+        inplace_variant( inplace_variant const& )            = delete;
+        inplace_variant& operator=( inplace_variant const& ) = delete;
+
+        inplace_variant( inplace_variant&& o ) noexcept
+        {
+                _steal( o );
+        }
+
+        inplace_variant& operator=( inplace_variant&& o ) noexcept
+        {
+                if ( this != &o ) {
+                        reset();
+                        _steal( o );
+                }
+                return *this;
+        }
+
+        ~inplace_variant()
+        {
+                reset();
+        }
+
+        /// True when an alternative is held.
+        explicit operator bool() const noexcept
+        {
+                return _idx != npos;
+        }
+
+        /// Position of the held alternative within `Ts...`, `npos` when empty.
+        [[nodiscard]] std::size_t index() const noexcept
+        {
+                return _idx;
+        }
+
+        /// True when the held alternative is `T`.
+        template < typename T >
+        [[nodiscard]] bool holds() const noexcept
+        {
+                return _idx == _type_index< T, Ts... >::value;
+        }
+
+        /// Destroy any current value and construct alternative `T` from `args...` in place.
+        /// Returns a reference to the new value.
+        template < typename T, typename... Args >
+                requires( _contains_type< T, Ts... >::value )
+        T& emplace( Args&&... args ) noexcept( std::is_nothrow_constructible_v< T, Args... > )
+        {
+                reset();
+                return emplace_empty< T >( (Args&&) args... );
+        }
+
+        /// `emplace()` for a variant that is known to be empty.
+        ///
+        /// Precondition: `!*this`. Skipping the `reset()` that `emplace()` performs also skips
+        /// instantiating the destructor dispatch, which is otherwise inlined at the call site
+        /// once per alternative — worth reaching for in code that constructs into fresh
+        /// variants many times over, as the queue's per-element-type `take` thunks do.
+        template < typename T, typename... Args >
+                requires( _contains_type< T, Ts... >::value )
+        T& emplace_empty( Args&&... args ) noexcept( std::is_nothrow_constructible_v< T, Args... > )
+        {
+                ECOR_ASSERT( _idx == npos );
+                T* p = ::new ( (void*) _storage ) T( (Args&&) args... );
+                _idx = _type_index< T, Ts... >::value;
+                return *p;
+        }
+
+        /// Reference to the held value. Precondition: `holds<T>()`.
+        template < typename T >
+        [[nodiscard]] T& get() noexcept
+        {
+                ECOR_ASSERT( holds< T >() );
+                return *reinterpret_cast< T* >( _storage );
+        }
+
+        /// Const overload of `get()`. Precondition: `holds<T>()`.
+        template < typename T >
+        [[nodiscard]] T const& get() const noexcept
+        {
+                ECOR_ASSERT( holds< T >() );
+                return *reinterpret_cast< T const* >( _storage );
+        }
+
+        /// Pointer to the held value, or `nullptr` when `T` is not the held alternative.
+        template < typename T >
+        [[nodiscard]] T* get_if() noexcept
+        {
+                return holds< T >() ? reinterpret_cast< T* >( _storage ) : nullptr;
+        }
+
+        /// Const overload of `get_if()`.
+        template < typename T >
+        [[nodiscard]] T const* get_if() const noexcept
+        {
+                return holds< T >() ? reinterpret_cast< T const* >( _storage ) : nullptr;
+        }
+
+        /// Invoke `f` with a reference to the held value. Returns false when empty, in which
+        /// case `f` is not called.
+        template < typename F >
+        bool visit( F&& f )
+        {
+                return ( ... || ( holds< Ts >() ? ( f( get< Ts >() ), true ) : false ) );
+        }
+
+        /// Const overload of `visit()`.
+        template < typename F >
+        bool visit( F&& f ) const
+        {
+                return ( ... || ( holds< Ts >() ? ( f( get< Ts >() ), true ) : false ) );
+        }
+
+        /// Destroy the held value, leaving the variant empty.
+        void reset() noexcept
+        {
+                if ( _idx == npos )
+                        return;
+                visit( []( auto& v ) {
+                        using T = std::remove_reference_t< decltype( v ) >;
+                        v.~T();
+                } );
+                _idx = npos;
+        }
+
+private:
+        void _steal( inplace_variant& o ) noexcept
+        {
+                o.visit( [this]( auto& v ) {
+                        using T = std::remove_reference_t< decltype( v ) >;
+                        ::new ( (void*) _storage ) T( std::move( v ) );
+                } );
+                _idx = o._idx;
+                o.reset();
+        }
+
+        alignas( Ts... ) unsigned char _storage[storage_size]{};
+        std::size_t _idx = npos;
+};
+
+/// -------------------------------------------------------------------------------
+/// async_queue — heterogeneous asynchronous queue
+
+/// Default `async_queue` configuration over the memory resource `Mem`. Both waiter kinds
+/// honour the stop token in their receiver's environment.
+///
+/// Derive from it to override individual flags:
+/// ```
+/// struct my_cfg : ecor::queue_default_cfg< my_mem >
+/// {
+///         static constexpr bool is_producer_stoppable = false;
+/// };
+/// ```
+template < memory_resource Mem >
+struct queue_default_cfg
+{
+        /// Memory resource that queue nodes are allocated from.
+        using mem_type = Mem;
+
+        /// Whether a consumer parked in `pop()` reacts to the stop token in its receiver's
+        /// environment.
+        static constexpr bool is_consumer_stoppable = true;
+
+        /// Whether a producer parked in `push()` reacts to the stop token in its receiver's
+        /// environment.
+        static constexpr bool is_producer_stoppable = true;
+
+        /// Whether the queue supports `close()`. Turning this off removes the shutdown
+        /// protocol entirely — `close()` and `closed()` disappear, and parked waiters can no
+        /// longer be completed by anything but delivery or their own stop token.
+        static constexpr bool is_closeable = true;
+};
+
+/// Concept for the `async_queue` configuration. A type is a queue configuration if it provides
+/// a `mem_type` satisfying `memory_resource` and the two stoppability flags.
+///
+/// Setting a flag to `false` opts out of cancellation for that waiter kind entirely — no
+/// `inplace_stop_callback` is instantiated even for receivers that do carry a stop token. It
+/// does not affect `close()`, which stops parked waiters through a separate path, so
+/// `set_stopped_t()` remains in the completion signatures either way.
+template < typename T >
+concept queue_config = memory_resource< typename T::mem_type > && requires {
+        { T::is_consumer_stoppable } -> std::convertible_to< bool >;
+        { T::is_producer_stoppable } -> std::convertible_to< bool >;
+        { T::is_closeable } -> std::convertible_to< bool >;
+};
+
+struct _queue_node;
+
+/// Per-element-type operations of a queue node. One instance exists per element type of a
+/// given queue; the queue core drives nodes exclusively through it and so is never
+/// instantiated per element type.
+///
+/// Keep the operations as separate function pointers: folding them into one entry point taking
+/// an operation tag costs more text in the switch than the pointers it saves, and replacing the
+/// scalars below with a query function is worse again.
+struct _queue_node_vtable
+{
+        /// Move the payload into a parked consumer and complete it.
+        void ( *deliver )( _queue_node&, void* );
+        /// Move the payload into an `inplace_variant` over the queue's element types.
+        void ( *take )( _queue_node&, void* );
+        /// Destroy the node and its payload, without releasing the memory. Null when the
+        /// payload is trivially destructible, which lets `_release()` skip both the call and
+        /// the per-element-type thunk behind it.
+        void ( *destroy )( _queue_node& ) noexcept;
+        /// Byte size of the node, for deallocation.
+        uint16_t size;
+        /// Alignment of the node, for deallocation.
+        uint8_t align;
+};
+
+/// Shared intrusive-list node for everything the queue links: queued items, parked waiters and
+/// the `close()` waiter. One `zll::ll_base` instantiation covers all of them, so the list
+/// machinery is emitted once for the whole queue. Each distinct node type would otherwise cost
+/// 100–170 bytes of `link_back`, `take_front`, `detach` and header destructor.
+struct _queue_link : zll::ll_base< _queue_link >
+{
+protected:
+        ~_queue_link() = default;
+};
+
+/// Typed view over a list of `_queue_link`, restoring the element type at the API boundary
+/// while the underlying list stays shared. Each list is homogeneous by construction, so the
+/// downcasts are sound.
+///
+/// The `derived_from` constraint is load-bearing beyond documentation: it is defined in terms
+/// of the pointer conversion, which is ill-formed when `T` reaches `_queue_link` by more than
+/// one path. A node inheriting the link twice would leave `ll_header` ambiguous and silently
+/// corrupt a list; this makes it a compile error instead.
+template < typename T >
+        requires( std::derived_from< T, _queue_link > )
+struct _queue_list
+{
+        [[nodiscard]] bool empty() const noexcept
+        {
+                return _l.empty();
+        }
+
+        void link_back( T& n ) noexcept
+        {
+                _l.link_back( n );
+        }
+
+        [[nodiscard]] T& front() noexcept
+        {
+                return static_cast< T& >( _l.front() );
+        }
+
+        [[nodiscard]] T& take_front() noexcept
+        {
+                return static_cast< T& >( _l.take_front() );
+        }
+
+private:
+        zll::ll_list< _queue_link > _l;
+};
+
+/// Link node for one queued value; the payload lives in the derived `_queue_node_of<T>`.
+struct _queue_node : _queue_link
+{
+        explicit _queue_node( _queue_node_vtable const& vt ) noexcept
+          : _vt( &vt )
+        {
+        }
+
+        _queue_node_vtable const* _vt;
+};
+
+template < typename T >
+struct _queue_node_of : _queue_node
+{
+        template < typename U >
+        _queue_node_of( _queue_node_vtable const& vt, U&& val ) noexcept(
+            std::is_nothrow_constructible_v< T, U > )
+          : _queue_node( vt )
+          , _val( (U&&) val )
+        {
+        }
+
+        ECOR_NO_UNIQUE_ADDRESS T _val;
+};
+
+/// Link node for a parked waiter, erased over the queue's element types. Consumers, producers
+/// and the `close()` waiter all use it.
+struct _queue_waiter : _queue_link
+{
+        /// The queue nudges this waiter to make progress. Returns true when the waiter has
+        /// completed its receiver and unlinked itself, false when it still cannot proceed.
+        virtual bool _advance() = 0;
+
+protected:
+        ~_queue_waiter() = default;
+};
+
+/// Adds typed value delivery to `_queue_waiter`. The vtable carries one row per element type;
+/// a node's `deliver` picks the row matching its payload by overload resolution.
+template < typename... Ts >
+struct _queue_consumer_node : _queue_waiter, _vtable_mixin< set_value_t( Ts )... >
+{
+        template < typename D >
+        explicit _queue_consumer_node( _tag< D > d ) noexcept
+          : _vtable_mixin< set_value_t( Ts )... >( d )
+        {
+        }
+};
+
+/// The per-element-type operations behind `_queue_node_vtable`. `T` is the payload of the node
+/// being acted on; `Ts...` are the queue's element types.
+///
+/// Do not factor the repeated `static_cast<node_type&>(n)._val` into a `payload(n)` helper: at
+/// `-Os` GCC does not fold it away, costing +8 bytes on cortex-m0plus and +28 on cortex-m4 for
+/// a four-element-type queue. Binding the erased pointers to a local reference, as below, is
+/// free.
+template < typename T, typename... Ts >
+struct _queue_node_ops
+{
+        using node_type = _queue_node_of< T >;
+
+        /// `consumer` points at the `_queue_waiter` base of a parked `pop()` operation. The
+        /// step down to `_queue_consumer_node` is what reaches its typed `set_value` rows.
+        static void deliver( _queue_node& n, void* consumer )
+        {
+                auto& c = *static_cast< _queue_consumer_node< Ts... >* >(
+                    static_cast< _queue_waiter* >( consumer ) );
+                c._set_value( std::move( static_cast< node_type& >( n )._val ) );
+        }
+
+        /// `dst` points at the variant `try_pop()` is about to return, which is always empty.
+        static void take( _queue_node& n, void* dst )
+        {
+                auto& v = *static_cast< inplace_variant< Ts... >* >( dst );
+                v.template emplace_empty< T >( std::move( static_cast< node_type& >( n )._val ) );
+        }
+
+        static void destroy( _queue_node& n ) noexcept
+        {
+                static_cast< node_type& >( n ).~node_type();
+        }
+
+        /// Null when the payload needs no destructor call, which lets `_release()` skip the
+        /// call — and keeps `destroy` from being instantiated at all. The `if constexpr` is
+        /// load-bearing for that second part: a conditional expression would odr-use `destroy`
+        /// in both branches and emit the thunk regardless.
+        [[nodiscard]] static consteval auto destroy_fn() noexcept
+        {
+                if constexpr ( std::is_trivially_destructible_v< T > )
+                        return static_cast< void ( * )( _queue_node& ) noexcept >( nullptr );
+                else
+                        return &destroy;
+        }
+};
+
+template < typename T, typename... Ts >
+inline constexpr _queue_node_vtable _queue_node_vtable_of{
+    .deliver = &_queue_node_ops< T, Ts... >::deliver,
+    .take    = &_queue_node_ops< T, Ts... >::take,
+    .destroy = _queue_node_ops< T, Ts... >::destroy_fn(),
+    .size    = sizeof( _queue_node_of< T > ),
+    .align   = alignof( _queue_node_of< T > ) };
+
+/// Lifecycle of a queue. Monotonic: a queue only ever moves forward through these states.
+enum class _queue_state : uint8_t
+{
+        /// Accepting values.
+        open,
+        /// `close()` has been called; items already queued still drain to consumers.
+        closing,
+        /// Drained: parked waiters have been completed and the `close()` sender has fired.
+        finished,
+};
+
+/// The whole `close()` half of the queue core, kept out of the core itself so that a
+/// non-closeable queue carries none of it.
+template < typename Core, bool Closeable >
+struct _queue_close_base;
+
+template < typename Core >
+struct _queue_close_base< Core, true >
+{
+        /// Senders returned by `close()` that are still waiting for the queue to drain.
+        _queue_list< _queue_waiter > _done;
+
+        /// Stop accepting new values. Parked producers are stopped at once; items already
+        /// queued are still delivered.
+        void _close()
+        {
+                Core& c = static_cast< Core& >( *this );
+                if ( c._state != _queue_state::open )
+                        return;
+                c._state = _queue_state::closing;
+                while ( !c._producers.empty() )
+                        std::ignore = c._producers.take_front()._advance();
+                c._service();
+        }
+
+        /// Finish a pending close once the last item has been handed over.
+        void _service_closed()
+        {
+                Core& c = static_cast< Core& >( *this );
+                if ( c._state != _queue_state::closing || !c._items.empty() )
+                        return;
+                c._state = _queue_state::finished;
+                while ( !c._consumers.empty() )
+                        std::ignore = c._consumers.take_front()._advance();
+                while ( !_done.empty() )
+                        std::ignore = _done.take_front()._advance();
+        }
+};
+
+template < typename Core >
+struct _queue_close_base< Core, false >
+{
+        void _service_closed() noexcept
+        {
+        }
+};
+
+template < memory_resource Mem, bool Closeable >
+struct _queue_core : _queue_close_base< _queue_core< Mem, Closeable >, Closeable >
+{
+        explicit _queue_core( Mem& mem ) noexcept
+          : _mem( mem )
+        {
+        }
+
+        _queue_core( _queue_core const& )            = delete;
+        _queue_core& operator=( _queue_core const& ) = delete;
+
+        /// Precondition: no producer or consumer is still parked.
+        ~_queue_core()
+        {
+                ECOR_ASSERT( _producers.empty() );
+                ECOR_ASSERT( _consumers.empty() );
+                while ( !_items.empty() )
+                        _release( _items.take_front() );
+        }
+
+        [[nodiscard]] void* _alloc_node( _queue_node_vtable const& vt ) noexcept
+        {
+                return ecor::allocate( _mem, vt.size, vt.align );
+        }
+
+        /// Link a freshly constructed node and drive the queue.
+        void _commit_node( _queue_node& n )
+        {
+                _items.link_back( n );
+                ++_count;
+                _service();
+        }
+
+        /// Destroy a detached node and return its memory.
+        void _release( _queue_node& n ) noexcept
+        {
+                auto const* vt = n._vt;
+                if ( vt->destroy )
+                        vt->destroy( n );
+                ecor::deallocate( _mem, &n, vt->size, vt->align );
+        }
+
+        /// Hand the oldest item to `c` if there is one. Returns false when the queue is empty.
+        bool _take_into( _queue_waiter& c )
+        {
+                if ( _items.empty() )
+                        return false;
+                auto& n = _items.take_front();
+                --_count;
+                n._vt->deliver( n, static_cast< void* >( &c ) );
+                _release( n );
+                _service();
+                return true;
+        }
+
+        /// Drive the queue to a resting state: feed parked consumers, retry parked producers,
+        /// and finish a pending close once no items remain.
+        ///
+        /// Re-entrant calls (a receiver pushing or popping from within its completion) return
+        /// immediately; the outermost call re-checks and picks the work up.
+        void _service()
+        {
+                if ( _busy )
+                        return;
+                _busy = true;
+                for ( ;; ) {
+                        if ( !_items.empty() && !_consumers.empty() ) {
+                                auto& n = _items.take_front();
+                                --_count;
+                                auto& c = _consumers.take_front();
+                                n._vt->deliver( n, static_cast< void* >( &c ) );
+                                _release( n );
+                                continue;
+                        }
+                        if ( !_producers.empty() && _producers.front()._advance() )
+                                continue;
+                        break;
+                }
+                this->_service_closed();
+                _busy = false;
+        }
+
+        /// True once `close()` has been called, whether or not the queue has drained yet.
+        [[nodiscard]] bool _is_closed() const noexcept
+        {
+                return _state != _queue_state::open;
+        }
+
+        /// True once the queue has drained and every waiter has been completed.
+        [[nodiscard]] bool _is_finished() const noexcept
+        {
+                return _state == _queue_state::finished;
+        }
+
+        Mem&                         _mem;
+        _queue_list< _queue_node >   _items;
+        _queue_list< _queue_waiter > _consumers;
+        _queue_list< _queue_waiter > _producers;
+        std::size_t                  _count = 0;
+        _queue_state                 _state = _queue_state::open;
+        /// Re-entrancy guard for `_service()`; orthogonal to `_state`.
+        bool _busy = false;
+};
+
+/// True when `R`'s environment carries a stop token that can actually be triggered.
+template < typename R >
+concept _queue_stoppable = !std::same_as<
+    std::remove_cvref_t< decltype( get_stop_token( get_env( std::declval< R const& >() ) ) ) >,
+    never_stop_token >;
+
+/// The cancellation half of a parked waiter: the stop callback, and only when both the
+/// configuration and the receiver allow one. The unstoppable specialisation holds nothing and
+/// its hooks compile away, so a waiter that cannot be cancelled carries no trace of one and
+/// its operation state needs no `if constexpr` around either hook.
+///
+/// CRTP on the operation state, which owns the receiver and knows how to complete it.
+template < typename Op, bool Stoppable >
+struct _queue_cancel_base
+{
+        /// Register the callback. Call this only after the waiter is linked: if a stop has
+        /// already been requested, the callback fires from within `emplace` and expects to find
+        /// the waiter in a list it can unlink from.
+        void _arm( auto&& token )
+        {
+                _cb.emplace( (decltype( token )&&) token, _fire{ static_cast< Op* >( this ) } );
+        }
+
+        void _disarm() noexcept
+        {
+                _cb.reset();
+        }
+
+private:
+        struct _fire
+        {
+                Op* op;
+
+                /// Runs inside `inplace_stop_source::request_stop()`, so it must not destroy
+                /// the callback it is running from — only unlink and complete.
+                void operator()() noexcept
+                {
+                        op->_cancel();
+                }
+        };
+
+        std::optional< inplace_stop_callback< _fire > > _cb;
+};
+
+template < typename Op >
+struct _queue_cancel_base< Op, false >
+{
+        void _arm( auto&& ) noexcept
+        {
+        }
+
+        void _disarm() noexcept
+        {
+        }
+};
+
+/// Cancellation applies to a parked consumer when the configuration allows it *and* the
+/// receiver carries a triggerable stop token.
+template < typename Q, typename R >
+inline constexpr bool _queue_consumer_stoppable =
+    Q::config_type::is_consumer_stoppable && _queue_stoppable< R >;
+
+/// The same, for a parked producer.
+template < typename Q, typename R >
+inline constexpr bool _queue_producer_stoppable =
+    Q::config_type::is_producer_stoppable && _queue_stoppable< R >;
+
+/// Operation state of `async_queue::pop()`.
+template < typename Q, typename R >
+struct _queue_pop_op
+  : Q::_consumer_node_t,
+    _queue_cancel_base< _queue_pop_op< Q, R >, _queue_consumer_stoppable< Q, R > >
+{
+        using operation_state_concept = operation_state_t;
+
+        /// Mirrors the configuration; the close-related paths vanish when it is false.
+        static constexpr bool _closeable = Q::config_type::is_closeable;
+
+        _queue_pop_op( Q& q, R r ) noexcept( std::is_nothrow_move_constructible_v< R > )
+          : Q::_consumer_node_t( _tag< _queue_pop_op >{} )
+          , _q( q )
+          , _r( std::move( r ) )
+        {
+        }
+
+        _queue_pop_op( _queue_pop_op const& )            = delete;
+        _queue_pop_op& operator=( _queue_pop_op const& ) = delete;
+
+        void start()
+        {
+                if ( _q._core._take_into( *this ) )
+                        return;
+                if constexpr ( _closeable )
+                        if ( _q._core._is_closed() ) {
+                                _r.set_stopped();
+                                return;
+                        }
+                _q._core._consumers.link_back( *this );
+                this->_arm( get_stop_token( get_env( _r ) ) );
+        }
+
+        /// Invoked from the stop callback.
+        void _cancel() noexcept
+        {
+                zll::detach( static_cast< _queue_link& >( *this ) );
+                _r.set_stopped();
+        }
+
+        /// Invoked through the node vtable when an item of type `T` is delivered.
+        template < typename T >
+        void set_value( T val )
+        {
+                _unregister();
+                _r.set_value( std::move( val ) );
+        }
+
+        /// A consumer is only nudged while the queue is closing.
+        bool _advance() override
+        {
+                if constexpr ( _closeable ) {
+                        _unregister();
+                        _r.set_stopped();
+                }
+                return true;
+        }
+
+private:
+        void _unregister() noexcept
+        {
+                zll::detach( static_cast< _queue_link& >( *this ) );
+                this->_disarm();
+        }
+
+        Q&                       _q;
+        ECOR_NO_UNIQUE_ADDRESS R _r;
+};
+
+/// Sender returned by `async_queue::pop()`.
+template < typename Q >
+struct _queue_pop_sender
+{
+        using sender_concept        = sender_t;
+        using completion_signatures = typename Q::_pop_completions_t;
+
+        Q* _q;
+
+        template < receiver R >
+        _queue_pop_op< Q, R >
+        connect( R receiver ) noexcept( std::is_nothrow_move_constructible_v< R > )
+        {
+                static_assert(
+                    _receiver_for_impl< R, completion_signatures >::value,
+                    "Receiver does not satisfy the requirements for pop()'s completion signatures" );
+                return { *_q, std::move( receiver ) };
+        }
+};
+
+/// Operation state of `async_queue::push()`.
+template < typename Q, typename T, typename R >
+struct _queue_push_op
+  : _queue_waiter,
+    _queue_cancel_base< _queue_push_op< Q, T, R >, _queue_producer_stoppable< Q, R > >
+{
+        using operation_state_concept = operation_state_t;
+
+        /// Mirrors the configuration; the close-related paths vanish when it is false.
+        static constexpr bool _closeable = Q::config_type::is_closeable;
+
+        _queue_push_op( Q& q, T val, R r ) noexcept(
+            std::is_nothrow_move_constructible_v< R > && std::is_nothrow_move_constructible_v< T > )
+          : _q( q )
+          , _val( std::move( val ) )
+          , _r( std::move( r ) )
+        {
+        }
+
+        _queue_push_op( _queue_push_op const& )            = delete;
+        _queue_push_op& operator=( _queue_push_op const& ) = delete;
+
+        void start()
+        {
+                if constexpr ( _closeable )
+                        if ( _q._core._is_closed() ) {
+                                _r.set_stopped();
+                                return;
+                        }
+                if ( _q.template _emplace< T >( std::move( _val ) ) ) {
+                        _r.set_value();
+                        return;
+                }
+                _q._core._producers.link_back( *this );
+                this->_arm( get_stop_token( get_env( _r ) ) );
+        }
+
+        /// Invoked from the stop callback.
+        void _cancel() noexcept
+        {
+                zll::detach( static_cast< _queue_link& >( *this ) );
+                _r.set_stopped();
+        }
+
+        bool _advance() override
+        {
+                if constexpr ( _closeable )
+                        if ( _q._core._is_closed() ) {
+                                _unregister();
+                                _r.set_stopped();
+                                return true;
+                        }
+                if ( !_q.template _emplace< T >( std::move( _val ) ) )
+                        return false;
+                _unregister();
+                _r.set_value();
+                return true;
+        }
+
+private:
+        void _unregister() noexcept
+        {
+                zll::detach( static_cast< _queue_link& >( *this ) );
+                this->_disarm();
+        }
+
+        Q&                       _q;
+        ECOR_NO_UNIQUE_ADDRESS T _val;
+        ECOR_NO_UNIQUE_ADDRESS R _r;
+};
+
+/// Sender returned by `async_queue::push()`.
+template < typename Q, typename T >
+struct _queue_push_sender
+{
+        using sender_concept        = sender_t;
+        using completion_signatures = typename Q::_push_completions_t;
+
+        Q* _q;
+        T  _val;
+
+        template < receiver R >
+        _queue_push_op< Q, T, R > connect( R receiver ) noexcept(
+            std::is_nothrow_move_constructible_v< R > && std::is_nothrow_move_constructible_v< T > )
+        {
+                static_assert(
+                    _receiver_for_impl< R, completion_signatures >::value,
+                    "Receiver does not satisfy the requirements for push()'s completion signatures" );
+                return { *_q, std::move( _val ), std::move( receiver ) };
+        }
+};
+
+/// Operation state of `async_queue::close()`. Completes at once when the queue is already
+/// quiescent, otherwise parks until it becomes so.
+template < typename Core, typename R >
+struct _queue_close_op : _queue_waiter
+{
+        using operation_state_concept = operation_state_t;
+
+        _queue_close_op( Core& core, R r ) noexcept( std::is_nothrow_move_constructible_v< R > )
+          : _core( &core )
+          , _r( std::move( r ) )
+        {
+        }
+
+        _queue_close_op( _queue_close_op const& )            = delete;
+        _queue_close_op& operator=( _queue_close_op const& ) = delete;
+
+        void start()
+        {
+                if ( _core->_is_finished() ) {
+                        _r.set_value();
+                        return;
+                }
+                _core->_done.link_back( *this );
+        }
+
+        /// The queue has drained, which is precisely what this sender was waiting for.
+        bool _advance() override
+        {
+                _r.set_value();
+                return true;
+        }
+
+private:
+        Core*                    _core;
+        ECOR_NO_UNIQUE_ADDRESS R _r;
+};
+
+/// Sender returned by `async_queue::close()`.
+template < typename Core >
+struct _queue_close_sender
+{
+        using sender_concept        = sender_t;
+        using completion_signatures = ecor::completion_signatures< set_value_t() >;
+
+        Core* _core;
+
+        template < receiver R >
+        _queue_close_op< Core, R >
+        connect( R receiver ) noexcept( std::is_nothrow_move_constructible_v< R > )
+        {
+                static_assert(
+                    _receiver_for_impl< R, completion_signatures >::value,
+                    "Receiver does not satisfy the requirements for close()'s completion signatures" );
+                return { *_core, std::move( receiver ) };
+        }
+};
+
+/// Asynchronous queue holding values of any of the types `Ts...` in a single FIFO order.
+///
+/// `CFG` is a compile-time configuration satisfying `queue_config` — it names the memory
+/// resource and the stoppability flags; see `queue_default_cfg`.
+///
+/// Nodes are allocated from the memory resource, so the depth of the queue is bounded by it
+/// rather than by a fixed count, and elements of very different sizes each cost only what they
+/// need. A `circular_buffer_memory` is the natural choice: the queue allocates at the tail and
+/// frees at the head, which is the access order that resource handles without fragmenting.
+/// Configuring `task_memory_resource` as `mem_type` collapses every queue in the program onto
+/// one instantiation of the internals.
+///
+/// Both steps have a synchronous and an asynchronous form:
+///  - `try_push(v)` / `push(v)` — the sender parks the producer when the resource is full and
+///    completes once the value has been accepted.
+///  - `try_pop()` / `pop()` — the sender parks the consumer while the queue is empty.
+///
+/// `pop()` completes with one `set_value_t(T)` per element type, so a receiver dispatches by
+/// overload without materialising a variant.
+///
+/// Several consumers may be parked at once; each item goes to the longest-waiting one.
+///
+/// Not thread-safe, and not usable from an interrupt: completing a parked waiter runs receiver
+/// code inside `push()`.
+///
+/// A handler draining a queue must not `co_await push()` on that same queue — it is the
+/// consumer, so it would wait for space that only it can free. Use `try_push()` there.
+///
+template < queue_config CFG, typename... Ts >
+struct async_queue
+{
+        static_assert( sizeof...( Ts ) > 0, "async_queue requires at least one element type" );
+        static_assert(
+            _all_distinct< Ts... >::value,
+            "async_queue element types must be pairwise distinct" );
+        static_assert(
+            ( std::is_nothrow_move_constructible_v< Ts > && ... ),
+            "async_queue element types must be nothrow move constructible" );
+
+        // Limits imposed by the narrowed fields of `_queue_node_vtable`.
+        static_assert(
+            ( ( sizeof( _queue_node_of< Ts > ) <= std::numeric_limits< uint16_t >::max() ) && ... ),
+            "async_queue element types must be smaller than 64 KiB" );
+        static_assert(
+            ( ( alignof( _queue_node_of< Ts > ) <= std::numeric_limits< uint8_t >::max() ) && ... ),
+            "async_queue element types must have an alignment of 255 or less" );
+
+        /// Configuration this queue was instantiated with.
+        using config_type = CFG;
+        /// Memory resource that queue nodes are allocated from.
+        using mem_type = typename CFG::mem_type;
+        /// Type returned by `try_pop()`.
+        using value_type = inplace_variant< Ts... >;
+
+        /// Element-type-agnostic state, shared by every queue over `mem_type` that agrees on
+        /// `is_closeable`. Named so the sharing can be asserted in tests.
+        using _core_t = _queue_core< mem_type, CFG::is_closeable >;
+
+        using _consumer_node_t = _queue_consumer_node< Ts... >;
+
+        /// `set_stopped()` is reachable when the waiter kind can be cancelled, or when
+        /// `close()` can stop it. When neither holds the signature is omitted rather than
+        /// promising a completion that can never happen.
+        template < bool Stoppable >
+        using _stopped_sigs_t = std::conditional_t<
+            Stoppable || CFG::is_closeable,
+            ecor::completion_signatures< set_stopped_t() >,
+            ecor::completion_signatures<> >;
+
+        using _pop_completions_t = _sigs_concat_t<
+            ecor::completion_signatures< set_value_t( Ts )... >,
+            _stopped_sigs_t< CFG::is_consumer_stoppable > >;
+        using _push_completions_t = _sigs_concat_t<
+            ecor::completion_signatures< set_value_t() >,
+            _stopped_sigs_t< CFG::is_producer_stoppable > >;
+
+        /// Construct a queue drawing node memory from `mem`, which must outlive the queue.
+        explicit async_queue( mem_type& mem ) noexcept
+          : _core( mem )
+        {
+        }
+
+        async_queue( async_queue const& )            = delete;
+        async_queue& operator=( async_queue const& ) = delete;
+
+        /// Number of items currently queued.
+        [[nodiscard]] std::size_t size() const noexcept
+        {
+                return _core._count;
+        }
+
+        /// True when no item is queued.
+        [[nodiscard]] bool empty() const noexcept
+        {
+                return _core._count == 0;
+        }
+
+        /// True once `close()` has been called. Only on a closeable queue.
+        [[nodiscard]] bool closed() const noexcept
+                requires( CFG::is_closeable )
+        {
+                return _core._is_closed();
+        }
+
+        /// Enqueue `val` without waiting. Returns false when the queue is closed or the memory
+        /// resource has no room for the node.
+        template < typename T >
+                requires( _contains_type< T, Ts... >::value )
+        [[nodiscard]] bool try_push( T val )
+        {
+                if constexpr ( CFG::is_closeable )
+                        if ( _core._is_closed() )
+                                return false;
+                return _emplace< T >( std::move( val ) );
+        }
+
+        /// Sender that enqueues `val`, parking the producer while the memory resource is full.
+        /// Completes with `set_value()` once the value has been accepted, or `set_stopped()` if
+        /// the queue is closed first.
+        template < typename T >
+                requires( _contains_type< T, Ts... >::value )
+        [[nodiscard]] _queue_push_sender< async_queue, T >
+        push( T val ) noexcept( std::is_nothrow_move_constructible_v< T > )
+        {
+                return { this, std::move( val ) };
+        }
+
+        /// Take the oldest item without waiting. Returns an empty variant when the queue is
+        /// empty. The node is released before the value is returned, so holding the result
+        /// across a suspension point does not pin the memory resource.
+        [[nodiscard]] value_type try_pop()
+        {
+                value_type v;
+                if ( _core._items.empty() )
+                        return v;
+                auto& n = _core._items.take_front();
+                --_core._count;
+                n._vt->take( n, static_cast< void* >( &v ) );
+                _core._release( n );
+                _core._service();
+                return v;
+        }
+
+        /// Sender that takes the oldest item, parking the consumer while the queue is empty.
+        /// Completes with `set_value(item)`, or `set_stopped()` if the queue is closed while
+        /// nothing is left to deliver.
+        [[nodiscard]] _queue_pop_sender< async_queue > pop() noexcept
+        {
+                return { this };
+        }
+
+        /// Stop accepting new values and return a sender that completes once the queue is
+        /// drained. Parked producers are stopped immediately; items already queued are still
+        /// delivered; parked consumers are stopped once nothing is left.
+        _queue_close_sender< _core_t > close()
+                requires( CFG::is_closeable )
+        {
+                _core._close();
+                return { &_core };
+        }
+
+private:
+        // The operation states reach into the core to park, retry and complete themselves.
+        template < typename, typename >
+        friend struct _queue_pop_op;
+        template < typename, typename, typename >
+        friend struct _queue_push_op;
+
+        /// Allocate, construct and link a node, then service the queue.
+        template < typename T >
+        bool _emplace( T val )
+        {
+                auto const& vt = _queue_node_vtable_of< T, Ts... >;
+                void*       p  = _core._alloc_node( vt );
+                if ( !p )
+                        return false;
+                _core._commit_node( *::new ( p ) _queue_node_of< T >( vt, std::move( val ) ) );
+                return true;
+        }
+
+        _core_t _core;
 };
 
 /// Convenience wrapper around `ll_source<unit, S...>` that exposes `set_value`, `set_error`,

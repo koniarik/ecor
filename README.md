@@ -1233,6 +1233,210 @@ ecor::task<void> shutdown(ecor::task_ctx& ctx, ecor::async_arena<ecor::task_ctx,
   `run_once()` tick after completion, preventing use-after-free of the op_state during
   stack unwinding.
 
+## Async Queue - Heterogeneous Event Queue
+
+`ecor::async_queue<CFG, Ts...>` holds values of any of the types `Ts...` in a single FIFO
+order. Nodes are allocated from a memory resource rather than from a fixed-size array, so the
+depth of the queue is bounded by that resource and elements of very different sizes each cost
+only what they need.
+
+```cpp
+struct queue_mem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+struct temp_reading { int celsius; };
+struct button_press { int id; };
+
+void basic_queue()
+{
+    queue_mem mem;
+    ecor::async_queue<ecor::queue_default_cfg<queue_mem>, temp_reading, button_press> q{mem};
+
+    // try_push() reports whether the value was accepted.
+    if (!q.try_push(temp_reading{25}))
+        return;
+    if (!q.try_push(button_press{3}))
+        return;
+
+    // try_pop() hands back a value owning its payload; the queue node is
+    // released before it is returned, so it pins no memory.
+    while (auto ev = q.try_pop())
+        ev.visit([](auto& v) { process_message(v); });
+}
+```
+
+A `circular_buffer_memory` is the natural resource to pair it with: the queue allocates at the
+tail and frees at the head, the access order that resource handles without fragmenting.
+
+### Configuration
+
+The first template parameter is a compile-time configuration satisfying `ecor::queue_config`.
+`ecor::queue_default_cfg<Mem>` supplies the defaults; derive from it to override individual
+members:
+
+| member | meaning | default |
+|---|---|---|
+| `mem_type` | memory resource nodes are allocated from | — |
+| `is_consumer_stoppable` | a consumer parked in `pop()` honours its receiver's stop token | `true` |
+| `is_producer_stoppable` | a producer parked in `push()` honours its receiver's stop token | `true` |
+| `is_closeable` | the queue supports `close()` | `true` |
+
+```cpp
+struct sensor_mem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+struct sensor_cfg : ecor::queue_default_cfg<sensor_mem> {
+    // Producers are never cancelled in this system, so do not emit the machinery.
+    static constexpr bool is_producer_stoppable = false;
+};
+
+using sensor_queue = ecor::async_queue<sensor_cfg, int>;
+```
+
+Setting a stoppable flag to `false` opts that waiter kind out of cancellation entirely — no
+`inplace_stop_callback` is instantiated even for receivers that do carry a stop token.
+`is_closeable = false` removes the shutdown protocol instead: `close()` and `closed()` no
+longer exist, and parked waiters can then only be completed by delivery or by their own stop
+token.
+
+The two are separate concerns — cancellation completes a receiver from its stop callback,
+whereas `close()` completes parked waiters through its own path — which is why there are three
+flags rather than two.
+
+`set_stopped_t()` appears in a completion signature only when something can actually deliver
+it: for `pop()`, when `is_consumer_stoppable` or `is_closeable` holds. Configure all three off
+and `pop()` completes with nothing but `set_value_t(Ts)...`, so receivers need no
+`set_stopped()` at all.
+
+#### Flash cost of each combination
+
+Measured with `arm-none-eabi-g++ -Os` over one translation unit holding a four-element-type
+queue whose receivers all carry a live stop token, summing `.text` + `.rodata`:
+
+| configuration | cortex-m0plus | cortex-m4 |
+|---|---|---|
+| all three `true` (default) | 2422 | 2354 |
+| `is_consumer_stoppable = false` | 2168 (−254) | 2094 (−260) |
+| `is_producer_stoppable = false` | 2180 (−242) | 2114 (−240) |
+| both stoppable `false` | 1786 (−636) | 1742 (−612) |
+| `is_closeable = false` | 2140 (−282) | 2072 (−282) |
+| all three `false` | 1496 (−926) | 1444 (−910) |
+
+The absolute figures depend on the element types and on how many of the queue's operations a
+program instantiates; the deltas are the part that transfers. Turning a stoppable flag off buys
+nothing if the receivers on that side have no stop token, since the machinery is already
+omitted for them.
+
+### Awaiting items
+
+`pop()` returns a sender that parks the consumer while the queue is empty. It completes with
+one `set_value_t(T)` per element type, so a receiver dispatches by overload without
+materialising a variant. A task cannot `co_await` such a sender directly — pipe it through
+`ecor::as_variant`:
+
+```cpp
+struct qmem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+using qcfg = ecor::queue_default_cfg<qmem>;
+
+ecor::task<void> consume(ecor::task_ctx& ctx, ecor::async_queue<qcfg, int, char>& q)
+{
+    for (;;) {
+        auto ev = co_await (q.pop() | ecor::as_variant);   // std::variant<int, char>
+        std::visit([](auto v) { process_message(v); }, ev);
+    }
+}
+```
+
+Several consumers may be parked at once; each item goes to the longest-waiting one, so a set
+of identical consumers shares the work.
+
+### Backpressure
+
+`try_push()` never waits and returns `false` when the queue is closed or the memory resource
+has no room. `push()` returns a sender that parks the producer instead, completing once the
+value has been accepted:
+
+```cpp
+struct pmem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+using pcfg = ecor::queue_default_cfg<pmem>;
+
+ecor::task<void> produce(ecor::task_ctx& ctx, ecor::async_queue<pcfg, int>& q)
+{
+    for (int i = 0; i < 10; ++i)
+        co_await q.push(i);      // waits here while the resource is full
+}
+```
+
+> **Deadlock hazard:** a consumer must not `co_await push()` on the queue it is draining. It is
+> the only thing that can free room, so it would wait on itself. Use `try_push()` there.
+
+### Shutdown
+
+`close()` stops accepting new values and returns a sender that completes once the queue has
+drained. Parked producers are stopped immediately, items already accepted are still delivered,
+and parked consumers are stopped once nothing is left:
+
+```cpp
+struct cmem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+using ccfg = ecor::queue_default_cfg<cmem>;
+
+ecor::task<void> shutdown_queue(ecor::task_ctx& ctx, ecor::async_queue<ccfg, int>& q)
+{
+    co_await q.close();
+    // every item has been handed to a consumer, every waiter has been completed
+}
+```
+
+### Key Properties
+
+- **Single-threaded, not interrupt-safe** — completing a parked waiter runs receiver code
+  inside `push()`, so pushing from an ISR is not supported.
+- **Waiters cost nothing** — parked producers and consumers live in their own operation
+  states; only queued items consume the memory resource.
+- **Eager cancellation** — a parked waiter whose receiver carries a live stop token unlinks
+  and completes with `set_stopped()` as soon as stop is requested. Receivers without a stop
+  token pay nothing for this.
+- **Element types must be pairwise distinct** and nothrow move constructible.
+- **One core per memory resource** — the list, waiter and shutdown machinery is templated only
+  on `Mem`, so queues differing only in their element types share one instantiation of it.
+  Using `ecor::task_memory_resource` as `Mem` collapses every queue in the program onto one.
+
 ## Assert customization
 
 By default, ecor uses `assert` for internal checks. You can customize this by defining
