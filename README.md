@@ -1283,9 +1283,18 @@ The first template parameter is a compile-time configuration satisfying `ecor::q
 | member | meaning | default |
 |---|---|---|
 | `mem_type` | memory resource nodes are allocated from | — |
-| `is_consumer_stoppable` | a consumer parked in `pop()` honours its receiver's stop token | `false` |
-| `is_producer_stoppable` | a producer parked in `push()` honours its receiver's stop token | `false` |
+| `pop_api` | how much of `pop()` exists | `async_queue_api::try_only` |
+| `push_api` | how much of `push()` exists | `async_queue_api::try_only` |
 | `is_closeable` | the queue supports `close()` and `closed()` | `false` |
+
+Each direction is set independently. The levels are cumulative — `cancellable` provides
+everything `parking` does:
+
+| `async_queue_api` | what that direction provides |
+|---|---|
+| `try_only` | only `try_push()` / `try_pop()` |
+| `parking` | the sender as well; a waiter parks until it can proceed |
+| `cancellable` | the sender, and a parked waiter honours its receiver's stop token |
 
 ```cpp
 struct sensor_mem {
@@ -1299,25 +1308,23 @@ struct sensor_mem {
 
 struct sensor_cfg : ecor::queue_default_cfg<sensor_mem> {
     // Consumers in this system are cancelled; nothing else is needed.
-    static constexpr bool is_consumer_stoppable = true;
+    static constexpr ecor::async_queue_api pop_api = ecor::async_queue_api::cancellable;
 };
 
 using sensor_queue = ecor::async_queue<sensor_cfg, int>;
 ```
 
-A stoppable flag governs whether that waiter kind reacts to the stop token in its receiver's
-environment; with it off no `inplace_stop_callback` is instantiated even for receivers that do
-carry one. `is_closeable` governs the shutdown protocol: with it off `close()` and `closed()`
-do not exist, and a parked waiter can only be resolved by delivery or by its own stop token.
+At `stoppable` a parked waiter reacts to the stop token in its receiver's environment; below
+that no `inplace_stop_callback` is instantiated even for receivers that carry one.
+`is_closeable` governs the shutdown protocol, and is independent of both: with it off `close()`
+and `closed()` do not exist, and a parked waiter can only be resolved by delivery or by its own
+stop token. It stays separate because a pump parks as a consumer without using `pop()` at all,
+and `close()` is what releases it.
 
 The two are separate concerns — cancellation completes a receiver from its stop callback,
-whereas `close()` completes parked waiters through its own path — which is why there are three
-flags rather than two.
+whereas `close()` completes parked waiters through its own path — which is why it stays a
+separate flag rather than another level of the enum.
 
-`set_stopped_t()` appears in a completion signature only when something can actually deliver
-it: for `pop()`, when `is_consumer_stoppable` or `is_closeable` holds. Configure all three off
-and `pop()` completes with nothing but `set_value_t(Ts)...`, so receivers need no
-`set_stopped()` at all.
 
 #### Flash cost of each combination
 
@@ -1326,23 +1333,25 @@ queue whose receivers all carry a live stop token, summing `.text` + `.rodata`:
 
 | configuration | cortex-m0plus | cortex-m4 |
 |---|---|---|
-| all three `false` (default) | 1496 | 1444 |
-| `is_closeable` only | 1786 (+290) | 1742 (+298) |
-| both stoppable, no `close()` | 2140 (+644) | 2072 (+628) |
-| all but `is_producer_stoppable` | 2180 (+684) | 2114 (+670) |
-| all but `is_consumer_stoppable` | 2168 (+672) | 2094 (+650) |
-| all three `true` | 2422 (+926) | 2354 (+910) |
+| both `try_only` (default) | 716 | 690 |
+| `is_closeable` only | 990 (+274) | 970 (+280) |
+| `pop_api = parking` | 1202 (+486) | 1080 (+390) |
+| `pop_api = cancellable` | 1570 (+854) | 1438 (+748) |
+| both `parking` | 1462 (+746) | 1336 (+646) |
+| both `cancellable` | 2106 (+1390) | 1968 (+1278) |
+| both `cancellable`, plus `is_closeable` | 2392 (+1676) | 2254 (+1564) |
 
 The absolute figures depend on the element types and on how many of the queue's operations a
-program instantiates; the deltas are the part that transfers. Turning a stoppable flag on buys
-nothing if the receivers on that side have no stop token, since the machinery stays omitted for
-them either way.
+program instantiates; the deltas are the part that transfers. Raising a direction to
+`cancellable` buys nothing if the receivers on that side have no stop token, since the
+machinery stays omitted for them either way — and an `event_pump` consumer needs none of this,
+since it parks on the queue directly rather than through `pop()`.
 
 ### Awaiting items
 
-`pop()` returns a sender that parks the consumer while the queue is empty. It completes with
-one `set_value_t(T&)` per element type, so a receiver dispatches by overload without
-materialising a variant.
+`pop()` is opt-in through `pop_api`. It returns a sender that parks the consumer while the
+queue is empty, completing with one `set_value_t(T&)` per element type, so a receiver dispatches
+by overload without materialising a variant.
 
 The reference is **borrowed**: it refers to the event where it sits in the queue node, and that
 node is released the moment `set_value` returns. A receiver that wants to keep the event must
@@ -1362,7 +1371,9 @@ struct qmem {
     }
 };
 
-using qcfg = ecor::queue_default_cfg<qmem>;
+struct qcfg : ecor::queue_default_cfg<qmem> {
+    static constexpr ecor::async_queue_api pop_api = ecor::async_queue_api::parking;
+};
 
 ecor::task<void> consume(ecor::task_ctx& ctx, ecor::async_queue<qcfg, int, char>& q)
 {
@@ -1392,7 +1403,9 @@ struct pmem {
     }
 };
 
-using pcfg = ecor::queue_default_cfg<pmem>;
+struct pcfg : ecor::queue_default_cfg<pmem> {
+    static constexpr ecor::async_queue_api push_api = ecor::async_queue_api::parking;
+};
 
 ecor::task<void> produce(ecor::task_ctx& ctx, ecor::async_queue<pcfg, int>& q)
 {

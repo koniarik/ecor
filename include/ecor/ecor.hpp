@@ -4947,16 +4947,31 @@ private:
 /// -------------------------------------------------------------------------------
 /// async_queue — heterogeneous asynchronous queue
 
+/// How much of the asynchronous API one direction of a queue provides. The levels are
+/// cumulative: `cancellable` provides everything `parking` does.
+///
+/// Cancellation is a level here because it applies only to a waiter that parks, and only the
+/// sender form parks.
+enum class async_queue_api : uint8_t
+{
+        /// Only the synchronous form — `try_push()` or `try_pop()`.
+        try_only,
+        /// The sender form as well, which parks but ignores stop tokens.
+        parking,
+        /// The sender form, honouring the stop token in its receiver's environment.
+        cancellable,
+};
+
 /// Default `async_queue` configuration over the memory resource `Mem`.
 ///
 /// Every optional facility is off: the default queue is the smallest one that compiles, and
-/// each flag is opted into by a configuration that derives from this and pays for it. See the
-/// size table in the README for what each one costs.
+/// each is opted into by a configuration that derives from this and pays for it. See the size
+/// table in the README for what each one costs.
 ///
 /// ```
 /// struct my_cfg : ecor::queue_default_cfg< my_mem >
 /// {
-///         static constexpr bool is_closeable = true;
+///         static constexpr ecor::async_queue_api pop_api = ecor::async_queue_api::cancellable;
 /// };
 /// ```
 template < memory_resource Mem >
@@ -4965,17 +4980,16 @@ struct queue_default_cfg
         /// Memory resource that queue nodes are allocated from.
         using mem_type = Mem;
 
-        /// Enables cancellation of a consumer parked in `pop()` through the stop token in its
-        /// receiver's environment.
-        static constexpr bool is_consumer_stoppable = false;
+        /// How much of `pop()` exists.
+        static constexpr async_queue_api pop_api = async_queue_api::try_only;
 
-        /// The same for a producer parked in `push()`.
-        static constexpr bool is_producer_stoppable = false;
+        /// How much of `push()` exists.
+        static constexpr async_queue_api push_api = async_queue_api::try_only;
 
         /// Enables `close()` and `closed()`, and with them the shutdown protocol: the waiter
-        /// list they complete, and the ability to finish parked waiters at all. Off by
-        /// default, in which case a waiter is resolved only by delivery or by its own stop
-        /// token.
+        /// list they complete, and the ability to finish parked waiters at all. Independent of
+        /// the two above — a pump parks as a consumer without `pop()`, and `close()` is what
+        /// releases it.
         static constexpr bool is_closeable = false;
 };
 
@@ -4988,8 +5002,8 @@ struct queue_default_cfg
 /// it, and is omitted when neither can.
 template < typename T >
 concept queue_config = memory_resource< typename T::mem_type > && requires {
-        { T::is_consumer_stoppable } -> std::convertible_to< bool >;
-        { T::is_producer_stoppable } -> std::convertible_to< bool >;
+        { T::pop_api } -> std::convertible_to< async_queue_api >;
+        { T::push_api } -> std::convertible_to< async_queue_api >;
         { T::is_closeable } -> std::convertible_to< bool >;
 };
 
@@ -5177,9 +5191,21 @@ struct _queue_node_ops
         }
 };
 
-template < typename T, typename... Ts >
+/// Null unless `pop()` exists, so the thunk behind it is not odr-used and never emitted. The
+/// `if constexpr` is load-bearing: a conditional expression would name `deliver` in both
+/// branches and emit it regardless.
+template < typename T, bool PopAsync, typename... Ts >
+[[nodiscard]] consteval auto _queue_deliver_fn() noexcept
+{
+        if constexpr ( PopAsync )
+                return &_queue_node_ops< T, Ts... >::deliver;
+        else
+                return static_cast< void ( * )( _queue_node&, void* ) >( nullptr );
+}
+
+template < typename T, bool PopAsync, typename... Ts >
 inline constexpr _queue_node_vtable _queue_node_vtable_of{
-    .deliver = &_queue_node_ops< T, Ts... >::deliver,
+    .deliver = _queue_deliver_fn< T, PopAsync, Ts... >(),
     .take    = &_queue_node_ops< T, Ts... >::take,
     .destroy = _queue_node_ops< T, Ts... >::destroy_fn(),
     .size    = sizeof( _queue_node_of< T > ),
@@ -5406,12 +5432,12 @@ struct _queue_cancel_base< Op, false >
 /// receiver carries a triggerable stop token.
 template < typename Q, typename R >
 inline constexpr bool _queue_consumer_stoppable =
-    Q::config_type::is_consumer_stoppable && _queue_stoppable< R >;
+    Q::config_type::pop_api == async_queue_api::cancellable && _queue_stoppable< R >;
 
 /// The same, for a parked producer.
 template < typename Q, typename R >
 inline constexpr bool _queue_producer_stoppable =
-    Q::config_type::is_producer_stoppable && _queue_stoppable< R >;
+    Q::config_type::push_api == async_queue_api::cancellable && _queue_stoppable< R >;
 
 /// Operation state of `async_queue::pop()`.
 template < typename Q, typename R >
@@ -5731,10 +5757,10 @@ struct async_queue
 
         using _pop_completions_t = _sigs_concat_t<
             ecor::completion_signatures< set_value_t( Ts& )... >,
-            _stopped_sigs_t< CFG::is_consumer_stoppable > >;
+            _stopped_sigs_t< CFG::pop_api == async_queue_api::cancellable > >;
         using _push_completions_t = _sigs_concat_t<
             ecor::completion_signatures< set_value_t() >,
-            _stopped_sigs_t< CFG::is_producer_stoppable > >;
+            _stopped_sigs_t< CFG::push_api == async_queue_api::cancellable > >;
 
         /// Construct a queue drawing node memory from `mem`, which must outlive the queue.
         explicit async_queue( mem_type& mem ) noexcept
@@ -5783,6 +5809,7 @@ struct async_queue
                 requires( _contains_type< T, Ts... >::value )
         [[nodiscard]] _queue_push_sender< async_queue, T >
         push( T val ) noexcept( std::is_nothrow_move_constructible_v< T > )
+                requires( CFG::push_api != async_queue_api::try_only )
         {
                 return { this, std::move( val ) };
         }
@@ -5807,6 +5834,7 @@ struct async_queue
         /// Completes with `set_value(item)`, or `set_stopped()` if the queue is closed while
         /// nothing is left to deliver.
         [[nodiscard]] _queue_pop_sender< async_queue > pop() noexcept
+                requires( CFG::pop_api != async_queue_api::try_only )
         {
                 return { this };
         }
@@ -5847,8 +5875,9 @@ private:
         template < typename T >
         bool _emplace( T val )
         {
-                auto const& vt = _queue_node_vtable_of< T, Ts... >;
-                void*       p  = _core._alloc_node( vt );
+                auto const& vt =
+                    _queue_node_vtable_of< T, CFG::pop_api != async_queue_api::try_only, Ts... >;
+                void* p = _core._alloc_node( vt );
                 if ( !p )
                         return false;
                 _core._commit_node( *::new ( p ) _queue_node_of< T >( vt, std::move( val ) ) );

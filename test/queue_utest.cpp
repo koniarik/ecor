@@ -205,22 +205,25 @@ namespace
         /// default configuration deliberately omits.
         struct nd_cfg : queue_default_cfg< nd_mem >
         {
-                static constexpr bool is_consumer_stoppable = true;
-                static constexpr bool is_producer_stoppable = true;
-                static constexpr bool is_closeable          = true;
+                static constexpr async_queue_api pop_api      = async_queue_api::cancellable;
+                static constexpr async_queue_api push_api     = async_queue_api::cancellable;
+                static constexpr bool            is_closeable = true;
         };
 
         struct cb_cfg : queue_default_cfg< circular_buffer_memory< uint16_t > >
         {
-                static constexpr bool is_consumer_stoppable = true;
-                static constexpr bool is_producer_stoppable = true;
-                static constexpr bool is_closeable          = true;
+                static constexpr async_queue_api pop_api      = async_queue_api::cancellable;
+                static constexpr async_queue_api push_api     = async_queue_api::cancellable;
+                static constexpr bool            is_closeable = true;
         };
 
         /// Closeable, but neither waiter kind reacts to a stop token.
+        /// Closeable and fully asynchronous, but neither direction reacts to a stop token.
         struct unstoppable_cfg : queue_default_cfg< nd_mem >
         {
-                static constexpr bool is_closeable = true;
+                static constexpr async_queue_api pop_api      = async_queue_api::parking;
+                static constexpr async_queue_api push_api     = async_queue_api::parking;
+                static constexpr bool            is_closeable = true;
         };
 
         template < typename T >
@@ -233,14 +236,26 @@ namespace
         concept _has_emplace = requires( Q& q ) { q.template _emplace< int >( 0 ); };
 
         template < typename Q >
+        concept _has_pop = requires( Q& q ) { q.pop(); };
+
+        template < typename Q >
+        concept _has_push = requires( Q& q ) { q.push( 0 ); };
+
+        template < typename Q >
         concept _has_close = requires( Q& q ) { q.close(); };
 
         template < typename Q >
         concept _has_closed = requires( Q& q ) { q.closed(); };
 
-        /// The default configuration: no cancellation and no shutdown protocol, so `pop()`
-        /// and `push()` complete only with `set_value`.
+        /// The default configuration: nothing optional at all.
         using minimal_cfg = queue_default_cfg< nd_mem >;
+
+        /// The default plus `pop()`, for tests that exercise the async dequeue with no
+        /// cancellation or shutdown around it.
+        struct pop_only_cfg : queue_default_cfg< nd_mem >
+        {
+                static constexpr async_queue_api pop_api = async_queue_api::parking;
+        };
 
         /// Receiver with no `set_stopped()` at all — only connectable to a queue whose
         /// completion signatures omit it.
@@ -264,8 +279,9 @@ namespace
         /// Consumers stay cancellable, producers do not.
         struct cb_no_producer_stop_cfg : queue_default_cfg< circular_buffer_memory< uint16_t > >
         {
-                static constexpr bool is_consumer_stoppable = true;
-                static constexpr bool is_closeable          = true;
+                static constexpr async_queue_api pop_api      = async_queue_api::cancellable;
+                static constexpr async_queue_api push_api     = async_queue_api::parking;
+                static constexpr bool            is_closeable = true;
         };
 
         using q_t = async_queue< nd_cfg, int, std::string >;
@@ -729,7 +745,7 @@ TEST_CASE( "async_queue - push sender is stopped when the queue is already close
         CHECK( log == std::vector< std::string >{ "c:value", "p:stopped" } );
 }
 
-TEST_CASE( "async_queue - is_consumer_stoppable=false ignores the receiver's stop token" )
+TEST_CASE( "async_queue - pop_api=parking ignores the receiver's stop token" )
 {
         nd_mem                              mem;
         async_queue< unstoppable_cfg, int > q{ mem };
@@ -750,7 +766,7 @@ TEST_CASE( "async_queue - is_consumer_stoppable=false ignores the receiver's sto
 
         static_assert(
             !_queue_consumer_stoppable< async_queue< unstoppable_cfg, int >, pop_recv >,
-            "cancellation must not be instantiated when the flag is off" );
+            "cancellation must not be instantiated below queue_api::cancellable" );
 
         // The stop callback lives in a base that is empty for an unstoppable waiter, so the
         // operation state is measurably smaller.
@@ -767,7 +783,7 @@ TEST_CASE( "async_queue - is_consumer_stoppable=false ignores the receiver's sto
             "the default configuration must not be closeable" );
 }
 
-TEST_CASE( "async_queue - is_producer_stoppable=false ignores the receiver's stop token" )
+TEST_CASE( "async_queue - push_api=parking ignores the receiver's stop token" )
 {
         uint8_t                                     buffer[128]{};
         circular_buffer_memory< uint16_t >          mem{ buffer };
@@ -792,7 +808,7 @@ TEST_CASE( "async_queue - is_producer_stoppable=false ignores the receiver's sto
         // Consumers keep their cancellation in this configuration.
         static_assert(
             _queue_consumer_stoppable< async_queue< cb_no_producer_stop_cfg, int >, pop_recv >,
-            "consumer cancellation must survive when only the producer flag is off" );
+            "consumer cancellation must survive when only the producer side is lower" );
         static_assert(
             !_queue_producer_stoppable< async_queue< cb_no_producer_stop_cfg, int >, sig_recv >,
             "producer cancellation must be gone" );
@@ -800,7 +816,7 @@ TEST_CASE( "async_queue - is_producer_stoppable=false ignores the receiver's sto
 
 TEST_CASE( "async_queue - is_closeable=false removes the shutdown protocol" )
 {
-        using min_q = async_queue< minimal_cfg, int >;
+        using min_q = async_queue< pop_only_cfg, int >;
 
         static_assert( !_has_close< min_q >, "close() must not exist on a non-closeable queue" );
         static_assert( !_has_closed< min_q >, "closed() must not exist on a non-closeable queue" );
@@ -918,6 +934,38 @@ TEST_CASE( "async_queue - mutable internals are not reachable from outside" )
 
         static_assert( requires { typename q_t::_core_t; } );
         static_assert( requires { typename q_t::value_type; } );
+}
+
+TEST_CASE( "async_queue - async_queue_api::try_only removes the sender and its per-type dispatch" )
+{
+        static_assert(
+            !_has_pop< async_queue< minimal_cfg, int > > &&
+                !_has_push< async_queue< minimal_cfg, int > >,
+            "neither sender exists at async_queue_api::try_only" );
+        static_assert(
+            _has_pop< async_queue< pop_only_cfg, int > >,
+            "pop() must exist above async_queue_api::try_only" );
+        static_assert(
+            !_has_push< async_queue< pop_only_cfg, int > >,
+            "the two directions are configured independently" );
+
+        // Cancellation is a state of the sender, not a separate axis: it cannot be asked for
+        // without the sender, because `plain` and `stoppable` are values of one enum.
+        static_assert( async_queue_api::try_only < async_queue_api::parking );
+        static_assert( async_queue_api::parking < async_queue_api::cancellable );
+
+        // The node vtable's deliver slot is what only pop() can reach; with the flag off it is
+        // null, so the per-element-type thunk behind it is never emitted.
+        static_assert( _queue_node_vtable_of< int, false, int, std::string >.deliver == nullptr );
+        static_assert( _queue_node_vtable_of< int, true, int, std::string >.deliver != nullptr );
+
+        // try_push/try_pop keep working without it.
+        nd_mem                          mem;
+        async_queue< minimal_cfg, int > q{ mem };
+        CHECK( q.try_push( 4 ) );
+        auto v = q.try_pop();
+        REQUIRE( v );
+        CHECK( v.get< int >() == 4 );
 }
 
 TEST_CASE( "async_queue - queues over one memory resource share their core instantiation" )
@@ -1111,8 +1159,8 @@ TEST_CASE( "event_pump - stop completes and leaves queued events alone" )
 
 TEST_CASE( "async_queue - pop() lends a reference into the node, copying nothing" )
 {
-        nd_mem                              mem;
-        async_queue< minimal_cfg, counted > q{ mem };
+        nd_mem                               mem;
+        async_queue< pop_only_cfg, counted > q{ mem };
 
         CHECK( q.try_push( counted{ 7 } ) );
 
@@ -1128,8 +1176,8 @@ TEST_CASE( "async_queue - pop() lends a reference into the node, copying nothing
 
 TEST_CASE( "async_queue - a receiver may take the event during the call" )
 {
-        nd_mem                              mem;
-        async_queue< minimal_cfg, counted > q{ mem };
+        nd_mem                               mem;
+        async_queue< pop_only_cfg, counted > q{ mem };
 
         // Moving out of the borrowed reference is the supported way to keep the event; the
         // node is destroyed immediately afterwards, so the moved-from payload is what dies.
