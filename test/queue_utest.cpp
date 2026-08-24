@@ -981,6 +981,35 @@ TEST_CASE( "async_queue - queues over one memory resource share their core insta
             "the core must depend only on the memory resource and is_closeable" );
 }
 
+/// Coroutine bodies for the task tests below.
+///
+/// These are free functions rather than coroutine lambdas: the promise allocates the frame
+/// through `operator new( size, ctx, args... )`, and for a lambda GCC passes the closure as
+/// that first argument while the closure type is still incomplete, which is a hard error
+/// rather than a substitution failure. A free function taking `task_ctx&` first avoids it.
+static task< void > qu_pop_variant_task( task_ctx&, q_t& q, std::vector< std::string >& log )
+{
+        for ( int i = 0; i < 2; ++i ) {
+                auto v = co_await ( q.pop() | as_variant );
+                std::visit(
+                    [&]( auto const& x ) {
+                            if constexpr ( std::same_as<
+                                               std::remove_cvref_t< decltype( x ) >,
+                                               int > )
+                                    log.push_back( "int:" + std::to_string( x ) );
+                            else
+                                    log.push_back( "str:" + x );
+                    },
+                    v );
+        }
+}
+
+static task< void > qu_push_task( task_ctx&, q_t& q, int& pushed )
+{
+        co_await q.push( 42 );
+        ++pushed;
+}
+
 TEST_CASE( "async_queue - a task awaits pop through as_variant" )
 {
         nd_mem                     mem;
@@ -988,24 +1017,9 @@ TEST_CASE( "async_queue - a task awaits pop through as_variant" )
         q_t                        q{ mem };
         std::vector< std::string > log;
 
-        auto body = [&]( task_ctx& c ) -> task< void > {
-                for ( int i = 0; i < 2; ++i ) {
-                        auto v = co_await ( q.pop() | as_variant );
-                        std::visit(
-                            [&]( auto const& x ) {
-                                    if constexpr ( std::same_as<
-                                                       std::remove_cvref_t< decltype( x ) >,
-                                                       int > )
-                                            log.push_back( "int:" + std::to_string( x ) );
-                                    else
-                                            log.push_back( "str:" + x );
-                            },
-                            v );
-                }
-                std::ignore = c;
-        };
-
-        task_holder h{ ctx, body };
+        task_holder h{ ctx, [&]( task_ctx& c ) {
+                              return qu_pop_variant_task( c, q, log );
+                      } };
         h.start();
         ctx.core.run_n( 4 );
         CHECK( log.empty() );
@@ -1030,13 +1044,9 @@ TEST_CASE( "async_queue - a task awaits push" )
         q_t      q{ mem };
         int      pushed = 0;
 
-        auto body = [&]( task_ctx& c ) -> task< void > {
-                co_await q.push( 42 );
-                ++pushed;
-                std::ignore = c;
-        };
-
-        task_holder h{ ctx, body };
+        task_holder h{ ctx, [&]( task_ctx& c ) {
+                              return qu_push_task( c, q, pushed );
+                      } };
         h.start();
         ctx.core.run_n( 4 );
 
