@@ -956,8 +956,12 @@ TEST_CASE( "async_queue - async_queue_api::try_only removes the sender and its p
 
         // The node vtable's deliver slot is what only pop() can reach; with the flag off it is
         // null, so the per-element-type thunk behind it is never emitted.
+        //
+        // The non-null direction is a runtime CHECK: `deliver` is a static member of a class
+        // template and therefore a weak symbol, and GCC under -fsanitize=undefined declines to
+        // fold `&weak != nullptr` into a constant expression.
         static_assert( _queue_node_vtable_of< int, false, int, std::string >.deliver == nullptr );
-        static_assert( _queue_node_vtable_of< int, true, int, std::string >.deliver != nullptr );
+        CHECK( _queue_node_vtable_of< int, true, int, std::string >.deliver != nullptr );
 
         // try_push/try_pop keep working without it.
         nd_mem                          mem;
