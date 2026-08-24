@@ -128,6 +128,18 @@ than the two pointers it saves (+4 to +34), and the text cost scales with elemen
 the rodata saving does, so it never crosses over. Replacing scalar vtable fields with a
 `query(kind)` function is much worse: +77 to +150.
 
+### Out-of-line dispatch keeps losing to inlined folds
+
+Three separate attempts to replace a per-type inlined body with a single dispatch point all
+cost more than they saved: merging vtable function pointers into one tagged entry point
+(+4 to +34), a `payload(n)` helper over a repeated cast (+8 to +28), and swapping the pump's
+`visit` fold for a recorded start-thunk (+12 to +156, worsening with type count).
+
+The pattern: at `-Os` GCC inlines small per-type bodies into their caller and shares the
+prologue, epilogue and setup between them. Forcing them out of line gives each its own frame
+and adds the dispatch. Assume a fold beats a jump table for small bodies until measured
+otherwise.
+
 ### Narrowing scalar vtable fields is free
 
 `uint16_t`/`uint8_t` instead of `size_t` for size and alignment: identical text, 8 bytes less
@@ -169,6 +181,35 @@ reference binding but not the tiny function.
 So when tidying hot template code, measure the tidy-up, and isolate *which* part of it costs —
 here three changes were bundled and only one was responsible. Leave a comment where a natural
 refactor was deliberately not taken, or it will simply be reapplied later.
+
+### Parse `objdump -h` with `-w`, or it silently under-counts
+
+Template-heavy section names get long enough that `objdump -h` wraps them onto a second line,
+leaving the size in a column a naive line regex never sees. A 34-element-type probe measured
+1798 bytes when the true figure was 8404 — and the give-away was that one symbol in it was
+3008 bytes on its own. Pass `-w`/`--wide`, and sanity-check the section total against the
+largest symbol from `nm`.
+
+Short-named probes are unaffected, so this can lie dormant for a long time and then corrupt
+exactly the large realistic measurement you care about most.
+
+### A type must be *constructed* in the probe, not just referenced
+
+A class template's virtual functions are instantiated with its vtable, and the vtable is
+emitted because the constructor needs it. Hold the object by `extern` reference and never
+construct it, and the constructor, the vtable and every virtual — often where all the work
+lives — silently vanish from the object file. Measuring `event_pump` that way made it appear to
+make programs *smaller* than not using it.
+
+Sanity-check every result against a prediction of its sign and rough magnitude. A `rodata` of
+zero, or an addition that shrinks the binary, means the probe is wrong, not the code.
+
+### Match the environment when comparing against a baseline
+
+Receiver environments propagate: a receiver carrying a stop token makes the *queue's* operation
+state instantiate its cancellation path too. Comparing a stoppable pump against a hand-rolled
+consumer with a non-stoppable receiver therefore counts cancellation once on one side and twice
+on the other. Build the baseline with the same environment as the thing under test.
 
 ### Pin the layout so published numbers cannot drift
 

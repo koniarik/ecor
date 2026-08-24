@@ -1277,15 +1277,15 @@ tail and frees at the head, the access order that resource handles without fragm
 ### Configuration
 
 The first template parameter is a compile-time configuration satisfying `ecor::queue_config`.
-`ecor::queue_default_cfg<Mem>` supplies the defaults; derive from it to override individual
-members:
+`ecor::queue_default_cfg<Mem>` names the memory resource and turns every optional facility
+**off** — the default queue is the smallest one that compiles. Derive from it to opt in:
 
 | member | meaning | default |
 |---|---|---|
 | `mem_type` | memory resource nodes are allocated from | — |
-| `is_consumer_stoppable` | a consumer parked in `pop()` honours its receiver's stop token | `true` |
-| `is_producer_stoppable` | a producer parked in `push()` honours its receiver's stop token | `true` |
-| `is_closeable` | the queue supports `close()` | `true` |
+| `is_consumer_stoppable` | a consumer parked in `pop()` honours its receiver's stop token | `false` |
+| `is_producer_stoppable` | a producer parked in `push()` honours its receiver's stop token | `false` |
+| `is_closeable` | the queue supports `close()` and `closed()` | `false` |
 
 ```cpp
 struct sensor_mem {
@@ -1298,18 +1298,17 @@ struct sensor_mem {
 };
 
 struct sensor_cfg : ecor::queue_default_cfg<sensor_mem> {
-    // Producers are never cancelled in this system, so do not emit the machinery.
-    static constexpr bool is_producer_stoppable = false;
+    // Consumers in this system are cancelled; nothing else is needed.
+    static constexpr bool is_consumer_stoppable = true;
 };
 
 using sensor_queue = ecor::async_queue<sensor_cfg, int>;
 ```
 
-Setting a stoppable flag to `false` opts that waiter kind out of cancellation entirely — no
-`inplace_stop_callback` is instantiated even for receivers that do carry a stop token.
-`is_closeable = false` removes the shutdown protocol instead: `close()` and `closed()` no
-longer exist, and parked waiters can then only be completed by delivery or by their own stop
-token.
+A stoppable flag governs whether that waiter kind reacts to the stop token in its receiver's
+environment; with it off no `inplace_stop_callback` is instantiated even for receivers that do
+carry one. `is_closeable` governs the shutdown protocol: with it off `close()` and `closed()`
+do not exist, and a parked waiter can only be resolved by delivery or by its own stop token.
 
 The two are separate concerns — cancellation completes a receiver from its stop callback,
 whereas `close()` completes parked waiters through its own path — which is why there are three
@@ -1327,24 +1326,31 @@ queue whose receivers all carry a live stop token, summing `.text` + `.rodata`:
 
 | configuration | cortex-m0plus | cortex-m4 |
 |---|---|---|
-| all three `true` (default) | 2422 | 2354 |
-| `is_consumer_stoppable = false` | 2168 (−254) | 2094 (−260) |
-| `is_producer_stoppable = false` | 2180 (−242) | 2114 (−240) |
-| both stoppable `false` | 1786 (−636) | 1742 (−612) |
-| `is_closeable = false` | 2140 (−282) | 2072 (−282) |
-| all three `false` | 1496 (−926) | 1444 (−910) |
+| all three `false` (default) | 1496 | 1444 |
+| `is_closeable` only | 1786 (+290) | 1742 (+298) |
+| both stoppable, no `close()` | 2140 (+644) | 2072 (+628) |
+| all but `is_producer_stoppable` | 2180 (+684) | 2114 (+670) |
+| all but `is_consumer_stoppable` | 2168 (+672) | 2094 (+650) |
+| all three `true` | 2422 (+926) | 2354 (+910) |
 
 The absolute figures depend on the element types and on how many of the queue's operations a
-program instantiates; the deltas are the part that transfers. Turning a stoppable flag off buys
-nothing if the receivers on that side have no stop token, since the machinery is already
-omitted for them.
+program instantiates; the deltas are the part that transfers. Turning a stoppable flag on buys
+nothing if the receivers on that side have no stop token, since the machinery stays omitted for
+them either way.
 
 ### Awaiting items
 
 `pop()` returns a sender that parks the consumer while the queue is empty. It completes with
-one `set_value_t(T)` per element type, so a receiver dispatches by overload without
-materialising a variant. A task cannot `co_await` such a sender directly — pipe it through
-`ecor::as_variant`:
+one `set_value_t(T&)` per element type, so a receiver dispatches by overload without
+materialising a variant.
+
+The reference is **borrowed**: it refers to the event where it sits in the queue node, and that
+node is released the moment `set_value` returns. A receiver that wants to keep the event must
+take it during the call — move out of the reference, or copy it — and one that only inspects it
+need do nothing.
+
+A task cannot `co_await` such a sender directly, since it has several `set_value` signatures.
+Pipe it through `ecor::as_variant`, which decays the alternatives.
 
 ```cpp
 struct qmem {
@@ -1414,7 +1420,9 @@ struct cmem {
     }
 };
 
-using ccfg = ecor::queue_default_cfg<cmem>;
+struct ccfg : ecor::queue_default_cfg<cmem> {
+    static constexpr bool is_closeable = true;   // close() is opt-in
+};
 
 ecor::task<void> shutdown_queue(ecor::task_ctx& ctx, ecor::async_queue<ccfg, int>& q)
 {
@@ -1436,6 +1444,146 @@ ecor::task<void> shutdown_queue(ecor::task_ctx& ctx, ecor::async_queue<ccfg, int
 - **One core per memory resource** — the list, waiter and shutdown machinery is templated only
   on `Mem`, so queues differing only in their element types share one instantiation of it.
   Using `ecor::task_memory_resource` as `Mem` collapses every queue in the program onto one.
+
+## Event Pump - Draining a Queue Through a Handler
+
+`ecor::event_pump<CFG, Queue, Handler>` parks a consumer on an `async_queue` and runs a
+user-supplied handler over each event in turn.
+
+Exactly one handler runs at a time: the sender it returns must complete before the next event
+is taken.
+
+```cpp
+struct pump_mem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+struct temp_reading { int celsius; };
+struct button_press { int id; };
+
+using pump_queue =
+    ecor::async_queue<ecor::queue_default_cfg<pump_mem>, temp_reading, button_press>;
+
+struct sensor_handler { };
+
+// One overload per event type, all returning the same sender type.
+ecor::task<void> handle(ecor::task_ctx& ctx, sensor_handler& h, temp_reading& ev)
+{
+    process_temperature(ev.celsius);
+    co_return;
+}
+
+ecor::task<void> handle(ecor::task_ctx& ctx, sensor_handler& h, button_press& ev)
+{
+    toggle_led();
+    co_return;
+}
+
+using sensor_pump = ecor::event_pump<
+    ecor::pump_default_cfg<ecor::task_ctx, ecor::task<void>>,
+    pump_queue,
+    sensor_handler>;
+
+void run_forever(ecor::task_ctx& ctx, pump_queue& q, sensor_handler& h)
+{
+    sensor_pump p{ctx, q, h};
+    p.start();
+    while (ctx.core.run_once()) { }
+}
+```
+
+### Writing a handler
+
+Handlers are reached through the `ecor::handle` CPO, which accepts either form:
+
+- a member function — `auto handle(ecor::task_ctx&, E& ev)`
+- an ADL free function — `auto handle(ecor::task_ctx&, H& handler, E& ev)`
+
+Every overload must return the **same** sender type, the one named by the configuration's
+`sender_type`. That is what lets the pump hold a single operation state whatever the event was.
+
+> **A member `handle()` cannot itself be a coroutine returning `ecor::task`.** A task's promise
+> takes the coroutine's *first* argument as its context, and for a member function that argument
+> is `this` — you get an error about the handler having no `query` member. The ADL form has no
+> such restriction. A member may still *return* a task produced by a free or `static` coroutine:
+
+```cpp
+struct led_handler
+{
+    // Not a coroutine itself — it returns one.
+    ecor::task<void> handle(ecor::task_ctx& ctx, int& ev) { return blink(ctx, ev); }
+
+    static ecor::task<void> blink(ecor::task_ctx& ctx, int times)
+    {
+        for (int i = 0; i < times; ++i) {
+            toggle_led();
+            co_await ecor::suspend;
+        }
+    }
+};
+```
+
+A handler may also provide `on_error(err)` and `on_stopped()`; the pump calls them when a
+handler's sender fails or is cancelled, and then carries on with the next event. Without them,
+failures are ignored.
+
+### Stopping
+
+`stop()` is opt-in, like the queue's flags, and is the most expensive one in the library:
+
+```cpp
+struct stop_mem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+struct ev_cfg : ecor::pump_default_cfg<ecor::task_ctx, ecor::task<void>> {
+    static constexpr bool is_stoppable = true;
+};
+
+using stop_queue = ecor::async_queue<ecor::queue_default_cfg<stop_mem>, int>;
+struct stop_handler { };
+
+ecor::task<void> handle(ecor::task_ctx& ctx, stop_handler& h, int& ev)
+{
+    process_message(ev);
+    co_return;
+}
+
+ecor::task<void> shutdown_pump(
+    ecor::task_ctx&                                             ctx,
+    ecor::event_pump<ev_cfg, stop_queue, stop_handler>&         p)
+{
+    co_await p.stop();
+    // No handler is running and no further events will be taken.
+}
+```
+
+A running handler is *asked* to stop through the stop token in its environment — it is never
+cut off. The sender returned by `stop()` completes once the pump is genuinely idle, which may
+be after that handler finishes. Events left in the queue stay there; draining or destroying
+them belongs to whoever owns the queue.
+
+### Key Properties
+
+- **Event driven** — the pump parks on the queue while idle and is woken by a push. No timer,
+  no polling.
+- **One handler at a time**, in queue order.
+- **The event is moved out of the queue node before the handler starts**, into storage inside
+  the pump, so a slow handler pins no queue memory. The handler receives it by reference.
+- **Several pumps may share one queue**, which gives work-sharing: each event goes to the
+  longest-waiting pump.
+- **A handler must not `co_await push()` on the queue it is draining** — it is the consumer, so
+  it would wait for space only it can free. Use `try_push()` there.
 
 ## Assert customization
 

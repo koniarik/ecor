@@ -1290,6 +1290,9 @@ struct _filter_map_tag< Variant< S... >, Tag, completion_signatures< T, Ts... >,
 template < typename T >
 using _type_identity_t = T;
 
+template < typename T >
+using _decay_t = std::remove_cvref_t< T >;
+
 /// Helper to generate a signature type for a given tag. For example, _sig_generator_t< set_value_t
 /// >::type< T, U > will generate the signature type set_value_t( T, U ).
 template < typename Tag >
@@ -3484,14 +3487,15 @@ struct _as_variant
         template < typename Env >
         using _s_completions = _sender_completions_t< S, Env >;
 
-        /// All set_value completions of the sender, transformed to have their value types wrapped
-        /// in a std::variant.
+        /// All set_value completions of the sender, with their value types decayed and wrapped
+        /// in a `std::variant`. Decaying is what makes this usable over a sender that completes
+        /// with a reference: the variant takes its own copy while the reference is still valid.
         template < typename Env >
         using _values = typename _filter_map_tag<
             std::variant<>,
             set_value_t,
             _s_completions< Env >,
-            _type_identity_t >::type;
+            _decay_t >::type;
 
         template < typename Env >
         using _error = _filter_errors_of_t< _s_completions< Env > >;
@@ -4853,6 +4857,21 @@ struct inplace_variant
                 return *p;
         }
 
+        /// `emplace_empty()` for an alternative that cannot be moved or copied — an operation
+        /// state, typically. `f()` must return a prvalue `T`; it initialises the storage
+        /// directly, so no move constructor is involved.
+        ///
+        /// Precondition: the variant is empty.
+        template < typename T, typename F >
+                requires( _contains_type< T, Ts... >::value )
+        T& emplace_empty_from( F&& f )
+        {
+                ECOR_ASSERT( _idx == npos );
+                T* p = ::new ( (void*) _storage ) T( f() );
+                _idx = _type_index< T, Ts... >::value;
+                return *p;
+        }
+
         /// Reference to the held value. Precondition: `holds<T>()`.
         template < typename T >
         [[nodiscard]] T& get() noexcept
@@ -4928,14 +4947,16 @@ private:
 /// -------------------------------------------------------------------------------
 /// async_queue — heterogeneous asynchronous queue
 
-/// Default `async_queue` configuration over the memory resource `Mem`. Both waiter kinds
-/// honour the stop token in their receiver's environment.
+/// Default `async_queue` configuration over the memory resource `Mem`.
 ///
-/// Derive from it to override individual flags:
+/// Every optional facility is off: the default queue is the smallest one that compiles, and
+/// each flag is opted into by a configuration that derives from this and pays for it. See the
+/// size table in the README for what each one costs.
+///
 /// ```
 /// struct my_cfg : ecor::queue_default_cfg< my_mem >
 /// {
-///         static constexpr bool is_producer_stoppable = false;
+///         static constexpr bool is_closeable = true;
 /// };
 /// ```
 template < memory_resource Mem >
@@ -4944,27 +4965,27 @@ struct queue_default_cfg
         /// Memory resource that queue nodes are allocated from.
         using mem_type = Mem;
 
-        /// Whether a consumer parked in `pop()` reacts to the stop token in its receiver's
-        /// environment.
-        static constexpr bool is_consumer_stoppable = true;
+        /// Enables cancellation of a consumer parked in `pop()` through the stop token in its
+        /// receiver's environment.
+        static constexpr bool is_consumer_stoppable = false;
 
-        /// Whether a producer parked in `push()` reacts to the stop token in its receiver's
-        /// environment.
-        static constexpr bool is_producer_stoppable = true;
+        /// The same for a producer parked in `push()`.
+        static constexpr bool is_producer_stoppable = false;
 
-        /// Whether the queue supports `close()`. Turning this off removes the shutdown
-        /// protocol entirely — `close()` and `closed()` disappear, and parked waiters can no
-        /// longer be completed by anything but delivery or their own stop token.
-        static constexpr bool is_closeable = true;
+        /// Enables `close()` and `closed()`, and with them the shutdown protocol: the waiter
+        /// list they complete, and the ability to finish parked waiters at all. Off by
+        /// default, in which case a waiter is resolved only by delivery or by its own stop
+        /// token.
+        static constexpr bool is_closeable = false;
 };
 
 /// Concept for the `async_queue` configuration. A type is a queue configuration if it provides
-/// a `mem_type` satisfying `memory_resource` and the two stoppability flags.
+/// a `mem_type` satisfying `memory_resource` and the three flags.
 ///
-/// Setting a flag to `false` opts out of cancellation for that waiter kind entirely — no
-/// `inplace_stop_callback` is instantiated even for receivers that do carry a stop token. It
-/// does not affect `close()`, which stops parked waiters through a separate path, so
-/// `set_stopped_t()` remains in the completion signatures either way.
+/// Cancellation and shutdown are independent: a stoppable flag governs whether a parked waiter
+/// reacts to its receiver's stop token, `is_closeable` whether `close()` can complete parked
+/// waiters. `set_stopped_t()` appears in a completion signature when either route can deliver
+/// it, and is omitted when neither can.
 template < typename T >
 concept queue_config = memory_resource< typename T::mem_type > && requires {
         { T::is_consumer_stoppable } -> std::convertible_to< bool >;
@@ -5076,6 +5097,20 @@ struct _queue_waiter : _queue_link
         /// completed its receiver and unlinked itself, false when it still cannot proceed.
         virtual bool _advance() = 0;
 
+        /// Take delivery of `n`, which the queue releases as soon as this returns.
+        ///
+        /// The waiter chooses *how*, which is what keeps the typed delivery path out of
+        /// programs that do not use it: a `pop()` operation routes through the node's
+        /// `deliver` thunk to reach its per-element-type `set_value` rows, while a consumer
+        /// that just wants the value somewhere — a pump — uses the node's `take` thunk to move
+        /// it straight into its own storage, and never instantiates those rows at all.
+        ///
+        /// Not pure: producers and the `close()` waiter are never delivered to.
+        virtual void _receive( _queue_node& )
+        {
+                ECOR_ASSERT( false );
+        }
+
 protected:
         ~_queue_waiter() = default;
 };
@@ -5083,11 +5118,11 @@ protected:
 /// Adds typed value delivery to `_queue_waiter`. The vtable carries one row per element type;
 /// a node's `deliver` picks the row matching its payload by overload resolution.
 template < typename... Ts >
-struct _queue_consumer_node : _queue_waiter, _vtable_mixin< set_value_t( Ts )... >
+struct _queue_consumer_node : _queue_waiter, _vtable_mixin< set_value_t( Ts& )... >
 {
         template < typename D >
         explicit _queue_consumer_node( _tag< D > d ) noexcept
-          : _vtable_mixin< set_value_t( Ts )... >( d )
+          : _vtable_mixin< set_value_t( Ts& )... >( d )
         {
         }
 };
@@ -5106,11 +5141,15 @@ struct _queue_node_ops
 
         /// `consumer` points at the `_queue_waiter` base of a parked `pop()` operation. The
         /// step down to `_queue_consumer_node` is what reaches its typed `set_value` rows.
+        ///
+        /// The payload is passed by reference and stays in the node: the caller releases the
+        /// node as soon as this returns, so a receiver that wants to keep the value must take
+        /// it during the call.
         static void deliver( _queue_node& n, void* consumer )
         {
                 auto& c = *static_cast< _queue_consumer_node< Ts... >* >(
                     static_cast< _queue_waiter* >( consumer ) );
-                c._set_value( std::move( static_cast< node_type& >( n )._val ) );
+                c.template _set_value< T& >( static_cast< node_type& >( n )._val );
         }
 
         /// `dst` points at the variant `try_pop()` is about to return, which is always empty.
@@ -5252,7 +5291,7 @@ struct _queue_core : _queue_close_base< _queue_core< Mem, Closeable >, Closeable
                         return false;
                 auto& n = _items.take_front();
                 --_count;
-                n._vt->deliver( n, static_cast< void* >( &c ) );
+                c._receive( n );
                 _release( n );
                 _service();
                 return true;
@@ -5273,7 +5312,7 @@ struct _queue_core : _queue_close_base< _queue_core< Mem, Closeable >, Closeable
                                 auto& n = _items.take_front();
                                 --_count;
                                 auto& c = _consumers.take_front();
-                                n._vt->deliver( n, static_cast< void* >( &c ) );
+                                c._receive( n );
                                 _release( n );
                                 continue;
                         }
@@ -5376,7 +5415,7 @@ inline constexpr bool _queue_producer_stoppable =
 
 /// Operation state of `async_queue::pop()`.
 template < typename Q, typename R >
-struct _queue_pop_op
+struct _queue_pop_op final
   : Q::_consumer_node_t,
     _queue_cancel_base< _queue_pop_op< Q, R >, _queue_consumer_stoppable< Q, R > >
 {
@@ -5415,12 +5454,20 @@ struct _queue_pop_op
                 _r.set_stopped();
         }
 
-        /// Invoked through the node vtable when an item of type `T` is delivered.
+        /// Routes through the node's typed `deliver` thunk, which is what instantiates the
+        /// per-element-type `set_value` rows this operation dispatches on.
+        void _receive( _queue_node& n ) override
+        {
+                n._vt->deliver( n, static_cast< void* >( static_cast< _queue_waiter* >( this ) ) );
+        }
+
+        /// Invoked through the node vtable when an item of type `T` is delivered. `val`
+        /// refers into the queue node, which is released the moment this returns.
         template < typename T >
-        void set_value( T val )
+        void set_value( T& val )
         {
                 _unregister();
-                _r.set_value( std::move( val ) );
+                _r.set_value( val );
         }
 
         /// A consumer is only nudged while the queue is closing.
@@ -5466,7 +5513,7 @@ struct _queue_pop_sender
 
 /// Operation state of `async_queue::push()`.
 template < typename Q, typename T, typename R >
-struct _queue_push_op
+struct _queue_push_op final
   : _queue_waiter,
     _queue_cancel_base< _queue_push_op< Q, T, R >, _queue_producer_stoppable< Q, R > >
 {
@@ -5559,7 +5606,7 @@ struct _queue_push_sender
 /// Operation state of `async_queue::close()`. Completes at once when the queue is already
 /// quiescent, otherwise parks until it becomes so.
 template < typename Core, typename R >
-struct _queue_close_op : _queue_waiter
+struct _queue_close_op final : _queue_waiter
 {
         using operation_state_concept = operation_state_t;
 
@@ -5683,7 +5730,7 @@ struct async_queue
             ecor::completion_signatures<> >;
 
         using _pop_completions_t = _sigs_concat_t<
-            ecor::completion_signatures< set_value_t( Ts )... >,
+            ecor::completion_signatures< set_value_t( Ts& )... >,
             _stopped_sigs_t< CFG::is_consumer_stoppable > >;
         using _push_completions_t = _sigs_concat_t<
             ecor::completion_signatures< set_value_t() >,
@@ -5774,6 +5821,21 @@ struct async_queue
                 return { &_core };
         }
 
+        /// Internal — park `w` as a consumer, handing it the oldest item at once if there is
+        /// one. Returns false when the queue is closed and will never deliver again.
+        ///
+        /// PRIVATE, used only for ecor internals.
+        bool _park_consumer( _queue_waiter& w )
+        {
+                if ( _core._take_into( w ) )
+                        return true;
+                if constexpr ( CFG::is_closeable )
+                        if ( _core._is_closed() )
+                                return false;
+                _core._consumers.link_back( w );
+                return true;
+        }
+
 private:
         // The operation states reach into the core to park, retry and complete themselves.
         template < typename, typename >
@@ -5794,6 +5856,304 @@ private:
         }
 
         _core_t _core;
+};
+
+/// -------------------------------------------------------------------------------
+/// event_pump — drains an async_queue through a user-supplied handler
+
+template < typename Ctx, typename H, typename E >
+concept _has_member_handle = requires( Ctx& ctx, H& h, E& e ) {
+        { h.handle( ctx, e ) } -> sender;
+};
+
+template < typename Ctx, typename H, typename E >
+concept _has_adl_handle = requires( Ctx& ctx, H& h, E& e ) {
+        { handle( ctx, h, e ) } -> sender;
+};
+
+/// CPO invoking a handler for one event. Users provide either:
+///  - a member function: `auto handle(task_context auto& ctx, E& ev)`
+///  - an ADL free function: `auto handle(task_context auto& ctx, H& handler, E& ev)`
+///
+/// The returned type must be a sender, and the same sender type for every event the handler
+/// accepts — see `pump_config::sender_type`.
+///
+/// A member `handle` may not itself be a coroutine returning `ecor::task`: a task's promise
+/// takes the coroutine's first argument as its context, and for a member function that
+/// argument is `this`. A member may still *return* a task produced by a free coroutine
+/// function, and the ADL form has no such restriction since the context is genuinely first.
+struct _handle_t
+{
+        template < typename Ctx, typename H, typename E >
+        sender auto operator()( Ctx& ctx, H& h, E& e ) const
+        {
+                if constexpr ( _has_member_handle< Ctx, H, E > )
+                        return h.handle( ctx, e );
+                else {
+                        static_assert(
+                            _has_adl_handle< Ctx, H, E >,
+                            "handler provides no handle() for this event type" );
+                        return handle( ctx, h, e );
+                }
+        }
+};
+inline constexpr _handle_t handle{};
+
+/// Default `event_pump` configuration. `Ctx` is the task context handed to the handler,
+/// `Sender` the type every `handle()` overload returns.
+///
+/// As with `queue_default_cfg`, optional facilities are off by default and opted into by
+/// deriving.
+template < task_context Ctx, sender Sender >
+struct pump_default_cfg
+{
+        using ctx_type    = Ctx;
+        using sender_type = Sender;
+
+        /// Enables `stop()`, and with it the stop source, the completion source and the
+        /// cancellation wiring that the pump's environment propagates into the queue's parked
+        /// consumer. Off by default: it is the most expensive flag in the library, worth around
+        /// 800 bytes of flash.
+        static constexpr bool is_stoppable = false;
+};
+
+/// Concept for the `event_pump` configuration.
+template < typename T >
+concept pump_config =
+    task_context< typename T::ctx_type > && sender< typename T::sender_type > && requires {
+            { T::is_stoppable } -> std::convertible_to< bool >;
+    };
+
+/// The `stop()` half of an `event_pump`, kept out of the pump so an unstoppable one carries
+/// none of it: no stop source, no completion source, no `stop()` at all, and an environment
+/// with no stop token.
+///
+/// CRTP on the pump: stopping has to unlink it from the queue if it is parked there.
+template < typename Pump, bool Stoppable >
+struct _pump_stop_base;
+
+template < typename Pump >
+struct _pump_stop_base< Pump, true >
+{
+        /// Carries the stop token to the queue's pop operation and to the running handler.
+        using env_type = stop_token_env< inplace_stop_token >;
+
+        [[nodiscard]] env_type _env_of() const noexcept
+        {
+                return { _stop_src.get_token() };
+        }
+
+        /// Stop draining and return a sender that completes once the pump is idle. A running
+        /// handler is asked to stop through its stop token; events left in the queue stay
+        /// there.
+        _ll_sender< unit, set_value_t() > stop()
+        {
+                _stop_src.request_stop();
+                static_cast< Pump& >( *this )._unpark();
+                return _done_src.schedule();
+        }
+
+        /// True once the pump should take no further events, either because it was stopped or
+        /// because `queue_done` says the queue closed under it. Completes the `stop()` sender
+        /// on the way out.
+        bool _stopping( bool queue_done )
+        {
+                if ( !_stop_src.stop_requested() && !queue_done )
+                        return false;
+                broadcast( _done_src, []( auto& e ) {
+                        e.set_value();
+                } );
+                return true;
+        }
+
+        inplace_stop_source              _stop_src;
+        ll_source< unit, set_value_t() > _done_src;
+};
+
+template < typename Pump >
+struct _pump_stop_base< Pump, false >
+{
+        using env_type = empty_env;
+
+        [[nodiscard]] env_type _env_of() const noexcept
+        {
+                return {};
+        }
+
+        /// Only the queue closing can end an unstoppable pump.
+        [[nodiscard]] bool _stopping( bool queue_done ) const noexcept
+        {
+                return queue_done;
+        }
+};
+
+/// Drains an `async_queue` by running a handler over each event in turn.
+///
+/// The pump parks a consumer on the queue whenever it is idle, so it costs nothing while no
+/// events arrive and needs no polling. Each event is handed to the handler through the
+/// `ecor::handle` CPO, and the resulting sender runs to completion before the next event is
+/// taken — exactly one handler at a time.
+///
+/// The event is moved out of the queue before the handler starts, so a running handler pins no
+/// queue memory, and the handler receives it by reference. Several pumps may share one queue.
+///
+/// Preconditions: the context, queue and handler all outlive the pump, and the sender returned
+/// by `stop()` completes before the pump is destroyed.
+template < pump_config CFG, typename Queue, typename Handler >
+struct event_pump : schedulable,
+                    _queue_waiter,
+                    _pump_stop_base< event_pump< CFG, Queue, Handler >, CFG::is_stoppable >
+{
+        using config_type = CFG;
+        using ctx_type    = typename CFG::ctx_type;
+        using sender_type = typename CFG::sender_type;
+        /// Storage for the event currently being handled.
+        using event_type = typename Queue::value_type;
+
+        static constexpr bool is_stoppable = CFG::is_stoppable;
+
+        event_pump( ctx_type& ctx, Queue& q, Handler& h ) noexcept
+          : _ctx( ctx )
+          , _q( q )
+          , _h( h )
+        {
+        }
+
+        event_pump( event_pump const& )            = delete;
+        event_pump& operator=( event_pump const& ) = delete;
+
+        /// Precondition: no handler is running — await the sender from `stop()` first.
+        ///
+        /// A running handler's operation state lives inside the pump, so destroying the pump
+        /// would destroy that handler's coroutine at an arbitrary suspension point, without it
+        /// ever seeing its stop token. Being parked on the queue is fine: the waiter list
+        /// entry unlinks itself.
+        ~event_pump()
+        {
+                ECOR_ASSERT( !_op );
+        }
+
+        /// Begin draining. The pump does not touch the queue until the next `task_core` tick.
+        void start()
+        {
+                _reschedule();
+        }
+
+private:
+        friend _pump_stop_base< event_pump, true >;
+
+        using _stop_base = _pump_stop_base< event_pump, CFG::is_stoppable >;
+        using _env       = typename _stop_base::env_type;
+
+        /// The scheduler is reachable through the context, so the pump does not store it.
+        void _reschedule() noexcept
+        {
+                get_task_core( _ctx ).reschedule( *this );
+        }
+
+        /// Receives the completion of one handler run.
+        struct _handler_recv
+        {
+                using receiver_concept = receiver_t;
+
+                event_pump* p;
+
+                void set_value( auto&&... ) noexcept
+                {
+                        p->_reschedule();
+                }
+
+                template < typename E >
+                void set_error( E&& err )
+                {
+                        if constexpr ( requires( Handler& h ) { h.on_error( err ); } )
+                                p->_h.on_error( err );
+                        p->_reschedule();
+                }
+
+                void set_stopped()
+                {
+                        if constexpr ( requires( Handler& h ) { h.on_stopped(); } )
+                                p->_h.on_stopped();
+                        p->_reschedule();
+                }
+
+                [[nodiscard]] _env get_env() const noexcept
+                {
+                        return p->_env_of();
+                }
+        };
+
+        using _handler_op_t = connect_type< sender_type, _handler_recv >;
+
+        /// Drives one step. Reached from `start()`, from a delivered event and from a handler
+        /// completion; which of those it was is read off `_op` and `_slot`.
+        void resume() override
+        {
+                // Whatever was in flight has completed by the time the pump is scheduled
+                // again; a handler that finished also releases the event it was given.
+                if ( _op )
+                        _slot.reset();
+                _op.reset();
+
+                if ( this->_stopping( _queue_done ) )
+                        return;
+
+                if ( _slot ) {
+                        _slot.visit( [&]( auto& ev ) {
+                                _op.template emplace_empty_from< _handler_op_t >( [&] {
+                                        return ecor::handle( _ctx, _h, ev )
+                                            .connect( _handler_recv{ this } );
+                                } );
+                        } );
+                        _op.template get< _handler_op_t >().start();
+                        return;
+                }
+
+                // Park directly on the queue rather than through `pop()`: the pump supplies
+                // its own storage, so it has no use for the typed sender.
+                if ( !_q._park_consumer( *this ) )
+                        _queue_done = true;
+        }
+
+        /// Move the event into the pump's own slot — the storage that keeps it alive for the
+        /// handler — and return to the scheduler, so handler code never runs inside a
+        /// producer's `push()`.
+        void _receive( _queue_node& n ) override
+        {
+                n._vt->take( n, static_cast< void* >( &_slot ) );
+                _reschedule();
+        }
+
+        /// The queue is closing and has finished with this consumer.
+        bool _advance() override
+        {
+                _queue_done = true;
+                _reschedule();
+                return true;
+        }
+
+        /// Leave the queue's waiter list and come back through the scheduler, so a stop is
+        /// noticed even when nothing else would wake the pump.
+        ///
+        /// Does nothing while a handler is running: that handler owns the operation state
+        /// `resume()` would destroy, and it reports back through `_handler_recv` when it
+        /// finishes. Stopping asks a handler to stop through its token; it never cuts one off.
+        void _unpark() noexcept
+        {
+                if ( _op )
+                        return;
+                zll::detach( static_cast< _queue_link& >( *this ) );
+                _reschedule();
+        }
+
+        ctx_type& _ctx;
+        Queue&    _q;
+        Handler&  _h;
+
+        event_type                       _slot;
+        inplace_variant< _handler_op_t > _op;
+        bool                             _queue_done = false;
 };
 
 /// Convenience wrapper around `ll_source<unit, S...>` that exposes `set_value`, `set_error`,

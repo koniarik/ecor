@@ -74,6 +74,49 @@ namespace
                 }
         };
 
+        /// Counts move-constructions, so a test can show that delivery itself performs none.
+        struct counted
+        {
+                static inline int moves = 0;
+
+                int id = 0;
+
+                explicit counted( int i )
+                  : id( i )
+                {
+                }
+                counted( counted&& o ) noexcept
+                  : id( o.id )
+                {
+                        ++moves;
+                }
+                counted& operator=( counted&& ) = delete;
+                counted( counted const& )       = delete;
+        };
+
+        /// Reads the delivered event without keeping it, which is all the borrowed reference
+        /// allows.
+        struct borrow_recv
+        {
+                using receiver_concept = receiver_t;
+
+                int* seen;
+
+                void set_value( counted& ev )
+                {
+                        *seen = ev.id;
+                }
+
+                void set_stopped()
+                {
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
         /// Receiver for `pop()`: records every completion as a string so ordering is easy to
         /// assert.
         struct pop_recv
@@ -158,14 +201,26 @@ namespace
                 }
         };
 
-        using nd_cfg = queue_default_cfg< nd_mem >;
-        using cb_cfg = queue_default_cfg< circular_buffer_memory< uint16_t > >;
+        /// Everything opted in — most tests exercise cancellation and shutdown, which the
+        /// default configuration deliberately omits.
+        struct nd_cfg : queue_default_cfg< nd_mem >
+        {
+                static constexpr bool is_consumer_stoppable = true;
+                static constexpr bool is_producer_stoppable = true;
+                static constexpr bool is_closeable          = true;
+        };
 
-        /// Opts both waiter kinds out of stop-token cancellation.
+        struct cb_cfg : queue_default_cfg< circular_buffer_memory< uint16_t > >
+        {
+                static constexpr bool is_consumer_stoppable = true;
+                static constexpr bool is_producer_stoppable = true;
+                static constexpr bool is_closeable          = true;
+        };
+
+        /// Closeable, but neither waiter kind reacts to a stop token.
         struct unstoppable_cfg : queue_default_cfg< nd_mem >
         {
-                static constexpr bool is_consumer_stoppable = false;
-                static constexpr bool is_producer_stoppable = false;
+                static constexpr bool is_closeable = true;
         };
 
         template < typename T >
@@ -183,14 +238,9 @@ namespace
         template < typename Q >
         concept _has_closed = requires( Q& q ) { q.closed(); };
 
-        /// Smallest possible queue: no cancellation, no shutdown protocol. `pop()` and
-        /// `push()` then complete only with `set_value`.
-        struct minimal_cfg : queue_default_cfg< nd_mem >
-        {
-                static constexpr bool is_consumer_stoppable = false;
-                static constexpr bool is_producer_stoppable = false;
-                static constexpr bool is_closeable          = false;
-        };
+        /// The default configuration: no cancellation and no shutdown protocol, so `pop()`
+        /// and `push()` complete only with `set_value`.
+        using minimal_cfg = queue_default_cfg< nd_mem >;
 
         /// Receiver with no `set_stopped()` at all — only connectable to a queue whose
         /// completion signatures omit it.
@@ -214,7 +264,8 @@ namespace
         /// Consumers stay cancellable, producers do not.
         struct cb_no_producer_stop_cfg : queue_default_cfg< circular_buffer_memory< uint16_t > >
         {
-                static constexpr bool is_producer_stoppable = false;
+                static constexpr bool is_consumer_stoppable = true;
+                static constexpr bool is_closeable          = true;
         };
 
         using q_t = async_queue< nd_cfg, int, std::string >;
@@ -708,6 +759,12 @@ TEST_CASE( "async_queue - is_consumer_stoppable=false ignores the receiver's sto
                 sizeof( decltype( std::declval< async_queue< nd_cfg, int >& >().pop().connect(
                     pop_recv{ &log } ) ) ),
             "an unstoppable consumer must not carry the stop callback" );
+        static_assert(
+            !_queue_consumer_stoppable< async_queue< queue_default_cfg< nd_mem >, int >, pop_recv >,
+            "the default configuration must not be cancellable" );
+        static_assert(
+            !_has_close< async_queue< queue_default_cfg< nd_mem >, int > >,
+            "the default configuration must not be closeable" );
 }
 
 TEST_CASE( "async_queue - is_producer_stoppable=false ignores the receiver's stop token" )
@@ -753,7 +810,7 @@ TEST_CASE( "async_queue - is_closeable=false removes the shutdown protocol" )
         // With neither cancellation nor close able to stop a waiter, set_stopped_t() is not in
         // the signatures, so a receiver without set_stopped() connects.
         static_assert(
-            std::same_as< min_q::_pop_completions_t, completion_signatures< set_value_t( int ) > >,
+            std::same_as< min_q::_pop_completions_t, completion_signatures< set_value_t( int& ) > >,
             "pop() must not promise set_stopped() it can never deliver" );
         static_assert(
             std::same_as< min_q::_push_completions_t, completion_signatures< set_value_t() > >,
@@ -763,7 +820,7 @@ TEST_CASE( "async_queue - is_closeable=false removes the shutdown protocol" )
         static_assert(
             std::same_as<
                 async_queue< unstoppable_cfg, int >::_pop_completions_t,
-                completion_signatures< set_value_t( int ), set_stopped_t() > >,
+                completion_signatures< set_value_t( int& ), set_stopped_t() > >,
             "close() can still stop a parked consumer, so the signature must remain" );
 
         nd_mem                     mem;
@@ -941,6 +998,263 @@ TEST_CASE( "async_queue - a task awaits push" )
         auto stop_op = h.stop().connect( _dummy_receiver{} );
         stop_op.start();
         ctx.core.run_n( 8 );
+}
+
+namespace
+{
+
+        /// Handler with one overload per event type, all returning the same sender type as
+        /// `pump_config::sender_type` requires.
+        ///
+        /// The overloads are ADL free functions rather than members: a member `handle` cannot
+        /// itself be a coroutine returning `task`, since a task's promise reads its context from
+        /// the first argument and for a member that is `this`.
+        struct rec_handler
+        {
+                std::vector< std::string >* log;
+                int                         errors  = 0;
+                int                         stopped = 0;
+
+                void on_error( task_error )
+                {
+                        ++errors;
+                }
+
+                void on_stopped()
+                {
+                        ++stopped;
+                }
+        };
+
+        task< void > handle( task_ctx& ctx, rec_handler& h, int& ev )
+        {
+                h.log->push_back( "int:" + std::to_string( ev ) );
+                co_await ecor::suspend;
+                h.log->push_back( "int-done:" + std::to_string( ev ) );
+                std::ignore = ctx;
+        }
+
+        task< void > handle( task_ctx& ctx, rec_handler& h, std::string& ev )
+        {
+                h.log->push_back( "str:" + ev );
+                std::ignore = ctx;
+                co_return;
+        }
+
+        struct pump_cfg : pump_default_cfg< task_ctx, task< void > >
+        {
+                static constexpr bool is_stoppable = true;
+        };
+        using pump_t = event_pump< pump_cfg, q_t, rec_handler >;
+
+}  // namespace
+
+TEST_CASE( "event_pump - drains events one handler at a time" )
+{
+        nd_mem                     mem;
+        task_ctx                   ctx{ mem };
+        q_t                        q{ mem };
+        std::vector< std::string > log;
+        rec_handler                h{ &log };
+
+        pump_t p{ ctx, q, h };
+        p.start();
+
+        // Idle until something is pushed.
+        ctx.core.run_n( 8 );
+        CHECK( log.empty() );
+
+        CHECK( q.try_push( 1 ) );
+        ctx.core.run_n( 16 );
+        CHECK( log == std::vector< std::string >{ "int:1", "int-done:1" } );
+        CHECK( q.empty() );
+
+        // A burst is handled in order, and never two at once: the suspending int handler must
+        // finish before the string handler starts.
+        log.clear();
+        CHECK( q.try_push( 2 ) );
+        CHECK( q.try_push( std::string{ "a" } ) );
+        ctx.core.run_n( 32 );
+        CHECK( log == std::vector< std::string >{ "int:2", "int-done:2", "str:a" } );
+        CHECK( q.empty() );
+
+        auto stop_op = p.stop().connect( _dummy_receiver{} );
+        stop_op.start();
+        ctx.core.run_n( 16 );
+}
+
+TEST_CASE( "event_pump - stop completes and leaves queued events alone" )
+{
+        nd_mem                     mem;
+        task_ctx                   ctx{ mem };
+        q_t                        q{ mem };
+        std::vector< std::string > log;
+        rec_handler                h{ &log };
+
+        pump_t p{ ctx, q, h };
+        p.start();
+        ctx.core.run_n( 8 );
+
+        std::vector< std::string > done;
+        auto                       stop_op = p.stop().connect( sig_recv{ &done, "stop" } );
+        stop_op.start();
+        ctx.core.run_n( 16 );
+        CHECK( done == std::vector< std::string >{ "stop:value" } );
+
+        // Events pushed after the pump stopped stay in the queue.
+        CHECK( q.try_push( 7 ) );
+        ctx.core.run_n( 16 );
+        CHECK( log.empty() );
+        CHECK( q.size() == 1 );
+}
+
+
+TEST_CASE( "async_queue - pop() lends a reference into the node, copying nothing" )
+{
+        nd_mem                              mem;
+        async_queue< minimal_cfg, counted > q{ mem };
+
+        CHECK( q.try_push( counted{ 7 } ) );
+
+        // Delivery itself must not move the payload: the receiver is handed a reference to it
+        // where it already sits in the node.
+        counted::moves = 0;
+        int  seen      = -1;
+        auto op        = q.pop().connect( borrow_recv{ &seen } );
+        op.start();
+        CHECK( seen == 7 );
+        CHECK( counted::moves == 0 );
+}
+
+TEST_CASE( "async_queue - a receiver may take the event during the call" )
+{
+        nd_mem                              mem;
+        async_queue< minimal_cfg, counted > q{ mem };
+
+        // Moving out of the borrowed reference is the supported way to keep the event; the
+        // node is destroyed immediately afterwards, so the moved-from payload is what dies.
+        struct taking_recv
+        {
+                using receiver_concept = receiver_t;
+
+                std::optional< counted >* out;
+
+                void set_value( counted& ev )
+                {
+                        out->emplace( std::move( ev ) );
+                }
+
+                void set_stopped()
+                {
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        CHECK( q.try_push( counted{ 3 } ) );
+
+        counted::moves = 0;
+        std::optional< counted > kept;
+        auto                     op = q.pop().connect( taking_recv{ &kept } );
+        op.start();
+
+        REQUIRE( kept.has_value() );
+        CHECK( kept->id == 3 );
+        CHECK( counted::moves == 1 );  // exactly the one the receiver asked for
+        CHECK( q.empty() );
+}
+
+
+TEST_CASE( "event_pump - stop() while a handler is mid-flight" )
+{
+        nd_mem                     mem;
+        task_ctx                   ctx{ mem };
+        q_t                        q{ mem };
+        std::vector< std::string > log;
+        rec_handler                h{ &log };
+
+        pump_t p{ ctx, q, h };
+        p.start();
+        ctx.core.run_n( 8 );
+
+        // Get a handler genuinely in flight: the int handler suspends once.
+        CHECK( q.try_push( 5 ) );
+        ctx.core.run_n( 2 );
+        REQUIRE( log == std::vector< std::string >{ "int:5" } );  // started, not finished
+
+        // Stopping now must not destroy the operation state the suspended handler is still
+        // using; the handler has to be allowed to finish.
+        std::vector< std::string > done;
+        auto                       stop_op = p.stop().connect( sig_recv{ &done, "stop" } );
+        stop_op.start();
+        ctx.core.run_n( 16 );
+
+        CHECK( log == std::vector< std::string >{ "int:5", "int-done:5" } );
+        CHECK( done == std::vector< std::string >{ "stop:value" } );
+}
+
+
+namespace
+{
+        /// Handler whose work blocks on a source that the test controls, so the handler is
+        /// genuinely in flight — not merely queued behind a `suspend`.
+        struct blocking_handler
+        {
+                ll_source< unit, set_value_t(), set_stopped_t() >* gate;
+                int*                                               finished;
+        };
+
+        task< void > handle( task_ctx& ctx, blocking_handler& h, int& )
+        {
+                co_await h.gate->schedule();
+                ++*h.finished;
+                std::ignore = ctx;
+        }
+
+        task< void > handle( task_ctx& ctx, blocking_handler& h, std::string& )
+        {
+                co_await h.gate->schedule();
+                ++*h.finished;
+                std::ignore = ctx;
+        }
+
+        using blocking_pump_t = event_pump< pump_cfg, q_t, blocking_handler >;
+}  // namespace
+
+TEST_CASE( "event_pump - stop() must not destroy a handler that is still blocked" )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        q_t      q{ mem };
+
+        ll_source< unit, set_value_t(), set_stopped_t() > gate;
+        int                                               finished = 0;
+        blocking_handler                                  h{ &gate, &finished };
+
+        blocking_pump_t p{ ctx, q, h };
+        p.start();
+        ctx.core.run_n( 8 );
+
+        CHECK( q.try_push( 1 ) );
+        ctx.core.run_n( 8 );
+        REQUIRE( !gate.empty() );  // the handler is parked on the gate, mid-flight
+
+        std::vector< std::string > done;
+        auto                       stop_op = p.stop().connect( sig_recv{ &done, "stop" } );
+        stop_op.start();
+        ctx.core.run_n( 8 );
+
+        // The handler is still out there holding the gate. Releasing it must reach live
+        // storage, and the pump must not have reported itself idle before that happened.
+        REQUIRE( !gate.empty() );
+        if ( auto* e = gate.query_next() )
+                e->set_value();
+        ctx.core.run_n( 8 );
+        CHECK( finished == 1 );
+        CHECK( done == std::vector< std::string >{ "stop:value" } );
 }
 
 }  // namespace ecor
