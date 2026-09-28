@@ -202,12 +202,14 @@ namespace
         };
 
         /// Everything opted in — most tests exercise cancellation and shutdown, which the
-        /// default configuration deliberately omits.
+        /// default configuration deliberately omits — and element types such as `std::string`
+        /// admitted.
         struct nd_cfg : queue_default_cfg< nd_mem >
         {
                 static constexpr async_queue_api pop_api      = async_queue_api::cancellable;
                 static constexpr async_queue_api push_api     = async_queue_api::cancellable;
                 static constexpr bool            is_closeable = true;
+                static constexpr bool            trivially_copyable_only = false;
         };
 
         struct cb_cfg : queue_default_cfg< circular_buffer_memory< uint16_t > >
@@ -233,7 +235,8 @@ namespace
         concept _has_core_member = requires( Q& q ) { q._core; };
 
         template < typename Q >
-        concept _has_emplace = requires( Q& q ) { q.template _emplace< int >( 0 ); };
+        concept _has_push_internal =
+            requires( Q& q, _queue_node_desc const& d, void* p ) { q._push( d, p ); };
 
         template < typename Q >
         concept _has_pop = requires( Q& q ) { q.pop(); };
@@ -251,10 +254,30 @@ namespace
         using minimal_cfg = queue_default_cfg< nd_mem >;
 
         /// The default plus `pop()`, for tests that exercise the async dequeue with no
-        /// cancellation or shutdown around it.
+        /// cancellation or shutdown around it, admitting element types that count their moves.
         struct pop_only_cfg : queue_default_cfg< nd_mem >
         {
-                static constexpr async_queue_api pop_api = async_queue_api::parking;
+                static constexpr async_queue_api pop_api                 = async_queue_api::parking;
+                static constexpr bool            trivially_copyable_only = false;
+        };
+
+        /// The default, admitting element types that are not trivially copyable.
+        struct typed_cfg : queue_default_cfg< nd_mem >
+        {
+                static constexpr bool trivially_copyable_only = false;
+        };
+
+        /// Not trivially copyable, for its copy constructor, yet trivially destructible.
+        struct copy_noted
+        {
+                int v = 0;
+
+                copy_noted() = default;
+                copy_noted( copy_noted const& o ) noexcept
+                  : v( o.v )
+                {
+                }
+                copy_noted( copy_noted&& ) noexcept = default;
         };
 
         /// Receiver with no `set_stopped()` at all — only connectable to a queue whose
@@ -473,6 +496,204 @@ TEST_CASE( "async_queue - elements of very different sizes coexist" )
         CHECK( b.get< blob >().tag == 9 );
 }
 
+TEST_CASE( "async_queue - only trivially copyable element types are admitted by default" )
+{
+        static_assert( queue_default_cfg< nd_mem >::trivially_copyable_only );
+        static_assert( _queue_admits< minimal_cfg, int, uint64_t, blob > );
+        static_assert( !_queue_admits< minimal_cfg, int, std::string > );
+        static_assert( !_queue_admits< minimal_cfg, counted > );
+
+        // A configuration that turns the check off admits the rest.
+        static_assert( !nd_cfg::trivially_copyable_only );
+        static_assert( _queue_admits< nd_cfg, int, std::string > );
+}
+
+TEST_CASE( "async_queue - the node descriptor's payload offset is where the payload is" )
+{
+        struct alignas( 16 ) wide
+        {
+                char c;
+        };
+        struct nothing
+        {
+        };
+
+        auto check = []< typename T >( T val ) {
+                auto const&         d = _queue_node_desc_of< T, T >;
+                _queue_node_of< T > n{ d, val };
+                auto const          off = reinterpret_cast< unsigned char const* >( &n._val ) -
+                                 reinterpret_cast< unsigned char const* >( &n );
+                CHECK( d.payload == ( std::is_empty_v< T > ? 0 : sizeof( T ) ) );
+                if ( d.payload )
+                        CHECK( std::size_t( off ) == d.offset );
+        };
+        check( uint8_t{ 1 } );
+        check( uint64_t{ 2 } );
+        check( wide{ 'x' } );
+        check( blob{ 3 } );
+        check( nothing{} );
+}
+
+TEST_CASE( "async_queue - trivially copyable types need no vtable" )
+{
+        // Every element type trivially copyable: no vtables at all, and every take byte-wise.
+        using plain_q = async_queue< minimal_cfg, uint8_t, uint64_t, blob >;
+        static_assert( plain_q::_plain );
+        static_assert( plain_q::_desc_of< blob >().vt == nullptr );
+
+        nd_mem  mem;
+        plain_q q{ mem };
+        CHECK( q.try_push( uint8_t{ 7 } ) );
+        CHECK( q.try_push( uint64_t{ 0x0123456789abcdefULL } ) );
+        CHECK( q.try_push( blob{ 5 } ) );
+        auto a = q.try_pop();
+        REQUIRE( a );
+        CHECK( a.get< uint8_t >() == 7 );
+        auto b = q.try_pop();
+        REQUIRE( b );
+        CHECK( b.get< uint64_t >() == 0x0123456789abcdefULL );
+        auto c = q.try_pop();
+        REQUIRE( c );
+        CHECK( c.get< blob >().tag == 5 );
+        CHECK( !q.try_pop() );
+
+        // The decision is per element type: next to a `std::string`, which needs a vtable, an
+        // `int` has none, and taking tells the two apart.
+        using mixed_q = async_queue< typed_cfg, int, std::string >;
+        static_assert( !mixed_q::_plain && !mixed_q::_all_vtables );
+        static_assert( mixed_q::_desc_of< int >().vt == nullptr );
+
+        mixed_q m{ mem };
+        CHECK( m.try_push( 1 ) );
+        CHECK( m.try_push( std::string( 40, 's' ) ) );
+        CHECK( m.try_push( 2 ) );
+        auto x = m.try_pop();
+        REQUIRE( x );
+        CHECK( x.get< int >() == 1 );
+        auto y = m.try_pop();
+        REQUIRE( y );
+        CHECK( y.get< std::string >() == std::string( 40, 's' ) );
+        auto z = m.try_pop();
+        REQUIRE( z );
+        CHECK( z.get< int >() == 2 );
+        CHECK( !m.try_pop() );
+
+        // pop() delivers by the descriptor's index, so it needs no vtable either.
+        using pop_q = async_queue< pop_only_cfg, int >;
+        static_assert( pop_q::_plain );
+        static_assert( pop_q::_desc_of< int >().vt == nullptr );
+
+        // Runtime CHECKs: the vtables are weak symbols, and GCC under -fsanitize=undefined
+        // declines to fold `&weak != nullptr` into a constant expression. A vtable's destroy is
+        // never null: a trivially destructible payload shares one empty function.
+        using noted_q = async_queue< typed_cfg, copy_noted >;
+        CHECK( mixed_q::_desc_of< std::string >().vt != nullptr );
+        CHECK( mixed_q::_desc_of< std::string >().vt->destroy != &_queue_node_no_destroy );
+        CHECK( noted_q::_desc_of< copy_noted >().vt->destroy == &_queue_node_no_destroy );
+}
+
+namespace
+{
+        using bundle_q_t = async_queue< minimal_cfg, uint8_t, uint64_t, blob >;
+
+        int wrapped_pushes = 0;
+
+        /// Stands in for a firmware's thread-safe wrapper: it does its own work around every push
+        /// and is not a template, yet callers pass elements of any type to it.
+        bool wrapped_push( bundle_q_t& q, bundle_q_t::push_bundle const& b )
+        {
+                ++wrapped_pushes;
+                return q.try_push( b );
+        }
+}  // namespace
+
+TEST_CASE( "async_queue - a non-template wrapper pushes any element through push_bundle" )
+{
+        nd_mem     mem;
+        bundle_q_t q{ mem };
+
+        CHECK( wrapped_push( q, uint8_t{ 7 } ) );
+        CHECK( wrapped_push( q, uint64_t{ 0x0123456789abcdefULL } ) );
+        CHECK( wrapped_push( q, blob{ 5 } ) );
+        CHECK( wrapped_pushes == 3 );
+
+        auto a = q.try_pop();
+        REQUIRE( a );
+        CHECK( a.get< uint8_t >() == 7 );
+        auto b = q.try_pop();
+        REQUIRE( b );
+        CHECK( b.get< uint64_t >() == 0x0123456789abcdefULL );
+        auto c = q.try_pop();
+        REQUIRE( c );
+        CHECK( c.get< blob >().tag == 5 );
+        CHECK( !q.try_pop() );
+}
+
+TEST_CASE( "async_queue - push_bundle takes an rvalue of any element type" )
+{
+        using q_t2 = async_queue< nd_cfg, int, std::string >;
+        using b_t  = q_t2::push_bundle;
+        static_assert( std::is_constructible_v< b_t, int&& > );
+        static_assert( !std::is_constructible_v< b_t, int& > );
+        static_assert( !std::is_constructible_v< b_t, int const& > );
+        static_assert( std::is_constructible_v< b_t, std::string&& > );
+        static_assert( !std::is_constructible_v< b_t, std::string& > );
+        static_assert( !std::is_constructible_v< b_t, std::string const& > );
+        static_assert( !std::is_constructible_v< b_t, long&& > );
+
+        nd_mem      mem;
+        q_t2        q{ mem };
+        std::string s( 40, 's' );
+        CHECK( q.try_push( b_t{ 1 } ) );
+        CHECK( q.try_push( b_t{ std::move( s ) } ) );
+
+        // A closed queue refuses the push and leaves the element alone.
+        std::ignore = q.close();
+        std::string t( 40, 't' );
+        CHECK( !q.try_push( b_t{ std::move( t ) } ) );
+        CHECK( t == std::string( 40, 't' ) );
+
+        auto h = q.try_pop();
+        REQUIRE( h );
+        CHECK( h.get< int >() == 1 );
+        auto g = q.try_pop();
+        REQUIRE( g );
+        CHECK( g.get< std::string >() == std::string( 40, 's' ) );
+        CHECK( !q.try_pop() );
+}
+
+namespace
+{
+        using typed_bundle_q_t = async_queue< typed_cfg, int, std::string >;
+
+        /// As `wrapped_push`, over element types that are not all trivially copyable.
+        bool wrapped_typed_push( typed_bundle_q_t& q, typed_bundle_q_t::push_bundle const& b )
+        {
+                return q.try_push( b );
+        }
+}  // namespace
+
+TEST_CASE( "async_queue - a non-template wrapper moves elements that are not trivially copyable" )
+{
+        nd_mem           mem;
+        typed_bundle_q_t q{ mem };
+        std::string      s( 40, 'w' );
+        CHECK( wrapped_typed_push( q, 7 ) );
+        CHECK( wrapped_typed_push( q, std::move( s ) ) );
+        CHECK( wrapped_typed_push( q, std::string( "temp" ) ) );
+
+        auto a = q.try_pop();
+        REQUIRE( a );
+        CHECK( a.get< int >() == 7 );
+        auto b = q.try_pop();
+        REQUIRE( b );
+        CHECK( b.get< std::string >() == std::string( 40, 'w' ) );
+        auto c = q.try_pop();
+        REQUIRE( c );
+        CHECK( c.get< std::string >() == "temp" );
+        CHECK( !q.try_pop() );
+}
+
 TEST_CASE( "async_queue - destructor destroys items left in the queue" )
 {
         tracked::alive = 0;
@@ -644,6 +865,60 @@ TEST_CASE( "async_queue - a full memory resource parks the producer until a pop 
         CHECK( h.get< int >() == 0 );
         CHECK( log == std::vector< std::string >{ "p:value" } );
         CHECK( q.size() == accepted );
+}
+
+namespace
+{
+        /// A bounded resource, parking, and element types that are not trivially copyable.
+        struct cb_typed_cfg : queue_default_cfg< circular_buffer_memory< uint16_t > >
+        {
+                static constexpr async_queue_api push_api                = async_queue_api::parking;
+                static constexpr bool            trivially_copyable_only = false;
+        };
+}  // namespace
+
+TEST_CASE( "async_queue - a parked producer pushes the value it was given" )
+{
+        uint8_t                                  buffer[256]{};
+        circular_buffer_memory< uint16_t >       mem{ buffer };
+        async_queue< cb_typed_cfg, std::string > q{ mem };
+        std::vector< std::string >               log;
+
+        std::size_t accepted = 0;
+        while ( q.try_push( std::string( "x" ) ) )
+                ++accepted;
+        REQUIRE( accepted > 0 );
+
+        // Long enough to live on the heap, so a moved-from copy would be visibly empty.
+        std::string const payload( 40, 'p' );
+        auto              op = q.push( payload ).connect( sig_recv{ &log, "p" } );
+        op.start();
+        CHECK( log.empty() );
+
+        for ( std::size_t i = 0; i < accepted; ++i ) {
+                auto h = q.try_pop();
+                REQUIRE( h );
+                CHECK( h.get< std::string >() == "x" );
+        }
+        CHECK( log == std::vector< std::string >{ "p:value" } );
+        auto last = q.try_pop();
+        REQUIRE( last );
+        CHECK( last.get< std::string >() == payload );
+}
+
+TEST_CASE( "async_queue - a push that finds no room leaves its element untouched" )
+{
+        using q_t2 = async_queue< cb_typed_cfg, std::string >;
+
+        uint8_t                            buffer[256]{};
+        circular_buffer_memory< uint16_t > mem{ buffer };
+        q_t2                               q{ mem };
+        while ( q.try_push( std::string( "x" ) ) )
+                ;
+
+        std::string s( 40, 'k' );
+        CHECK( !q.try_push( q_t2::push_bundle( std::move( s ) ) ) );
+        CHECK( s == std::string( 40, 'k' ) );
 }
 
 TEST_CASE( "async_queue - cancelling a parked producer completes it eagerly" )
@@ -871,13 +1146,15 @@ TEST_CASE( "async_queue - layout is pinned, so the README size table cannot drif
         // target.
         constexpr std::size_t ptr = sizeof( void* );
 
-        // Three function pointers, plus size/align narrowed so they share one word.
-        static_assert( sizeof( _queue_node_vtable ) == 4 * ptr );
+        // The descriptor is seven bytes of narrowed scalars, padded to eight, and the pointer to
+        // the vtable; the vtable is three function pointers.
+        static_assert( sizeof( _queue_node_desc ) == ptr + 8 );
+        static_assert( sizeof( _queue_node_vtable ) == 3 * ptr );
 
         // One shared link node for the whole queue: just the zll header.
         static_assert( sizeof( _queue_link ) == 2 * ptr );
 
-        // A queued item adds its vtable pointer; a waiter adds exactly one vptr, which is what
+        // A queued item adds its descriptor pointer; a waiter adds exactly one vptr, which is what
         // keeps it to a single virtual and a single polymorphic base.
         static_assert( sizeof( _queue_node ) == 3 * ptr );
         static_assert( sizeof( _queue_waiter ) == 3 * ptr );
@@ -930,7 +1207,7 @@ TEST_CASE( "async_queue - mutable internals are not reachable from outside" )
         // The operation states are friends and reach the core directly; nothing else should.
         // Type aliases stay public so the senders and these tests can name them.
         static_assert( !_has_core_member< q_t >, "_core must be private" );
-        static_assert( !_has_emplace< q_t >, "_emplace must be private" );
+        static_assert( !_has_push_internal< q_t >, "_push must be private" );
 
         static_assert( requires { typename q_t::_core_t; } );
         static_assert( requires { typename q_t::value_type; } );
@@ -954,22 +1231,29 @@ TEST_CASE( "async_queue - async_queue_api::try_only removes the sender and its p
         static_assert( async_queue_api::try_only < async_queue_api::parking );
         static_assert( async_queue_api::parking < async_queue_api::cancellable );
 
-        // The node vtable's deliver slot is what only pop() can reach; with the flag off it is
-        // null, so the per-element-type thunk behind it is never emitted.
-        //
-        // The non-null direction is a runtime CHECK: `deliver` is a static member of a class
-        // template and therefore a weak symbol, and GCC under -fsanitize=undefined declines to
-        // fold `&weak != nullptr` into a constant expression.
-        static_assert( _queue_node_vtable_of< int, false, int, std::string >.deliver == nullptr );
-        CHECK( _queue_node_vtable_of< int, true, int, std::string >.deliver != nullptr );
+        // Delivery reads the descriptor's index, so a node needs nothing per element type for
+        // pop(): a trivially copyable element type has no vtable with pop() or without it.
+        static_assert( async_queue< pop_only_cfg, int >::_desc_of< int >().vt == nullptr );
 
-        // try_push/try_pop keep working without it.
+        // try_push/try_pop keep working without the senders.
         nd_mem                          mem;
         async_queue< minimal_cfg, int > q{ mem };
         CHECK( q.try_push( 4 ) );
         auto v = q.try_pop();
         REQUIRE( v );
         CHECK( v.get< int >() == 4 );
+}
+
+TEST_CASE( "async_queue - push() shares one operation base across element types and queues" )
+{
+        using a_t    = async_queue< nd_cfg, int, std::string >;
+        using b_t    = async_queue< nd_cfg, blob, std::string >;
+        using base_t = _queue_push_op_base_of< a_t, sig_recv >;
+
+        static_assert( std::same_as< base_t, _queue_push_op_base_of< b_t, sig_recv > > );
+        static_assert( std::derived_from< _queue_push_op< a_t, int, sig_recv >, base_t > );
+        static_assert( std::derived_from< _queue_push_op< a_t, std::string, sig_recv >, base_t > );
+        static_assert( std::derived_from< _queue_push_op< b_t, blob, sig_recv >, base_t > );
 }
 
 TEST_CASE( "async_queue - queues over one memory resource share their core instantiation" )
@@ -1109,6 +1393,31 @@ namespace
         };
         using pump_t = event_pump< pump_cfg, q_t, rec_handler >;
 
+        /// A plain queue — trivially copyable elements and no `pop()` — from which the pump takes
+        /// its events byte-wise.
+        using plain_pump_q = async_queue< minimal_cfg, int, blob >;
+
+        struct plain_handler
+        {
+                std::vector< std::string >* log;
+        };
+
+        task< void > handle( task_ctx& ctx, plain_handler& h, int& ev )
+        {
+                h.log->push_back( "int:" + std::to_string( ev ) );
+                std::ignore = ctx;
+                co_return;
+        }
+
+        task< void > handle( task_ctx& ctx, plain_handler& h, blob& ev )
+        {
+                h.log->push_back( "blob:" + std::to_string( ev.tag ) );
+                std::ignore = ctx;
+                co_return;
+        }
+
+        using plain_pump_t = event_pump< pump_cfg, plain_pump_q, plain_handler >;
+
 }  // namespace
 
 TEST_CASE( "event_pump - drains events one handler at a time" )
@@ -1138,6 +1447,29 @@ TEST_CASE( "event_pump - drains events one handler at a time" )
         CHECK( q.try_push( std::string{ "a" } ) );
         ctx.core.run_n( 32 );
         CHECK( log == std::vector< std::string >{ "int:2", "int-done:2", "str:a" } );
+        CHECK( q.empty() );
+
+        auto stop_op = p.stop().connect( _dummy_receiver{} );
+        stop_op.start();
+        ctx.core.run_n( 16 );
+}
+
+TEST_CASE( "event_pump - drains a plain queue, taking its events byte-wise" )
+{
+        static_assert( plain_pump_q::_plain );
+
+        nd_mem                     mem;
+        task_ctx                   ctx{ mem };
+        plain_pump_q               q{ mem };
+        std::vector< std::string > log;
+        plain_handler              h{ &log };
+
+        plain_pump_t p{ ctx, q, h };
+        p.start();
+        CHECK( q.try_push( 3 ) );
+        CHECK( q.try_push( blob{ 4 } ) );
+        ctx.core.run_n( 32 );
+        CHECK( log == std::vector< std::string >{ "int:3", "blob:4" } );
         CHECK( q.empty() );
 
         auto stop_op = p.stop().connect( _dummy_receiver{} );

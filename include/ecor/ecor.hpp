@@ -1471,7 +1471,8 @@ struct _inplace_stop_callback_base : zll::ll_base< _inplace_stop_callback_base >
 {
         virtual void _execute() = 0;
 
-        virtual ~_inplace_stop_callback_base() = default;
+protected:
+        ~_inplace_stop_callback_base() = default;
 };
 
 /// In-place stop source, which is a simple implementation of a stoppable source that is designed to
@@ -1601,7 +1602,7 @@ inline inplace_stop_token inplace_stop_source::get_token() const noexcept
 /// within the callback object, allowing for efficient storage without dynamic memory allocation.
 ///
 template < typename CallbackFn >
-struct inplace_stop_callback : _inplace_stop_callback_base
+struct inplace_stop_callback final : _inplace_stop_callback_base
 {
         template < typename Initializer >
         explicit inplace_stop_callback( inplace_stop_token st, Initializer&& init ) noexcept(
@@ -1813,36 +1814,48 @@ private:
         zll::ll_list< ll_entry< T, S... > >& _list;
 };
 
+/// Skew-heap node of every `seq_source` entry with key type `K`, holding the key.
+template < typename K >
+struct _sh_link : zll::sh_base< _sh_link< K > >
+{
+        explicit _sh_link( K k ) noexcept( std::is_nothrow_move_constructible_v< K > )
+          : key( std::move( k ) )
+        {
+        }
+
+        constexpr bool operator<( _sh_link const& o ) const
+            noexcept( noexcept( std::declval< K const& >() < std::declval< K const& >() ) )
+        {
+                return key < o.key;
+        }
+
+        K key;
+
+protected:
+        ~_sh_link() = default;
+};
+
 /// Internal base for all skew-heap entry types.
-/// `Node` is the CRTP type for `zll::sh_base`; `K` is the ordering key; `D` is the payload;
-/// `Sigs` is `completion_signatures<...>`.
-template < typename Node, typename K, typename D, typename Sigs >
+/// `K` is the ordering key; `D` is the payload; `Sigs` is `completion_signatures<...>`.
+template < typename K, typename D, typename Sigs >
 struct _sh_entry;
 
-template < typename Node, typename K, typename D, _op_signature... S >
-struct _sh_entry< Node, K, D, completion_signatures< S... > > : _vtable_mixin< S... >,
-                                                                zll::sh_base< Node >
+template < typename K, typename D, _op_signature... S >
+struct _sh_entry< K, D, completion_signatures< S... > > : _vtable_mixin< S... >, _sh_link< K >
 {
         static constexpr bool has_get_stopped = _contains_type< get_stopped_t(), S... >::value;
         using completion_signatures =
             _filter_basic_signatures_t< ecor::completion_signatures< S... > >;
 
         ECOR_NO_UNIQUE_ADDRESS D data;
-        K                        key;
 
         template < typename Derived >
         _sh_entry( K k, D d, _tag< Derived > ) noexcept(
             std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< D > )
           : _vtable_mixin< S... >{ _tag< Derived >{} }
+          , _sh_link< K >( std::move( k ) )
           , data( std::move( d ) )
-          , key( std::move( k ) )
         {
-        }
-
-        constexpr bool operator<( _sh_entry const& o ) const
-            noexcept( noexcept( std::declval< K const& >() < std::declval< K const& >() ) )
-        {
-                return key < o.key;
         }
 
         template < typename... Args >
@@ -1868,18 +1881,18 @@ struct _sh_entry< Node, K, D, completion_signatures< S... > > : _vtable_mixin< S
 /// `K` is the ordering key, `T` the payload (`unit` for no-data sources), `S...` the signatures.
 /// May include `get_stopped_t()` to enable stop-polling in `seq_source::query_next()`.
 template < typename K, typename T, _op_signature... S >
-struct seq_entry : _sh_entry< seq_entry< K, T, S... >, K, T, completion_signatures< S... > >
+struct seq_entry : _sh_entry< K, T, completion_signatures< S... > >
 {
-        using _base = _sh_entry< seq_entry< K, T, S... >, K, T, completion_signatures< S... > >;
+        using _base = _sh_entry< K, T, completion_signatures< S... > >;
         using _base::_base;
 };
 
 /// Descriptor specialisation: signatures (filtered, no `get_stopped_t()`) come from
 /// `D::completion_signatures`.  The two-argument form `seq_entry<K, D>` keeps error messages short.
 template < typename K, event_descriptor D >
-struct seq_entry< K, D > : _sh_entry< seq_entry< K, D >, K, D, typename D::completion_signatures >
+struct seq_entry< K, D > : _sh_entry< K, D, typename D::completion_signatures >
 {
-        using _base = _sh_entry< seq_entry< K, D >, K, D, typename D::completion_signatures >;
+        using _base = _sh_entry< K, D, typename D::completion_signatures >;
         using _base::_base;
 };
 
@@ -1933,7 +1946,7 @@ struct _sh_op : seq_entry< K, T, S... >
         }
 
 private:
-        zll::sh_heap< seq_entry< K, T, S... > >& _heap;
+        zll::sh_heap< _sh_link< K > >& _heap;
 };
 
 // ---------------------------------------------------------------------------
@@ -1985,7 +1998,7 @@ struct _sh_sender
         using entry_type            = seq_entry< K, T, S... >;
         using completion_signatures = typename entry_type::completion_signatures;
 
-        _sh_sender( K key, T val, zll::sh_heap< seq_entry< K, T, S... > >& sh ) noexcept(
+        _sh_sender( K key, T val, zll::sh_heap< _sh_link< K > >& sh ) noexcept(
             std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< T > )
           : _key( std::move( key ) )
           , _val( std::move( val ) )
@@ -2010,9 +2023,9 @@ struct _sh_sender
         }
 
 private:
-        K                                        _key;
-        ECOR_NO_UNIQUE_ADDRESS T                 _val;
-        zll::sh_heap< seq_entry< K, T, S... > >& _sh;
+        K                              _key;
+        ECOR_NO_UNIQUE_ADDRESS T       _val;
+        zll::sh_heap< _sh_link< K > >& _sh;
 };
 
 
@@ -2162,14 +2175,14 @@ struct seq_source
         /// Precondition: `!empty()` — behaviour is undefined if the source is empty.
         [[nodiscard]] seq_entry< K, T, S... > const& front() const noexcept
         {
-                return *_sh.top;
+                return static_cast< seq_entry< K, T, S... > const& >( *_sh.top() );
         }
 
         /// Peek at the min-key entry without removing it (non-const overload).
         /// Precondition: `!empty()` — behaviour is undefined if the source is empty.
         [[nodiscard]] seq_entry< K, T, S... >& front() noexcept
         {
-                return *_sh.top;
+                return _entry( *_sh.top() );
         }
 
         /// Remove and return the min-key entry for the caller to complete. Returns `nullptr`
@@ -2183,11 +2196,11 @@ struct seq_source
         [[nodiscard]] seq_entry< K, T, S... >* query_next()
         {
                 if constexpr ( has_get_stopped )
-                        while ( !_sh.empty() && _sh.top->_get_stopped() )
-                                _sh.take()._set_stopped();
+                        while ( !_sh.empty() && _entry( *_sh.top() )._get_stopped() )
+                                _entry( _sh.take() )._set_stopped();
                 if ( _sh.empty() )
                         return nullptr;
-                return &_sh.take();
+                return &_entry( _sh.take() );
         }
 
         /// Remove and return the min-key entry unconditionally, without checking stop tokens.
@@ -2196,11 +2209,18 @@ struct seq_source
         {
                 if ( _sh.empty() )
                         return nullptr;
-                return &_sh.take();
+                return &_entry( _sh.take() );
         }
 
 private:
-        zll::sh_heap< seq_entry< K, T, S... > > _sh;
+        /// Every source with key type `K` shares the heap's node type, but this heap holds only
+        /// this source's entries, so the downcast is sound.
+        static seq_entry< K, T, S... >& _entry( _sh_link< K >& l ) noexcept
+        {
+                return static_cast< seq_entry< K, T, S... >& >( l );
+        }
+
+        zll::sh_heap< _sh_link< K > > _sh;
 };
 
 
@@ -2889,7 +2909,10 @@ struct _promise_base : schedulable
                 if ( !vp )
                         return nullptr;
                 auto* pmem = &mem;
-                std::memcpy( vp, (void const*) &pmem, sizeof( void* ) );
+                std::memcpy(
+                    std::assume_aligned< alignof( void* ) >( vp ),
+                    (void const*) &pmem,
+                    sizeof( void* ) );
                 return ( (char*) vp ) + spacing;
         }
 
@@ -2900,7 +2923,8 @@ struct _promise_base : schedulable
         {
                 void*                 beg = ( (char*) ptr ) - spacing;
                 task_memory_resource* mem = nullptr;
-                std::memcpy( (void*) &mem, beg, sizeof( void* ) );
+                std::memcpy(
+                    (void*) &mem, std::assume_aligned< alignof( void* ) >( beg ), sizeof( void* ) );
                 deallocate( *mem, beg, sz + spacing, align );
         }
 
@@ -4917,6 +4941,17 @@ struct inplace_variant
                 return ( ... || ( holds< Ts >() ? ( f( get< Ts >() ), true ) : false ) );
         }
 
+        /// Internal — make the trivially copyable alternative at position `idx` from the `n`
+        /// bytes at `src`. Precondition: the variant is empty.
+        ///
+        /// PRIVATE, used only for ecor internals.
+        void _emplace_bytes( std::size_t idx, void const* src, std::size_t n ) noexcept
+        {
+                ECOR_ASSERT( _idx == npos );
+                std::memcpy( _storage, src, n );
+                _idx = idx;
+        }
+
         /// Destroy the held value, leaving the variant empty.
         void reset() noexcept
         {
@@ -4991,10 +5026,16 @@ struct queue_default_cfg
         /// the two above — a pump parks as a consumer without `pop()`, and `close()` is what
         /// releases it.
         static constexpr bool is_closeable = false;
+
+        /// Admit only trivially copyable element types, checked at compile time. Such elements
+        /// are pushed byte-wise by one function shared by every element type; an element type
+        /// that is not trivially copyable gets typed code of its own, which this catches. Turn
+        /// it off to queue types such as `std::string`.
+        static constexpr bool trivially_copyable_only = true;
 };
 
 /// Concept for the `async_queue` configuration. A type is a queue configuration if it provides
-/// a `mem_type` satisfying `memory_resource` and the three flags.
+/// a `mem_type` satisfying `memory_resource` and the four flags.
 ///
 /// Cancellation and shutdown are independent: a stoppable flag governs whether a parked waiter
 /// reacts to its receiver's stop token, `is_closeable` whether `close()` can complete parked
@@ -5005,37 +5046,55 @@ concept queue_config = memory_resource< typename T::mem_type > && requires {
         { T::pop_api } -> std::convertible_to< async_queue_api >;
         { T::push_api } -> std::convertible_to< async_queue_api >;
         { T::is_closeable } -> std::convertible_to< bool >;
+        { T::trivially_copyable_only } -> std::convertible_to< bool >;
 };
 
-struct _queue_node;
+/// True when the configuration admits every element type in `Ts...`: with
+/// `trivially_copyable_only` set, only trivially copyable ones.
+template < typename CFG, typename... Ts >
+inline constexpr bool _queue_admits =
+    !CFG::trivially_copyable_only || ( std::is_trivially_copyable_v< Ts > && ... );
 
-/// Per-element-type operations of a queue node. One instance exists per element type of a
-/// given queue; the queue core drives nodes exclusively through it and so is never
-/// instantiated per element type.
-///
-/// Keep the operations as separate function pointers: folding them into one entry point taking
-/// an operation tag costs more text in the switch than the pointers it saves, and replacing the
-/// scalars below with a query function is worse again.
+struct _queue_node;
+struct _queue_node_vtable;
+
+/// Describes one element type of a queue to the code that handles its nodes without knowing the
+/// type: the node's size and alignment for the memory resource, where the payload is and how
+/// large for the byte-wise push and take of trivially copyable elements, and the element type's
+/// operations. One instance exists per element type.
+struct _queue_node_desc
+{
+        /// Byte size of the node, for allocation and deallocation.
+        uint16_t size;
+        /// Alignment of the node.
+        uint8_t align;
+        /// Offset of the payload within the node.
+        uint8_t offset;
+        /// Byte size of the payload; zero for an empty type.
+        uint16_t payload;
+        /// Position of the payload type among the queue's element types.
+        uint8_t index;
+        /// The element type's operations; null for a trivially copyable element type, which needs
+        /// none.
+        _queue_node_vtable const* vt;
+};
+
+/// The operations of an element type that is not trivially copyable. A trivially copyable one is
+/// pushed and taken byte-wise, and delivered by its descriptor's `index`, so it has none.
 struct _queue_node_vtable
 {
-        /// Move the payload into a parked consumer and complete it.
-        void ( *deliver )( _queue_node&, void* );
         /// Move the payload into an `inplace_variant` over the queue's element types.
         void ( *take )( _queue_node&, void* );
-        /// Destroy the node and its payload, without releasing the memory. Null when the
-        /// payload is trivially destructible, which lets `_release()` skip both the call and
-        /// the per-element-type thunk behind it.
+        /// Destroy the node and its payload, without releasing the memory. Never null: a
+        /// trivially destructible payload gets the shared `_queue_node_no_destroy` instead of a
+        /// thunk of its own.
         void ( *destroy )( _queue_node& ) noexcept;
-        /// Byte size of the node, for deallocation.
-        uint16_t size;
-        /// Alignment of the node, for deallocation.
-        uint8_t align;
+        /// Construct the node at `p` for `d`, moving its payload from the element at `src`.
+        _queue_node& ( *construct )( void* p, _queue_node_desc const& d, void* src ) noexcept;
 };
 
 /// Shared intrusive-list node for everything the queue links: queued items, parked waiters and
-/// the `close()` waiter. One `zll::ll_base` instantiation covers all of them, so the list
-/// machinery is emitted once for the whole queue. Each distinct node type would otherwise cost
-/// 100–170 bytes of `link_back`, `take_front`, `detach` and header destructor.
+/// the `close()` waiter.
 struct _queue_link : zll::ll_base< _queue_link >
 {
 protected:
@@ -5081,21 +5140,21 @@ private:
 /// Link node for one queued value; the payload lives in the derived `_queue_node_of<T>`.
 struct _queue_node : _queue_link
 {
-        explicit _queue_node( _queue_node_vtable const& vt ) noexcept
-          : _vt( &vt )
+        explicit _queue_node( _queue_node_desc const& d ) noexcept
+          : _desc( &d )
         {
         }
 
-        _queue_node_vtable const* _vt;
+        _queue_node_desc const* _desc;
 };
 
 template < typename T >
 struct _queue_node_of : _queue_node
 {
         template < typename U >
-        _queue_node_of( _queue_node_vtable const& vt, U&& val ) noexcept(
+        _queue_node_of( _queue_node_desc const& d, U&& val ) noexcept(
             std::is_nothrow_constructible_v< T, U > )
-          : _queue_node( vt )
+          : _queue_node( d )
           , _val( (U&&) val )
         {
         }
@@ -5114,10 +5173,10 @@ struct _queue_waiter : _queue_link
         /// Take delivery of `n`, which the queue releases as soon as this returns.
         ///
         /// The waiter chooses *how*, which is what keeps the typed delivery path out of
-        /// programs that do not use it: a `pop()` operation routes through the node's
-        /// `deliver` thunk to reach its per-element-type `set_value` rows, while a consumer
-        /// that just wants the value somewhere — a pump — uses the node's `take` thunk to move
-        /// it straight into its own storage, and never instantiates those rows at all.
+        /// programs that do not use it: a `pop()` operation picks its per-element-type
+        /// `set_value` row by the node's `index`, while a consumer that just wants the value
+        /// somewhere — a pump — takes it straight into its own storage, and never instantiates
+        /// those rows at all.
         ///
         /// Not pure: producers and the `close()` waiter are never delivered to.
         virtual void _receive( _queue_node& )
@@ -5130,7 +5189,7 @@ protected:
 };
 
 /// Adds typed value delivery to `_queue_waiter`. The vtable carries one row per element type;
-/// a node's `deliver` picks the row matching its payload by overload resolution.
+/// `_deliver()` picks the row of a node's element type by its descriptor's `index`.
 template < typename... Ts >
 struct _queue_consumer_node : _queue_waiter, _vtable_mixin< set_value_t( Ts& )... >
 {
@@ -5139,32 +5198,43 @@ struct _queue_consumer_node : _queue_waiter, _vtable_mixin< set_value_t( Ts& )..
           : _vtable_mixin< set_value_t( Ts& )... >( d )
         {
         }
-};
 
-/// The per-element-type operations behind `_queue_node_vtable`. `T` is the payload of the node
-/// being acted on; `Ts...` are the queue's element types.
-///
-/// Do not factor the repeated `static_cast<node_type&>(n)._val` into a `payload(n)` helper: at
-/// `-Os` GCC does not fold it away, costing +8 bytes on cortex-m0plus and +28 on cortex-m4 for
-/// a four-element-type queue. Binding the erased pointers to a local reference, as below, is
-/// free.
-template < typename T, typename... Ts >
-struct _queue_node_ops
-{
-        using node_type = _queue_node_of< T >;
-
-        /// `consumer` points at the `_queue_waiter` base of a parked `pop()` operation. The
-        /// step down to `_queue_consumer_node` is what reaches its typed `set_value` rows.
+        /// Complete with the payload of `n`.
         ///
         /// The payload is passed by reference and stays in the node: the caller releases the
         /// node as soon as this returns, so a receiver that wants to keep the value must take
         /// it during the call.
-        static void deliver( _queue_node& n, void* consumer )
+        void _deliver( _queue_node& n )
         {
-                auto& c = *static_cast< _queue_consumer_node< Ts... >* >(
-                    static_cast< _queue_waiter* >( consumer ) );
-                c.template _set_value< T& >( static_cast< node_type& >( n )._val );
+                _deliver( n, std::index_sequence_for< Ts... >{} );
         }
+
+private:
+        template < std::size_t... I >
+        void _deliver( _queue_node& n, std::index_sequence< I... > )
+        {
+                auto const i = n._desc->index;
+                static_cast< void >(
+                    ( ( i == I ? ( this->template _set_value< Ts& >(
+                                       static_cast< _queue_node_of< Ts >& >( n )._val ),
+                                   true ) :
+                                 false ) ||
+                      ... ) );
+        }
+};
+
+/// The `destroy` of every trivially destructible payload. One empty function shared by all of
+/// them keeps `destroy` non-null, so `_release()` needs no test beyond `vt`.
+inline void _queue_node_no_destroy( _queue_node& ) noexcept
+{
+}
+
+/// The per-element-type operations behind `_queue_node_vtable`. `T` is the payload of the node
+/// being acted on; `Ts...` are the queue's element types.
+template < typename T, typename... Ts >
+struct _queue_node_ops
+{
+        using node_type = _queue_node_of< T >;
 
         /// `dst` points at the variant `try_pop()` is about to return, which is always empty.
         static void take( _queue_node& n, void* dst )
@@ -5178,38 +5248,64 @@ struct _queue_node_ops
                 static_cast< node_type& >( n ).~node_type();
         }
 
-        /// Null when the payload needs no destructor call, which lets `_release()` skip the
-        /// call — and keeps `destroy` from being instantiated at all. The `if constexpr` is
-        /// load-bearing for that second part: a conditional expression would odr-use `destroy`
-        /// in both branches and emit the thunk regardless.
+        /// `src` points at an element its owner gives up: it is moved from.
+        static _queue_node& construct( void* p, _queue_node_desc const& d, void* src ) noexcept
+        {
+                return *::new ( p ) node_type( d, std::move( *static_cast< T* >( src ) ) );
+        }
+
+        /// The shared `_queue_node_no_destroy` when the payload needs no destructor call, which
+        /// keeps `destroy` from being instantiated at all. The `if constexpr` is load-bearing: a
+        /// conditional expression would odr-use `destroy` in both branches and emit the thunk
+        /// regardless.
         [[nodiscard]] static consteval auto destroy_fn() noexcept
         {
                 if constexpr ( std::is_trivially_destructible_v< T > )
-                        return static_cast< void ( * )( _queue_node& ) noexcept >( nullptr );
+                        return &_queue_node_no_destroy;
                 else
                         return &destroy;
         }
 };
 
-/// Null unless `pop()` exists, so the thunk behind it is not odr-used and never emitted. The
-/// `if constexpr` is load-bearing: a conditional expression would name `deliver` in both
-/// branches and emit it regardless.
-template < typename T, bool PopAsync, typename... Ts >
-[[nodiscard]] consteval auto _queue_deliver_fn() noexcept
+/// `take` for a trivially copyable payload, driven by the descriptor: one function per variant
+/// type instead of a thunk per element type.
+template < typename Var >
+void _queue_take_bytes( _queue_node& n, void* dst )
 {
-        if constexpr ( PopAsync )
-                return &_queue_node_ops< T, Ts... >::deliver;
-        else
-                return static_cast< void ( * )( _queue_node&, void* ) >( nullptr );
+        auto&       v = *static_cast< Var* >( dst );
+        auto const& d = *n._desc;
+        v._emplace_bytes( d.index, reinterpret_cast< unsigned char* >( &n ) + d.offset, d.payload );
 }
 
-template < typename T, bool PopAsync, typename... Ts >
+template < typename T >
+inline constexpr bool _queue_needs_vtable = !std::is_trivially_copyable_v< T >;
+
+/// Vtable of the node that carries a `T` in a queue over `Ts...`.
+template < typename T, typename... Ts >
 inline constexpr _queue_node_vtable _queue_node_vtable_of{
-    .deliver = _queue_deliver_fn< T, PopAsync, Ts... >(),
-    .take    = &_queue_node_ops< T, Ts... >::take,
-    .destroy = _queue_node_ops< T, Ts... >::destroy_fn(),
+    .take      = &_queue_node_ops< T, Ts... >::take,
+    .destroy   = _queue_node_ops< T, Ts... >::destroy_fn(),
+    .construct = &_queue_node_ops< T, Ts... >::construct };
+
+/// `vt` of the descriptor of `T`: null, and no vtable instantiated, when it needs none.
+template < typename T, typename... Ts >
+[[nodiscard]] consteval _queue_node_vtable const* _queue_vt_of() noexcept
+{
+        if constexpr ( _queue_needs_vtable< T > )
+                return &_queue_node_vtable_of< T, Ts... >;
+        else
+                return nullptr;
+}
+
+/// Descriptor of the node that carries a `T` in a queue over `Ts...`.
+template < typename T, typename... Ts >
+inline constexpr _queue_node_desc _queue_node_desc_of{
     .size    = sizeof( _queue_node_of< T > ),
-    .align   = alignof( _queue_node_of< T > ) };
+    .align   = alignof( _queue_node_of< T > ),
+    .offset  = uint8_t( ( sizeof( _queue_node ) + alignof( T ) - 1 ) & ~( alignof( T ) - 1 ) ),
+    .payload = std::is_empty_v< T > ? uint16_t( 0 ) : uint16_t( sizeof( T ) ),
+    .index   = uint8_t( _type_index< T, Ts... >::value ),
+    .vt      = _queue_vt_of< T, Ts... >() };
 
 /// Lifecycle of a queue. Monotonic: a queue only ever moves forward through these states.
 enum class _queue_state : uint8_t
@@ -5271,6 +5367,8 @@ struct _queue_close_base< Core, false >
 template < memory_resource Mem, bool Closeable >
 struct _queue_core : _queue_close_base< _queue_core< Mem, Closeable >, Closeable >
 {
+        static constexpr bool _closeable = Closeable;
+
         explicit _queue_core( Mem& mem ) noexcept
           : _mem( mem )
         {
@@ -5288,9 +5386,9 @@ struct _queue_core : _queue_close_base< _queue_core< Mem, Closeable >, Closeable
                         _release( _items.take_front() );
         }
 
-        [[nodiscard]] void* _alloc_node( _queue_node_vtable const& vt ) noexcept
+        [[nodiscard]] void* _alloc_node( _queue_node_desc const& d ) noexcept
         {
-                return ecor::allocate( _mem, vt.size, vt.align );
+                return ecor::allocate( _mem, d.size, d.align );
         }
 
         /// Link a freshly constructed node and drive the queue.
@@ -5301,13 +5399,57 @@ struct _queue_core : _queue_close_base< _queue_core< Mem, Closeable >, Closeable
                 _service();
         }
 
+        /// Allocate a node for `d`'s element type, copy its payload from `src` and link it.
+        /// Returns false when the memory resource has no room.
+        ///
+        /// One body for every trivially copyable element type of every queue over this core,
+        /// which every `try_push()` of such a type calls instead of inlining allocation,
+        /// construction and linking at its call site.
+        bool _push_bytes( _queue_node_desc const& d, void const* src )
+        {
+                void* p = _alloc_node( d );
+                if ( !p )
+                        return false;
+                auto& n = *::new ( p ) _queue_node( d );
+                std::memcpy( static_cast< unsigned char* >( p ) + d.offset, src, d.payload );
+                _commit_node( n );
+                return true;
+        }
+
+        /// `_push_bytes()` for an element type whose vtable's `construct` moves the payload in.
+        bool _push_constructed( _queue_node_desc const& d, void* src )
+        {
+                void* p = _alloc_node( d );
+                if ( !p )
+                        return false;
+                _commit_node( d.vt->construct( p, d, src ) );
+                return true;
+        }
+
+        /// Push the element at `src` that `d` describes: moved in by its vtable's `construct`
+        /// when it has one, copied byte-wise otherwise; left untouched when the memory resource
+        /// has no room. `Plain` and `AllTyped` say that no element type of the queue, or every
+        /// one, has a vtable.
+        template < bool Plain, bool AllTyped >
+        ECOR_FORCE_INLINE bool _push( _queue_node_desc const& d, void* src )
+        {
+                if constexpr ( Plain )
+                        return _push_bytes( d, src );
+                else if constexpr ( AllTyped )
+                        return _push_constructed( d, src );
+                else if ( d.vt )
+                        return _push_constructed( d, src );
+                else
+                        return _push_bytes( d, src );
+        }
+
         /// Destroy a detached node and return its memory.
         void _release( _queue_node& n ) noexcept
         {
-                auto const* vt = n._vt;
-                if ( vt->destroy )
-                        vt->destroy( n );
-                ecor::deallocate( _mem, &n, vt->size, vt->align );
+                auto const* d = n._desc;
+                if ( d->vt )
+                        d->vt->destroy( n );
+                ecor::deallocate( _mem, &n, d->size, d->align );
         }
 
         /// Hand the oldest item to `c` if there is one. Returns false when the queue is empty.
@@ -5480,15 +5622,13 @@ struct _queue_pop_op final
                 _r.set_stopped();
         }
 
-        /// Routes through the node's typed `deliver` thunk, which is what instantiates the
-        /// per-element-type `set_value` rows this operation dispatches on.
         void _receive( _queue_node& n ) override
         {
-                n._vt->deliver( n, static_cast< void* >( static_cast< _queue_waiter* >( this ) ) );
+                this->_deliver( n );
         }
 
-        /// Invoked through the node vtable when an item of type `T` is delivered. `val`
-        /// refers into the queue node, which is released the moment this returns.
+        /// Invoked through the consumer node's row for `T` when an item of type `T` is delivered.
+        /// `val` refers into the queue node, which is released the moment this returns.
         template < typename T >
         void set_value( T& val )
         {
@@ -5537,40 +5677,42 @@ struct _queue_pop_sender
         }
 };
 
-/// Operation state of `async_queue::push()`.
-template < typename Q, typename T, typename R >
-struct _queue_push_op final
+/// Everything of `async_queue::push()`'s operation state but the element: parking, retrying
+/// and cancellation, for every element type pushed with the same receiver type into any queue
+/// over `Core`.
+template < typename Core, bool Plain, bool AllTyped, bool Stoppable, typename R >
+struct _queue_push_op_base
   : _queue_waiter,
-    _queue_cancel_base< _queue_push_op< Q, T, R >, _queue_producer_stoppable< Q, R > >
+    _queue_cancel_base< _queue_push_op_base< Core, Plain, AllTyped, Stoppable, R >, Stoppable >
 {
         using operation_state_concept = operation_state_t;
 
-        /// Mirrors the configuration; the close-related paths vanish when it is false.
-        static constexpr bool _closeable = Q::config_type::is_closeable;
+        static constexpr bool _closeable = Core::_closeable;
 
-        _queue_push_op( Q& q, T val, R r ) noexcept(
-            std::is_nothrow_move_constructible_v< R > && std::is_nothrow_move_constructible_v< T > )
-          : _q( q )
-          , _val( std::move( val ) )
+        _queue_push_op_base( Core& core, _queue_node_desc const& d, void* src, R r ) noexcept(
+            std::is_nothrow_move_constructible_v< R > )
+          : _core( core )
+          , _desc( &d )
+          , _src( src )
           , _r( std::move( r ) )
         {
         }
 
-        _queue_push_op( _queue_push_op const& )            = delete;
-        _queue_push_op& operator=( _queue_push_op const& ) = delete;
+        _queue_push_op_base( _queue_push_op_base const& )            = delete;
+        _queue_push_op_base& operator=( _queue_push_op_base const& ) = delete;
 
         void start()
         {
                 if constexpr ( _closeable )
-                        if ( _q._core._is_closed() ) {
+                        if ( _core._is_closed() ) {
                                 _r.set_stopped();
                                 return;
                         }
-                if ( _q.template _emplace< T >( std::move( _val ) ) ) {
+                if ( _core.template _push< Plain, AllTyped >( *_desc, _src ) ) {
                         _r.set_value();
                         return;
                 }
-                _q._core._producers.link_back( *this );
+                _core._producers.link_back( *this );
                 this->_arm( get_stop_token( get_env( _r ) ) );
         }
 
@@ -5584,12 +5726,12 @@ struct _queue_push_op final
         bool _advance() override
         {
                 if constexpr ( _closeable )
-                        if ( _q._core._is_closed() ) {
+                        if ( _core._is_closed() ) {
                                 _unregister();
                                 _r.set_stopped();
                                 return true;
                         }
-                if ( !_q.template _emplace< T >( std::move( _val ) ) )
+                if ( !_core.template _push< Plain, AllTyped >( *_desc, _src ) )
                         return false;
                 _unregister();
                 _r.set_value();
@@ -5603,9 +5745,37 @@ private:
                 this->_disarm();
         }
 
-        Q&                       _q;
-        ECOR_NO_UNIQUE_ADDRESS T _val;
+        Core&                    _core;
+        _queue_node_desc const*  _desc;
+        void*                    _src;
         ECOR_NO_UNIQUE_ADDRESS R _r;
+};
+
+template < typename Q, typename R >
+using _queue_push_op_base_of = _queue_push_op_base<
+    typename Q::_core_t,
+    Q::_plain,
+    Q::_all_vtables,
+    _queue_producer_stoppable< Q, R >,
+    R >;
+
+/// Operation state of `async_queue::push()`: the shared base, and the element it pushes.
+template < typename Q, typename T, typename R >
+struct _queue_push_op final : _queue_push_op_base_of< Q, R >
+{
+        _queue_push_op( Q& q, T val, R r ) noexcept(
+            std::is_nothrow_move_constructible_v< R > && std::is_nothrow_move_constructible_v< T > )
+          : _queue_push_op_base_of< Q, R >(
+                q._core,
+                Q::template _desc_of< T >(),
+                std::addressof( _val ),
+                std::move( r ) )
+          , _val( std::move( val ) )
+        {
+        }
+
+private:
+        ECOR_NO_UNIQUE_ADDRESS T _val;
 };
 
 /// Sender returned by `async_queue::push()`.
@@ -5724,8 +5894,15 @@ struct async_queue
         static_assert(
             ( std::is_nothrow_move_constructible_v< Ts > && ... ),
             "async_queue element types must be nothrow move constructible" );
+        static_assert(
+            _queue_admits< CFG, Ts... >,
+            "async_queue element types must be trivially copyable; set "
+            "trivially_copyable_only = false in the queue configuration to admit others" );
 
-        // Limits imposed by the narrowed fields of `_queue_node_vtable`.
+        // Limits imposed by the narrowed fields of `_queue_node_desc`.
+        static_assert(
+            sizeof...( Ts ) <= std::numeric_limits< uint8_t >::max(),
+            "async_queue supports at most 255 element types" );
         static_assert(
             ( ( sizeof( _queue_node_of< Ts > ) <= std::numeric_limits< uint16_t >::max() ) && ... ),
             "async_queue element types must be smaller than 64 KiB" );
@@ -5745,6 +5922,36 @@ struct async_queue
         using _core_t = _queue_core< mem_type, CFG::is_closeable >;
 
         using _consumer_node_t = _queue_consumer_node< Ts... >;
+
+        /// True when no element type has a vtable: all are trivially copyable.
+        static constexpr bool _plain = ( !_queue_needs_vtable< Ts > && ... );
+
+        /// True when every element type has a vtable: none is trivially copyable.
+        static constexpr bool _all_vtables = ( _queue_needs_vtable< Ts > && ... );
+
+        /// Descriptor of the node that carries a `T`.
+        template < typename T >
+        [[nodiscard]] static constexpr _queue_node_desc const& _desc_of() noexcept
+        {
+                return _queue_node_desc_of< T, Ts... >;
+        }
+
+        /// Internal — move the payload of the detached node `n` into the empty `value_type` at
+        /// `dst`: through its vtable's `take` when it has one, byte-wise otherwise. Decided at
+        /// compile time unless the queue mixes both kinds of element type.
+        ///
+        /// PRIVATE, used only for ecor internals.
+        static void _take( _queue_node& n, void* dst )
+        {
+                if constexpr ( _plain )
+                        _queue_take_bytes< value_type >( n, dst );
+                else if constexpr ( _all_vtables )
+                        n._desc->vt->take( n, dst );
+                else if ( auto const* vt = n._desc->vt )
+                        vt->take( n, dst );
+                else
+                        _queue_take_bytes< value_type >( n, dst );
+        }
 
         /// `set_stopped()` is reachable when the waiter kind can be cancelled, or when
         /// `close()` can stop it. When neither holds the signature is omitted rather than
@@ -5796,10 +6003,61 @@ struct async_queue
                 requires( _contains_type< T, Ts... >::value )
         [[nodiscard]] bool try_push( T val )
         {
+                return try_push( push_bundle( std::move( val ) ) );
+        }
+
+        /// Lets one non-template function push elements of every type in this queue. A
+        /// `push_bundle` refers to one element and records which of the queue's element types it
+        /// is. It is the same type whatever the element, so a function can take it as an ordinary
+        /// parameter and pass it on to `try_push()`.
+        ///
+        /// `try_push()` is a template, so a wrapper around it, such as one that takes a mutex,
+        /// would have to be a template as well and would be compiled again for every element
+        /// type. A wrapper that takes a `push_bundle` instead is a single plain function: every
+        /// element type converts to `push_bundle` implicitly at the call site.
+        ///
+        /// ```
+        /// using event_queue = ecor::async_queue< cfg, temperature, button >;
+        ///
+        /// bool locked_push( event_queue& q, event_queue::push_bundle const& b )
+        /// {
+        ///         std::lock_guard< std::mutex > lock( queue_mutex );
+        ///         return q.try_push( b );
+        /// }
+        ///
+        /// button pressed{ 3 };
+        /// locked_push( q, temperature{ 2150 } );
+        /// locked_push( q, std::move( pressed ) );
+        /// ```
+        ///
+        /// Pass the element as an rvalue, a temporary or `std::move( x )`: it is moved into the
+        /// queue when the push succeeds and left as it was when the push fails. The bundle only
+        /// refers to the element, so create it in the call that uses it, as above.
+        struct push_bundle
+        {
+                /// An lvalue deduces `T` as a reference, which is not an element type.
+                template < typename T >
+                        requires( _contains_type< T, Ts... >::value )
+                push_bundle( T&& val ) noexcept
+                  : _desc( &async_queue::template _desc_of< T >() )
+                  , _src( std::addressof( val ) )
+                {
+                }
+
+        private:
+                friend async_queue;
+
+                _queue_node_desc const* _desc;
+                void*                   _src;
+        };
+
+        /// `try_push()` of an element erased into a `push_bundle`.
+        [[nodiscard]] ECOR_FORCE_INLINE bool try_push( push_bundle const& b )
+        {
                 if constexpr ( CFG::is_closeable )
                         if ( _core._is_closed() )
                                 return false;
-                return _emplace< T >( std::move( val ) );
+                return _push( *b._desc, b._src );
         }
 
         /// Sender that enqueues `val`, parking the producer while the memory resource is full.
@@ -5824,7 +6082,7 @@ struct async_queue
                         return v;
                 auto& n = _core._items.take_front();
                 --_core._count;
-                n._vt->take( n, static_cast< void* >( &v ) );
+                _take( n, static_cast< void* >( &v ) );
                 _core._release( n );
                 _core._service();
                 return v;
@@ -5871,17 +6129,10 @@ private:
         template < typename, typename, typename >
         friend struct _queue_push_op;
 
-        /// Allocate, construct and link a node, then service the queue.
-        template < typename T >
-        bool _emplace( T val )
+        /// Push the element at `src` that `d` describes; see `_queue_core::_push()`.
+        ECOR_FORCE_INLINE bool _push( _queue_node_desc const& d, void* src )
         {
-                auto const& vt =
-                    _queue_node_vtable_of< T, CFG::pop_api != async_queue_api::try_only, Ts... >;
-                void* p = _core._alloc_node( vt );
-                if ( !p )
-                        return false;
-                _core._commit_node( *::new ( p ) _queue_node_of< T >( vt, std::move( val ) ) );
-                return true;
+                return _core.template _push< _plain, _all_vtables >( d, src );
         }
 
         _core_t _core;
@@ -6150,7 +6401,7 @@ private:
         /// producer's `push()`.
         void _receive( _queue_node& n ) override
         {
-                n._vt->take( n, static_cast< void* >( &_slot ) );
+                Queue::_take( n, static_cast< void* >( &_slot ) );
                 _reschedule();
         }
 

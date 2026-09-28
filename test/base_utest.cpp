@@ -3161,6 +3161,52 @@ TEST_CASE( "seq_source - query_next returns nullptr when all entries are stopped
         CHECK( source.empty() );
 }
 
+namespace
+{
+        struct int_log_receiver
+        {
+                using receiver_concept = receiver_t;
+                std::vector< int >* log;
+
+                void set_value( int v ) noexcept
+                {
+                        log->push_back( v );
+                }
+                void set_stopped() noexcept
+                {
+                }
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+}  // namespace
+
+TEST_CASE( "seq_source - sources with one key type keep their entries apart" )
+{
+        // Both order by `uint32_t`, so their entries share one heap node type.
+        seq_source< uint32_t, unit, set_value_t( int ) > a;
+        seq_source< uint32_t, int, set_value_t( int ) >  b;
+        std::vector< int >                               log_a, log_b;
+
+        auto a3 = a.schedule( 3 ).connect( int_log_receiver{ &log_a } );
+        auto b2 = b.schedule( 2, 20 ).connect( int_log_receiver{ &log_b } );
+        auto a1 = a.schedule( 1 ).connect( int_log_receiver{ &log_a } );
+        auto b4 = b.schedule( 4, 40 ).connect( int_log_receiver{ &log_b } );
+        a3.start();
+        b2.start();
+        a1.start();
+        b4.start();
+
+        while ( auto* e = a.query_next() )
+                e->set_value( int( e->key ) );
+        while ( auto* e = b.query_next() )
+                e->set_value( e->data );
+
+        CHECK( log_a == std::vector< int >{ 1, 3 } );
+        CHECK( log_b == std::vector< int >{ 20, 40 } );
+}
+
 struct test_exception : std::exception
 {
         char const* what() const noexcept override

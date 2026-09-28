@@ -1286,6 +1286,7 @@ The first template parameter is a compile-time configuration satisfying `ecor::q
 | `pop_api` | how much of `pop()` exists | `async_queue_api::try_only` |
 | `push_api` | how much of `push()` exists | `async_queue_api::try_only` |
 | `is_closeable` | the queue supports `close()` and `closed()` | `false` |
+| `trivially_copyable_only` | element types must be trivially copyable, checked at compile time | `true` |
 
 Each direction is set independently. The levels are cumulative — `cancellable` provides
 everything `parking` does:
@@ -1329,20 +1330,23 @@ separate flag rather than another level of the enum.
 #### Flash cost of each combination
 
 Measured with `arm-none-eabi-g++ -Os` over one translation unit holding a four-element-type
-queue whose receivers all carry a live stop token, summing `.text` + `.rodata`:
+queue whose receivers all carry a live stop token, summing `.text` + `.rodata`. The probe uses
+everything each configuration has: `try_push` and `try_pop`, `push()` for every element type
+when push parks, one `pop()` when pop parks, and `close()` when closeable.
 
 | configuration | cortex-m0plus | cortex-m4 |
 |---|---|---|
-| both `try_only` (default) | 716 | 690 |
-| `is_closeable` only | 990 (+274) | 970 (+280) |
-| `pop_api = parking` | 1202 (+486) | 1080 (+390) |
-| `pop_api = cancellable` | 1570 (+854) | 1438 (+748) |
-| both `parking` | 1462 (+746) | 1336 (+646) |
-| both `cancellable` | 2106 (+1390) | 1968 (+1278) |
-| both `cancellable`, plus `is_closeable` | 2392 (+1676) | 2254 (+1564) |
+| both `try_only` (default) | 636 | 606 |
+| `is_closeable` only | 926 (+290) | 904 (+298) |
+| `pop_api = parking` | 912 (+276) | 866 (+260) |
+| `pop_api = cancellable` | 1142 (+506) | 1094 (+488) |
+| both `parking` | 1278 (+642) | 1224 (+618) |
+| both `cancellable` | 1740 (+1104) | 1672 (+1066) |
+| both `cancellable`, plus `is_closeable` | 2070 (+1434) | 2022 (+1416) |
 
 The absolute figures depend on the element types and on how many of the queue's operations a
-program instantiates; the deltas are the part that transfers. Raising a direction to
+program instantiates; the deltas are the part that transfers. The push rows grow with the
+number of element types sent through `push()`, all four here. Raising a direction to
 `cancellable` buys nothing if the receivers on that side have no stop token, since the
 machinery stays omitted for them either way — and an `event_pump` consumer needs none of this,
 since it parks on the queue directly rather than through `pop()`.
@@ -1444,6 +1448,55 @@ ecor::task<void> shutdown_queue(ecor::task_ctx& ctx, ecor::async_queue<ccfg, int
 }
 ```
 
+### Wrapping the queue — `push_bundle`
+
+`try_push()` is a template over the element type, so a wrapper that forwards to it — one that
+takes a mutex around each push, say — has to be a template too, and its body is then expanded
+for every element type at every call site. `push_bundle` erases an element to what the queue
+needs, its node descriptor and its address, and converts implicitly from an rvalue of any
+element type. A wrapper taking a `push_bundle const&` is a plain function that exists once,
+while its callers still pass elements directly:
+
+```cpp
+struct wmem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+struct temperature { int16_t centi_celsius; };
+struct button { uint8_t id; };
+
+using event_queue = ecor::async_queue<ecor::queue_default_cfg<wmem>, temperature, button>;
+
+struct guarded_queue {
+    event_queue& q;
+
+    // Not a template: every call site below reaches this one function.
+    bool push(event_queue::push_bundle const& b) {
+        lock();
+        bool ok = q.try_push(b);
+        unlock();
+        return ok;
+    }
+
+    void lock() {}      // e.g. an RTOS mutex
+    void unlock() {}
+};
+
+void report(guarded_queue& g) {
+    g.push(temperature{2150});   // converts to event_queue::push_bundle
+    g.push(button{3});
+}
+```
+
+The element is moved into the queue once the push succeeds, so only an rvalue converts: pass an
+lvalue with `std::move` or as a copy. A bundle refers to its element, so use it within the
+expression that created it.
+
 ### Key Properties
 
 - **Single-threaded, not interrupt-safe** — completing a parked waiter runs receiver code
@@ -1453,7 +1506,10 @@ ecor::task<void> shutdown_queue(ecor::task_ctx& ctx, ecor::async_queue<ccfg, int
 - **Eager cancellation** — a parked waiter whose receiver carries a live stop token unlinks
   and completes with `set_stopped()` as soon as stop is requested. Receivers without a stop
   token pay nothing for this.
-- **Element types must be pairwise distinct** and nothrow move constructible.
+- **Element types must be pairwise distinct** and nothrow move constructible, and by default
+  trivially copyable: such elements are pushed byte-wise by code shared by every element type.
+  Set `trivially_copyable_only = false` in the configuration to queue types such as
+  `std::string`, which each get typed code of their own.
 - **One core per memory resource** — the list, waiter and shutdown machinery is templated only
   on `Mem`, so queues differing only in their element types share one instantiation of it.
   Using `ecor::task_memory_resource` as `Mem` collapses every queue in the program onto one.
