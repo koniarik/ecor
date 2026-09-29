@@ -22,4 +22,4 @@ jobs:
 
       - name: clang-tidy
         # Workaround parallel to not fail if there's no output
-        run: find include/ \( -iname "*.hpp" -or -iname "*.cpp" \) -print0 | parallel -0 clang-tidy -p build {}
+        run: find include/ \( -iname "*.hpp" -or -iname "*.cpp" \) -print0 | parallel -0 clang-tidy -p _build/debug {}

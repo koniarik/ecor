@@ -65,7 +65,7 @@ for m in re.finditer(r'^\s+\d+\s+(\S+)\s+([0-9a-f]+)', out, re.M):
 ```
 
 `zll` comes from `/Users/veverak/Projects/zll/include` (a local `FETCHCONTENT_SOURCE_DIR_ZLL`
-override; confirm in `build/CMakeCache.txt`). ecor needs zll `debae37` or later
+override; confirm in `_build/debug/CMakeCache.txt`). ecor needs zll `debae37` or later
 (`sh_heap::top()`); to measure against an older zll, adapt the header with
 `doc/plans/zll-erase/ecor_compat.py`, as the harnesses under `doc/plans/` do.
 
