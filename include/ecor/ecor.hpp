@@ -524,7 +524,7 @@ template < typename IndexType, typename Base = noop_base >
 struct circular_buffer_memory : Base
 {
         static_assert(
-            std::is_unsigned< IndexType >::value,
+            std::is_unsigned_v< IndexType >,
             "IndexType must be an unsigned integer type" );
 
         /// Type of the index used for tracking allocations.
@@ -960,7 +960,7 @@ concept _enable_sender = requires { typename T::sender_concept; } &&
 /// get_env member function that returns a queryable type, and is move constructible and
 /// constructible from itself.
 template < typename T >
-concept sender = bool( _enable_sender< std::remove_cvref_t< T > > ) &&
+concept sender = _enable_sender< std::remove_cvref_t< T > > &&
                  requires( std::remove_cvref_t< T > const& s ) {
                          { get_env( s ) } -> queryable;
                  } && std::move_constructible< std::remove_cvref_t< T > > &&
@@ -1073,14 +1073,14 @@ struct _sig_vtable_row< set_value_t( Args... ) >
         f_t _set_value;
 
         template < typename D, typename B >
-        constexpr _sig_vtable_row( _tag< D >, _tag< B > ) noexcept
+        constexpr _sig_vtable_row( _tag< D > /*derived*/, _tag< B > /*base*/ ) noexcept
           : _set_value{ +[]( void* self, Args... args ) {
                   static_cast< D* >( static_cast< B* >( self ) )->set_value( (Args&&) args... );
           } }
         {
         }
 
-        void invoke( set_value_t, void* self, Args... args ) const
+        void invoke( set_value_t /*tag*/, void* self, Args... args ) const
         {
                 _set_value( self, (Args&&) args... );
         }
@@ -1093,14 +1093,14 @@ struct _sig_vtable_row< set_error_t( Args... ) >
         f_t _set_error;
 
         template < typename D, typename B >
-        constexpr _sig_vtable_row( _tag< D >, _tag< B > ) noexcept
+        constexpr _sig_vtable_row( _tag< D > /*derived*/, _tag< B > /*base*/ ) noexcept
           : _set_error{ +[]( void* self, Args... args ) {
                   static_cast< D* >( static_cast< B* >( self ) )->set_error( (Args&&) args... );
           } }
         {
         }
 
-        void invoke( set_error_t, void* self, Args... args ) const
+        void invoke( set_error_t /*tag*/, void* self, Args... args ) const
         {
                 _set_error( self, (Args&&) args... );
         }
@@ -1113,14 +1113,14 @@ struct _sig_vtable_row< set_stopped_t() >
         f_t _set_stopped;
 
         template < typename D, typename B >
-        constexpr _sig_vtable_row( _tag< D >, _tag< B > ) noexcept
+        constexpr _sig_vtable_row( _tag< D > /*derived*/, _tag< B > /*base*/ ) noexcept
           : _set_stopped{ +[]( void* self ) {
                   static_cast< D* >( static_cast< B* >( self ) )->set_stopped();
           } }
         {
         }
 
-        void invoke( set_stopped_t, void* self ) const
+        void invoke( set_stopped_t /*tag*/, void* self ) const
         {
                 _set_stopped( self );
         }
@@ -1133,14 +1133,14 @@ struct _sig_vtable_row< get_stopped_t() >
         f_t _get_stopped;
 
         template < typename D, typename B >
-        constexpr _sig_vtable_row( _tag< D >, _tag< B > ) noexcept
+        constexpr _sig_vtable_row( _tag< D > /*derived*/, _tag< B > /*base*/ ) noexcept
           : _get_stopped{ +[]( void* self ) {
                   return static_cast< D* >( static_cast< B* >( self ) )->get_stopped();
           } }
         {
         }
 
-        bool invoke( get_stopped_t, void* self ) const
+        bool invoke( get_stopped_t /*tag*/, void* self ) const
         {
                 return _get_stopped( self );
         }
@@ -1192,7 +1192,7 @@ struct _vtable_mixin
         using _vtable = _sig_vtable< S... >;
 
         template < typename D >
-        _vtable_mixin( _tag< D > ) noexcept
+        _vtable_mixin( _tag< D > /*derived*/ ) noexcept
           : vtable( _vtable_of< D, _vtable_mixin< S... >, _vtable > )
         {
                 static_assert(
@@ -1493,7 +1493,7 @@ struct inplace_stop_source
 
         /// Check if stopping is possible. For inplace_stop_source, this always returns true since
         /// it can always be stopped.
-        [[nodiscard]] bool stop_possible() const noexcept
+        [[nodiscard]] static bool stop_possible() noexcept
         {
                 return true;
         }
@@ -1645,7 +1645,7 @@ struct never_stop_token
 {
         struct cb_type
         {
-                explicit cb_type( never_stop_token, auto&& ) noexcept
+                explicit cb_type( never_stop_token /*token*/, auto&& /*cb*/ ) noexcept
                 {
                 }
         };
@@ -1692,7 +1692,7 @@ struct stop_token_env
 {
         Token _token;
 
-        [[nodiscard]] decltype( auto ) query( get_stop_token_t ) const noexcept
+        [[nodiscard]] decltype( auto ) query( get_stop_token_t /*tag*/ ) const noexcept
         {
                 return _token;
         }
@@ -1718,7 +1718,8 @@ struct _ll_entry< Node, D, completion_signatures< S... > > : _vtable_mixin< S...
         ECOR_NO_UNIQUE_ADDRESS D data;
 
         template < typename Derived >
-        _ll_entry( _tag< Derived >, D d ) noexcept( std::is_nothrow_move_constructible_v< D > )
+        _ll_entry( _tag< Derived > /*derived*/, D d ) noexcept(
+            std::is_nothrow_move_constructible_v< D > )
           : _vtable_mixin< S... >( _tag< Derived >{} )
           , data( std::move( d ) )
         {
@@ -1850,7 +1851,7 @@ struct _sh_entry< K, D, completion_signatures< S... > > : _vtable_mixin< S... >,
         ECOR_NO_UNIQUE_ADDRESS D data;
 
         template < typename Derived >
-        _sh_entry( K k, D d, _tag< Derived > ) noexcept(
+        _sh_entry( K k, D d, _tag< Derived > /*derived*/ ) noexcept(
             std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< D > )
           : _vtable_mixin< S... >{ _tag< Derived >{} }
           , _sh_link< K >( std::move( k ) )
@@ -2678,12 +2679,12 @@ struct task_ctx
         {
         }
 
-        auto& query( get_task_core_t ) noexcept
+        auto& query( get_task_core_t /*tag*/ ) noexcept
         {
                 return core;
         }
 
-        auto& query( get_memory_resource_t ) noexcept
+        auto& query( get_memory_resource_t /*tag*/ ) noexcept
         {
                 return alloc;
         }
@@ -2736,7 +2737,7 @@ struct task_default_trace
         /// pack contains the original arguments passed to the coroutine function (the same ones
         /// the coroutine body receives), giving you a chance to capture identifying parameters.
         ECOR_FORCE_INLINE void
-        on_promise_construct( auto& /*promise*/, auto& /*ctx*/, auto&... ) noexcept
+        on_promise_construct( auto& /*promise*/, auto& /*ctx*/, auto&... /*args*/ ) noexcept
         {
         }
 
@@ -2911,7 +2912,7 @@ struct _promise_base : schedulable
                 auto* pmem = &mem;
                 std::memcpy(
                     std::assume_aligned< alignof( void* ) >( vp ),
-                    (void const*) &pmem,
+                    reinterpret_cast< void const* >( &pmem ),
                     sizeof( void* ) );
                 return ( (char*) vp ) + spacing;
         }
@@ -2924,7 +2925,9 @@ struct _promise_base : schedulable
                 void*                 beg = ( (char*) ptr ) - spacing;
                 task_memory_resource* mem = nullptr;
                 std::memcpy(
-                    (void*) &mem, std::assume_aligned< alignof( void* ) >( beg ), sizeof( void* ) );
+                    reinterpret_cast< void* >( &mem ),
+                    std::assume_aligned< alignof( void* ) >( beg ),
+                    sizeof( void* ) );
                 deallocate( *mem, beg, sz + spacing, align );
         }
 
@@ -2933,11 +2936,10 @@ struct _promise_base : schedulable
 
         _promise_base( task_core& c )
           : core( c )
-          , token()
         {
         }
 
-        std::suspend_always initial_suspend() noexcept
+        static std::suspend_always initial_suspend() noexcept
         {
                 return {};
         }
@@ -3007,7 +3009,8 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
         _promise_type( _promise_type const& )            = delete;
         _promise_type& operator=( _promise_type const& ) = delete;
 
-        void* operator new( std::size_t const sz, task_context auto&& ctx, auto&&... ) noexcept
+        void*
+        operator new( std::size_t const sz, task_context auto&& ctx, auto&&... /*args*/ ) noexcept
         {
                 /// XXX: we can't guarantee noexcept of the subcalls - try/catch?
                 task_memory_resource& a = get_memory_resource( ctx );
@@ -3471,7 +3474,7 @@ struct _or_sender
             _sigs_merge_t< _sender_completions_t< S1, Env >, _sender_completions_t< S2, Env > >;
 
         template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& ) noexcept
+        _completions< Env > get_completion_signatures( Env&& /*env*/ ) noexcept
         {
                 return {};
         }
@@ -3539,7 +3542,7 @@ struct _as_variant
         }
 
         template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& ) noexcept
+        _completions< Env > get_completion_signatures( Env&& /*env*/ ) noexcept
         {
                 return {};
         }
@@ -3587,7 +3590,7 @@ private:
 /// resulting set_value completion of the transformed sender will have a single argument of type
 /// std::variant of the original value types.
 ///
-[[maybe_unused]] static inline struct as_variant_t
+inline constexpr struct as_variant_t
 {
         template < sender S >
         auto operator()( S s ) const
@@ -3595,11 +3598,11 @@ private:
                 return _as_variant< S >{ std::move( s ) };
         }
 
-} as_variant;
+} as_variant{};
 
 /// Operator| overload for as_variant CPO. This allows using the pipe syntax to apply the as_variant
 /// transformation to a sender.
-auto operator|( auto s, as_variant_t )
+auto operator|( auto s, as_variant_t /*tag*/ )
 {
         return as_variant( std::move( s ) );
 }
@@ -3632,7 +3635,7 @@ struct _err_to_val
             _sigs_concat_t< _s_values< Env >, _s_errors_as_val< Env >, _stopped< Env > >;
 
         template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& ) noexcept
+        _completions< Env > get_completion_signatures( Env&& /*env*/ ) noexcept
         {
                 return {};
         }
@@ -3674,7 +3677,7 @@ private:
 
 /// CPO for transforming a sender to convert all its set_error completions into set_value
 /// completions.
-[[maybe_unused]] static inline struct err_to_val_t
+inline constexpr struct err_to_val_t
 {
         template < sender S >
         auto operator()( S s ) const
@@ -3682,11 +3685,11 @@ private:
                 return _err_to_val< S >{ std::move( s ) };
         }
 
-} err_to_val;
+} err_to_val{};
 
 /// Operator| overload for err_to_val CPO. This allows using the pipe syntax to apply the err_to_val
 /// transformation to a sender.
-auto operator|( auto s, err_to_val_t )
+auto operator|( auto s, err_to_val_t /*tag*/ )
 {
         return err_to_val( std::move( s ) );
 }
@@ -3723,7 +3726,7 @@ struct _sink_err
             _s_stopped< Env > >;
 
         template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& ) noexcept
+        _completions< Env > get_completion_signatures( Env&& /*env*/ ) noexcept
         {
                 return {};
         }
@@ -3778,7 +3781,7 @@ struct _sink_err
 /// does not have any set_value completions, or it has only one set_value completion with no
 /// arguments.
 ///
-[[maybe_unused]] static inline struct sink_err_t
+inline constexpr struct sink_err_t
 {
 
         auto operator()( sender auto s ) const noexcept
@@ -3786,11 +3789,11 @@ struct _sink_err
                 return _sink_err{ std::move( s ) };
         }
 
-} sink_err;
+} sink_err{};
 
 /// Operator| overload for sink_err CPO. This allows using the pipe syntax to apply the sink_err
 /// transformation to a sender.
-auto operator|( sender auto s, sink_err_t ) noexcept
+auto operator|( sender auto s, sink_err_t /*tag*/ ) noexcept
 {
         return _sink_err{ std::move( s ) };
 }
@@ -3844,7 +3847,7 @@ struct _then
             _sigs_merge_t< _s_mapped_values< Env >, _s_errors< Env >, _s_stopped< Env > >;
 
         template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& ) noexcept
+        _completions< Env > get_completion_signatures( Env&& /*env*/ ) noexcept
         {
                 return {};
         }
@@ -3906,7 +3909,7 @@ auto operator|( S s, _then_closure< F > c )
 /// set_value completion. If the callable returns void, the output sender emits set_value_t().
 /// Otherwise it emits set_value_t( result ).
 ///
-[[maybe_unused]] static inline struct then_t
+inline constexpr struct then_t
 {
         template < typename F >
         auto operator()( F f ) const
@@ -3920,7 +3923,7 @@ auto operator|( S s, _then_closure< F > c )
                 return _then< S, F >{ std::move( s ), std::move( f ) };
         }
 
-} then;
+} then{};
 
 /// -------------------------------------------------------------------------------
 
@@ -3970,13 +3973,13 @@ private:
                 _task_holder_base* _holder;
 
                 template < typename... Args >
-                void set_value( Args&&... ) noexcept
+                void set_value( Args&&... /*vals*/ ) noexcept
                 {
                         _holder->_core.reschedule( *_holder );
                 }
 
                 template < typename E >
-                void set_error( E&& ) noexcept
+                void set_error( E&& /*err*/ ) noexcept
                 {
                         _holder->_core.reschedule( *_holder );
                 }
@@ -4106,7 +4109,7 @@ struct _wait_until_stopped
         };
 
         template < receiver R >
-        auto connect( R receiver )
+        auto connect( R receiver ) const
         {
                 static_assert(
                     receiver_for< R, _wait_until_stopped >,
@@ -4118,8 +4121,7 @@ struct _wait_until_stopped
 /// CPO for creating a sender that completes when the stop token in the receiver's environment is
 /// triggered. The sender completes with set_value_t() when the stop token is triggered. If the
 /// stop token is never triggered, the sender will never complete.
-[[maybe_unused]]
-static inline _wait_until_stopped wait_until_stopped;
+inline constexpr _wait_until_stopped wait_until_stopped{};
 
 /// -------------------------------------------------------------------------------
 
@@ -4131,13 +4133,13 @@ static inline _wait_until_stopped wait_until_stopped;
 /// code that never uses this type incurs zero overhead.
 struct _suspend_awaiter
 {
-        [[nodiscard]] bool await_ready() const noexcept
+        [[nodiscard]] static bool await_ready() noexcept
         {
                 return false;
         }
 
         template < typename Promise >
-        void await_suspend( std::coroutine_handle< Promise > h ) noexcept
+        void await_suspend( std::coroutine_handle< Promise > h ) const noexcept
         {
                 auto& p = h.promise();
                 if ( p.token.stop_requested() ) {
@@ -4147,7 +4149,7 @@ struct _suspend_awaiter
                 p.core.reschedule( p );
         }
 
-        void await_resume() noexcept
+        void await_resume() const noexcept
         {
         }
 };
@@ -4162,8 +4164,7 @@ struct _suspend_awaiter
 ///   co_await ecor::suspend;
 ///
 /// Zero overhead when not used: no callbacks, no allocations, no extra per-task state.
-[[maybe_unused]]
-static inline _suspend_awaiter suspend;
+inline constexpr _suspend_awaiter suspend{};
 
 /// -------------------------------------------------------------------------------
 /// async_arena — asynchronous reference-counted lifetime management
@@ -4269,17 +4270,17 @@ struct _async_arena_core_base : schedulable
 
                 _async_arena_core_base* _core;
 
-                void set_value( auto&&... ) noexcept
+                void set_value( auto&&... /*vals*/ ) noexcept
                 {
                         _core->_on_destroy_complete();
                 }
 
-                void set_error( auto&& ) noexcept
+                void set_error( auto&& /*err*/ ) noexcept
                 {
                         _core->_on_destroy_complete();
                 }
 
-                void set_stopped() noexcept
+                void set_stopped() const noexcept
                 {
                         _core->_on_destroy_complete();
                 }
@@ -4642,7 +4643,7 @@ struct pipeline_buffer
             "Size of circular buffer must be less than 65536" );
         static_assert( std::is_trivial_v< T > );
 
-        bool full() const noexcept
+        [[nodiscard]] bool full() const noexcept
         {
                 return ( enqueue - deliver ) == N;
         }
@@ -5179,9 +5180,9 @@ struct _queue_waiter : _queue_link
         /// those rows at all.
         ///
         /// Not pure: producers and the `close()` waiter are never delivered to.
-        virtual void _receive( _queue_node& )
+        virtual void _receive( _queue_node& /*n*/ )
         {
-                ECOR_ASSERT( false );
+                ECOR_ASSERT( false );  // NOLINT(misc-static-assert)
         }
 
 protected:
@@ -5211,7 +5212,7 @@ struct _queue_consumer_node : _queue_waiter, _vtable_mixin< set_value_t( Ts& )..
 
 private:
         template < std::size_t... I >
-        void _deliver( _queue_node& n, std::index_sequence< I... > )
+        void _deliver( _queue_node& n, std::index_sequence< I... > /*indices*/ )
         {
                 auto const i = n._desc->index;
                 static_cast< void >(
@@ -5225,7 +5226,7 @@ private:
 
 /// The `destroy` of every trivially destructible payload. One empty function shared by all of
 /// them keeps `destroy` non-null, so `_release()` needs no test beyond `vt`.
-inline void _queue_node_no_destroy( _queue_node& ) noexcept
+inline void _queue_node_no_destroy( _queue_node& /*n*/ ) noexcept
 {
 }
 
@@ -5561,7 +5562,7 @@ private:
 template < typename Op >
 struct _queue_cancel_base< Op, false >
 {
-        void _arm( auto&& ) noexcept
+        void _arm( auto&& /*token*/ ) noexcept
         {
         }
 
@@ -6338,7 +6339,7 @@ private:
 
                 event_pump* p;
 
-                void set_value( auto&&... ) noexcept
+                void set_value( auto&&... /*vals*/ ) noexcept
                 {
                         p->_reschedule();
                 }
@@ -6448,7 +6449,7 @@ struct [[deprecated( "use ll_source<unit, S...> with ecor::broadcast()" )]] broa
         {
                 return _src.schedule();
         }
-        bool empty() const noexcept
+        [[nodiscard]] bool empty() const noexcept
         {
                 return _src.empty();
         }
@@ -6492,7 +6493,7 @@ struct [[deprecated( "use ll_source<unit, S...> with query_next()" )]] fifo_sour
         {
                 return _src.schedule();
         }
-        bool empty() const noexcept
+        [[nodiscard]] bool empty() const noexcept
         {
                 return _src.empty();
         }
