@@ -28,7 +28,7 @@
       "binaryDir": "${sourceDir}/_build/${presetName}",
       "inherits": "debug",
       "cacheVariables": {
-        "CMAKE_CXX_FLAGS": "-Wall -Wextra -fsanitize=undefined"
+        "CMAKE_CXX_FLAGS": "-Wall -Wextra -fsanitize=undefined -fno-sanitize-recover=all"
       }
     },
     {
