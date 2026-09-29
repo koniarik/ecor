@@ -36,10 +36,8 @@ install(
   DESTINATION lib/cmake/ecor/)
 
 if(ECOR_TESTS_ENABLED)
-  find_package(
-    Python3
-    COMPONENTS Interpreter
-    REQUIRED)
-  enable_testing()
-  add_subdirectory(test)
+  include(CTest)
+  if(BUILD_TESTING)
+    add_subdirectory(test)
+  endif()
 endif()
