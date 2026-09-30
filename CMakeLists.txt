@@ -10,7 +10,7 @@ include(FetchContent)
 FetchContent_Declare(
   zll
   GIT_REPOSITORY https://github.com/koniarik/zll.git
-  GIT_TAG v2.0.0)
+  GIT_TAG v2.0.1)
 FetchContent_MakeAvailable(zll)
 
 add_library(ecor INTERFACE include/ecor/ecor.hpp)
