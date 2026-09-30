@@ -25,13 +25,17 @@
 #include "doctest.h"
 #include "ecor/ecor.hpp"
 
+#include <array>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <iostream>
 #include <list>
 #include <mutex>
 #include <semaphore>
+#include <string>
 #include <thread>
+#include <vector>
 
 /// -------------------------------------------------------------------------------
 /// UART driver example & test suite

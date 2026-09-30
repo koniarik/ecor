@@ -61,6 +61,24 @@ jobs:
       - name: test
         run: ctest --preset ${{ matrix.preset }} --output-on-failure --verbose
 
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: configure
+        run: cmake --preset windows-debug
+
+      - name: build
+        run: cmake --build --preset windows-debug
+
+      - name: test
+        run: ctest --preset windows-debug --output-on-failure --verbose
+
   install:
     runs-on: ubuntu-latest
 
