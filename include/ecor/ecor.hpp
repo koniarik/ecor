@@ -2480,9 +2480,6 @@ struct _task_awaitable_base
         {
                 this->_promise = &ch.promise();
                 this->_promise->trace.on_await_suspend( *this );
-#ifdef ECOR_DEBUG_PARENT
-                _bind_debug_parent( *this );
-#endif
         }
 
         struct _receiver
@@ -2590,6 +2587,9 @@ struct _task_awaitable : _task_awaitable_base< PromiseType, ValueType >
         void await_suspend( std::coroutine_handle< PromiseType > ch ) noexcept
         {
                 _base::await_suspend( ch );
+#ifdef ECOR_DEBUG_PARENT
+                this->_bind_debug_parent( _op );
+#endif
                 _op.start();
         }
 
