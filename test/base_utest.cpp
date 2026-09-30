@@ -20,6 +20,8 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 /// SOFTWARE.
+#include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -27,6 +29,7 @@
 #include <mutex>
 #include <semaphore>
 #include <stop_token>
+#include <string>
 #include <thread>
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN

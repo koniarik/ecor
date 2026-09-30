@@ -53,11 +53,12 @@
 
 #endif
 
-/// Portable wrapper for the [[no_unique_address]] attribute. MSVC ignores the standard form
-/// and instead recognizes the vendor-specific [[msvc::no_unique_address]] (since VS 2019 16.9
-/// with /Zc:__cplusplus or /std:c++20). All other major compilers honor the standard form.
+/// Portable wrapper for the [[no_unique_address]] attribute. The MSVC ABI ignores the standard
+/// form, so MSVC and Clang targeting that ABI use the vendor-specific [[msvc::no_unique_address]]
+/// (MSVC since VS 2019 16.9 with /Zc:__cplusplus or /std:c++20). All other major compilers
+/// honor the standard form.
 #ifndef ECOR_NO_UNIQUE_ADDRESS
-#if defined( _MSC_VER ) && !defined( __clang__ )
+#if defined( _MSC_VER )
 #define ECOR_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
 #else
 #define ECOR_NO_UNIQUE_ADDRESS [[no_unique_address]]
