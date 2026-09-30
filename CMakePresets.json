@@ -9,7 +9,7 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "ECOR_TESTS_ENABLED": "ON",
-        "CMAKE_CXX_FLAGS": "-Wall -Wextra"
+        "CMAKE_CXX_FLAGS": "-Wall -Wextra $penv{CXXFLAGS}"
       }
     },
     {
@@ -18,7 +18,7 @@
       "binaryDir": "${sourceDir}/_build/${presetName}",
       "inherits": "debug",
       "cacheVariables": {
-        "CMAKE_CXX_FLAGS": "-Wall -Wextra -fsanitize=address"
+        "CMAKE_CXX_FLAGS": "-Wall -Wextra -fsanitize=address $penv{CXXFLAGS}"
       }
     },
     {
@@ -27,7 +27,7 @@
       "binaryDir": "${sourceDir}/_build/${presetName}",
       "inherits": "debug",
       "cacheVariables": {
-        "CMAKE_CXX_FLAGS": "-Wall -Wextra -fsanitize=undefined -fno-sanitize-recover=all"
+        "CMAKE_CXX_FLAGS": "-Wall -Wextra -fsanitize=undefined -fno-sanitize-recover=all $penv{CXXFLAGS}"
       }
     },
     {
