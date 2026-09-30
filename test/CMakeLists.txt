@@ -25,18 +25,20 @@ target_compile_definitions(ecor_tests PRIVATE ECOR_DEFAULT_ASSERT)
 add_test(NAME ecor_tests COMMAND ecor_tests)
 
 # GDB pretty-printer tests (three-phase: gen → run → eval)
+add_executable(ecor_gdb_test ${CMAKE_CURRENT_SOURCE_DIR}/gdb_test.cpp)
+target_include_directories(ecor_gdb_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ecor_gdb_test PRIVATE ecor)
+target_compile_options(ecor_gdb_test PRIVATE -g -O0)
+target_compile_definitions(ecor_gdb_test PRIVATE ECOR_DEBUG_PARENT
+                                                 ECOR_DEFAULT_ASSERT)
+
 find_program(GDB_EXECUTABLE gdb)
-if(GDB_EXECUTABLE)
+if(GDB_EXECUTABLE
+   AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+   AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(GDB_PPRINTER ${PROJECT_SOURCE_DIR}/pprinter.py)
   set(GDB_SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/ecor_gdb_test.gdb)
   set(GDB_LOG ${CMAKE_CURRENT_BINARY_DIR}/ecor_gdb_test.log)
-
-  add_executable(ecor_gdb_test ${CMAKE_CURRENT_SOURCE_DIR}/gdb_test.cpp)
-  target_include_directories(ecor_gdb_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(ecor_gdb_test PRIVATE ecor)
-  target_compile_options(ecor_gdb_test PRIVATE -g -O0)
-  target_compile_definitions(ecor_gdb_test PRIVATE ECOR_DEBUG_PARENT
-                                                   ECOR_DEFAULT_ASSERT)
 
   add_test(NAME ecor_gdb_gen COMMAND ecor_gdb_test gen ${GDB_PPRINTER}
                                      ${GDB_SCRIPT} ${GDB_LOG})
@@ -52,5 +54,5 @@ if(GDB_EXECUTABLE)
   add_test(NAME ecor_gdb_eval COMMAND ecor_gdb_test eval ${GDB_LOG})
   set_tests_properties(ecor_gdb_eval PROPERTIES FIXTURES_REQUIRED ecor_gdb_log)
 else()
-  message(STATUS "GDB not found — skipping ecor_gdb_* tests")
+  message(STATUS "ecor_gdb_* tests need GCC and gdb on Linux, skipping them")
 endif()
