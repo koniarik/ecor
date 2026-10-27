@@ -161,7 +161,7 @@ pitfalls from the work; the size lessons are in the code-size skill:
 - **A receiver may destroy its operation state in any completion**, including the stopped one
   that a stop requested before `start()` fires from inside the stop callback's registration.
   Save in locals whatever the code still needs before completing, and check `stop_requested()`
-  before registering a callback. In tests, `op_slot` in `queue_utest.cpp` keeps a destroyed
+  before registering a callback. In tests, `op_slot` in `test/util.hpp` keeps a destroyed
   operation state's storage readable and overwritten, so a later read crashes and a later write
   fails a `CHECK` in the debug preset, without a sanitizer.
 - **Anything that leaves the queue by itself must service it** — a pending `close()` completes

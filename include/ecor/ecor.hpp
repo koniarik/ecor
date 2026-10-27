@@ -4200,6 +4200,12 @@ struct _wait_until_stopped
                         static_assert(
                             !std::same_as< decltype( st ), never_stop_token >,
                             "Receiver must be stoppable" );
+                        // A callback registered under a requested stop runs inside `emplace()`,
+                        // which writes to this object after the receiver may have destroyed it.
+                        if ( st.stop_requested() ) {
+                                _r.set_value();
+                                return;
+                        }
                         _cb.emplace( st, cb_t{ .op = this } );
                 }
 

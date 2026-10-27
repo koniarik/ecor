@@ -4575,6 +4575,45 @@ TEST_CASE( "task_holder - basic operations" )
 }
 
 // -------------------------------------------------------------------------------
+// ecor::wait_until_stopped tests
+
+TEST_CASE( "wait_until_stopped - a receiver completed in start() may destroy the operation state" )
+{
+        inplace_stop_source src;
+        src.request_stop();
+
+        std::vector< std::string > log;
+        op_slot                    slot;
+        auto&                      op = slot.emplace_from( [&] {
+                return wait_until_stopped.connect(
+                    self_destroying_recv{ &log, &slot, src.get_token() } );
+        } );
+        op.start();
+
+        CHECK( log == std::vector< std::string >{ "value" } );
+        CHECK( slot.untouched() );
+}
+
+TEST_CASE(
+    "wait_until_stopped - a receiver completed by a later stop may destroy the operation state" )
+{
+        inplace_stop_source        src;
+        std::vector< std::string > log;
+        op_slot                    slot;
+        auto&                      op = slot.emplace_from( [&] {
+                return wait_until_stopped.connect(
+                    self_destroying_recv{ &log, &slot, src.get_token() } );
+        } );
+        op.start();
+        CHECK( log.empty() );
+
+        src.request_stop();
+
+        CHECK( log == std::vector< std::string >{ "value" } );
+        CHECK( slot.untouched() );
+}
+
+// -------------------------------------------------------------------------------
 // ecor::suspend tests
 
 static task< void > suspend_ordering_task_a( task_ctx&, bool& b_ran, bool& a_done )
