@@ -113,8 +113,14 @@ corrupt a list. See `_queue_list` and its test.
 ### Type erasure is what you want, but erase the *right* layer
 
 Keep machinery in a layer templated on as little as possible, and let the typed facade be thin.
-`_queue_core<Mem, Closeable>` holds the lists, waiter handling and shutdown state and knows
-nothing of element types, so queues differing only in their elements share all of it.
+`_queue_core_base< Closeable >` holds the lists, waiter handling and shutdown state and knows
+nothing of element types or of the memory resource; `_queue_core< Mem, Closeable >` adds only
+allocation and release. Queues differing only in their elements share all of it, and queues over
+different memory resources share all but allocation, the call and close operation states
+included, since those are keyed on the base. Splitting the resource's half off saved 116 to 376
+bytes from the second memory-resource type on and 4 to 12 on most programs with one; GCC's
+inlining shifted around it elsewhere, +10 on one README row and +6 to +14 on some one-site call
+probes (`doc/plans/push-and-wait.md`, "Size round after the commits").
 
 Corollary: when a type-erased thunk needs to downcast, it must be able to *name* the layer it
 downcasts to. Keep a parameter-free intermediate for that (`_queue_consumer_node`), and add

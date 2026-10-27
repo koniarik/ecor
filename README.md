@@ -1337,13 +1337,13 @@ when push parks, one `pop()` when pop parks, and `close()` when closeable.
 
 | configuration | cortex-m0plus | cortex-m4 |
 |---|---|---|
-| both `try_only` (default) | 626 | 592 |
-| `is_closeable` only | 886 (+260) | 854 (+262) |
-| `pop_api = parking` | 864 (+238) | 826 (+234) |
-| `pop_api = cancellable` | 1040 (+414) | 994 (+402) |
-| both `parking` | 1196 (+570) | 1138 (+546) |
-| both `cancellable` | 1474 (+848) | 1436 (+844) |
-| both `cancellable`, plus `is_closeable` | 1812 (+1186) | 1774 (+1182) |
+| both `try_only` (default) | 612 | 578 |
+| `is_closeable` only | 886 (+274) | 854 (+276) |
+| `pop_api = parking` | 862 (+250) | 816 (+238) |
+| `pop_api = cancellable` | 1038 (+426) | 988 (+410) |
+| both `parking` | 1194 (+582) | 1132 (+554) |
+| both `cancellable` | 1472 (+860) | 1430 (+852) |
+| both `cancellable`, plus `is_closeable` | 1822 (+1210) | 1774 (+1196) |
 
 The absolute figures depend on the element types and on how many of the queue's operations a
 program instantiates; the deltas are the part that transfers. The push rows grow with the

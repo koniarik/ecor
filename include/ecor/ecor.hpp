@@ -5637,35 +5637,14 @@ struct _queue_close_base< Core, false >
         }
 };
 
-template < memory_resource Mem, bool Closeable >
-struct _queue_core : _queue_close_base< _queue_core< Mem, Closeable >, Closeable >
+template < bool Closeable >
+struct _queue_core_base : _queue_close_base< _queue_core_base< Closeable >, Closeable >
 {
         static constexpr bool _closeable = Closeable;
 
-        explicit _queue_core( Mem& mem ) noexcept
-          : _mem( mem )
-        {
-        }
-
-        _queue_core( _queue_core const& )            = delete;
-        _queue_core& operator=( _queue_core const& ) = delete;
-
-        /// Precondition: no producer, consumer or call is still pending.
-        ~_queue_core()
-        {
-                ECOR_ASSERT( _producers.empty() );
-                ECOR_ASSERT( _consumers.empty() );
-                while ( !_items.empty() ) {
-                        auto& n = _items.take_front();
-                        ECOR_ASSERT( n._desc->kind == _queue_node_kind::item );
-                        _release_node( n );
-                }
-        }
-
-        [[nodiscard]] void* _alloc_node( _queue_node_desc const& d ) noexcept
-        {
-                return ecor::allocate( _mem, d.size, d.align );
-        }
+        _queue_core_base() noexcept                            = default;
+        _queue_core_base( _queue_core_base const& )            = delete;
+        _queue_core_base& operator=( _queue_core_base const& ) = delete;
 
         /// Link a freshly constructed node and drive the queue.
         void _commit_node( _queue_node& n )
@@ -5673,59 +5652,6 @@ struct _queue_core : _queue_close_base< _queue_core< Mem, Closeable >, Closeable
                 _items.link_back( n );
                 ++_count;
                 _service();
-        }
-
-        /// Allocate a node for `d`'s element type, copy its payload from `src` and link it.
-        /// Returns false when the memory resource has no room.
-        ///
-        /// One body for every trivially copyable element type of every queue over this core,
-        /// which every `try_push()` of such a type calls instead of inlining allocation,
-        /// construction and linking at its call site.
-        bool _push_bytes( _queue_node_desc const& d, void const* src )
-        {
-                void* p = _alloc_node( d );
-                if ( !p )
-                        return false;
-                auto& n = *::new ( p ) _queue_node( d );
-                std::memcpy( static_cast< unsigned char* >( p ) + d.offset, src, d.payload );
-                _commit_node( n );
-                return true;
-        }
-
-        /// `_push_bytes()` for an element type whose vtable's `construct` moves the payload in.
-        bool _push_constructed( _queue_node_desc const& d, void* src )
-        {
-                void* p = _alloc_node( d );
-                if ( !p )
-                        return false;
-                _commit_node( d.vt->construct( p, d, src ) );
-                return true;
-        }
-
-        /// Push the element at `src` that `d` describes: moved in by its vtable's `construct`
-        /// when it has one, copied byte-wise otherwise; left untouched when the memory resource
-        /// has no room. `Plain` and `AllTyped` say that no element type of the queue, or every
-        /// one, has a vtable.
-        template < bool Plain, bool AllTyped >
-        ECOR_FORCE_INLINE bool _push( _queue_node_desc const& d, void* src )
-        {
-                if constexpr ( Plain )
-                        return _push_bytes( d, src );
-                else if constexpr ( AllTyped )
-                        return _push_constructed( d, src );
-                else if ( d.vt )
-                        return _push_constructed( d, src );
-                else
-                        return _push_bytes( d, src );
-        }
-
-        /// The queue is done with the allocated node `n`: destroy it and return its memory.
-        void _release_node( _queue_node& n ) noexcept
-        {
-                auto const& d = static_cast< _queue_node_desc const& >( *n._desc );
-                if ( d.vt )
-                        d.vt->destroy( n );
-                ecor::deallocate( _mem, &n, d.size, d.align );
         }
 
         /// Hand the oldest item to `c` if there is one. Returns false when the queue is empty.
@@ -5778,7 +5704,6 @@ struct _queue_core : _queue_close_base< _queue_core< Mem, Closeable >, Closeable
                 return _state == _queue_state::finished;
         }
 
-        Mem&                         _mem;
         _queue_list< _queue_node >   _items;
         _queue_list< _queue_waiter > _consumers;
         _queue_list< _queue_waiter > _producers;
@@ -5786,6 +5711,92 @@ struct _queue_core : _queue_close_base< _queue_core< Mem, Closeable >, Closeable
         _queue_state                 _state = _queue_state::open;
         /// Re-entrancy guard for `_service()`; orthogonal to `_state`.
         bool _busy = false;
+};
+
+template < memory_resource Mem, bool Closeable >
+struct _queue_core : _queue_core_base< Closeable >
+{
+        using _base_t = _queue_core_base< Closeable >;
+
+        explicit _queue_core( Mem& mem ) noexcept
+          : _mem( mem )
+        {
+        }
+
+        _queue_core( _queue_core const& )            = delete;
+        _queue_core& operator=( _queue_core const& ) = delete;
+
+        /// Precondition: no producer, consumer or call is still pending.
+        ~_queue_core()
+        {
+                ECOR_ASSERT( this->_producers.empty() );
+                ECOR_ASSERT( this->_consumers.empty() );
+                while ( !this->_items.empty() ) {
+                        auto& n = this->_items.take_front();
+                        ECOR_ASSERT( n._desc->kind == _queue_node_kind::item );
+                        _release_node( n );
+                }
+        }
+
+        [[nodiscard]] void* _alloc_node( _queue_node_desc const& d ) noexcept
+        {
+                return ecor::allocate( _mem, d.size, d.align );
+        }
+
+        /// Allocate a node for `d`'s element type, copy its payload from `src` and link it.
+        /// Returns false when the memory resource has no room.
+        ///
+        /// One body for every trivially copyable element type of every queue over this core,
+        /// which every `try_push()` of such a type calls instead of inlining allocation,
+        /// construction and linking at its call site.
+        bool _push_bytes( _queue_node_desc const& d, void const* src )
+        {
+                void* p = _alloc_node( d );
+                if ( !p )
+                        return false;
+                auto& n = *::new ( p ) _queue_node( d );
+                std::memcpy( static_cast< unsigned char* >( p ) + d.offset, src, d.payload );
+                this->_commit_node( n );
+                return true;
+        }
+
+        /// `_push_bytes()` for an element type whose vtable's `construct` moves the payload in.
+        bool _push_constructed( _queue_node_desc const& d, void* src )
+        {
+                void* p = _alloc_node( d );
+                if ( !p )
+                        return false;
+                this->_commit_node( d.vt->construct( p, d, src ) );
+                return true;
+        }
+
+        /// Push the element at `src` that `d` describes: moved in by its vtable's `construct`
+        /// when it has one, copied byte-wise otherwise; left untouched when the memory resource
+        /// has no room. `Plain` and `AllTyped` say that no element type of the queue, or every
+        /// one, has a vtable.
+        template < bool Plain, bool AllTyped >
+        ECOR_FORCE_INLINE bool _push( _queue_node_desc const& d, void* src )
+        {
+                if constexpr ( Plain )
+                        return _push_bytes( d, src );
+                else if constexpr ( AllTyped )
+                        return _push_constructed( d, src );
+                else if ( d.vt )
+                        return _push_constructed( d, src );
+                else
+                        return _push_bytes( d, src );
+        }
+
+        /// The queue is done with the allocated node `n`: destroy it and return its memory.
+        void _release_node( _queue_node& n ) noexcept
+        {
+                auto const& d = static_cast< _queue_node_desc const& >( *n._desc );
+                if ( d.vt )
+                        d.vt->destroy( n );
+                ecor::deallocate( _mem, &n, d.size, d.align );
+        }
+
+        Mem& _mem;
 };
 
 /// True when `R`'s environment carries a stop token that can actually be triggered.
@@ -6231,7 +6242,7 @@ private:
 
 template < typename Q, typename R >
 using _queue_call_op_of = _queue_call_op<
-    typename Q::_core_t,
+    typename Q::_core_t::_base_t,
     typename Q::_call_sigs_t,
     _queue_call_stoppable< Q, R >,
     R >;
@@ -6642,7 +6653,7 @@ struct async_queue
         /// Stop accepting new values and return a sender that completes once the queue is
         /// drained. Parked producers are stopped immediately; items already queued are still
         /// delivered; parked consumers are stopped once nothing is left.
-        _queue_close_sender< _core_t > close()
+        _queue_close_sender< typename _core_t::_base_t > close()
                 requires( CFG::is_closeable )
         {
                 _core._close();
