@@ -86,6 +86,10 @@ So always measure at least: one element type, four, eight, and *several queues/s
 memory resource*. A change can be neutral on one queue and worth 90 bytes across three — that
 happened with `_emplace` hoisting, which looked marginal until the multi-queue probe ran.
 
+Measure a change to shared template code against the previous header on programs that do not use
+what changed, too: the README configurations and the thread and coroutine firmware. A feature's
+own probes cannot show what it costs everyone else.
+
 Measure on both `cortex-m0plus` and `cortex-m4`. Conclusions have always agreed; magnitudes
 differ by 10–20%, and M4's better addressing modes sometimes flip a small result's sign.
 
@@ -159,6 +163,10 @@ to 112 bytes on a four-type queue, since trivially copyable types then need no v
 Keep the fold short-circuiting: a comma fold over `void` conditionals measured +18 on
 cortex-m0plus.
 
+Keep work that does not depend on the type out of the per-type body: starting the pump's handler
+inside its `_visit_at` fold made GCC outline the lambda for one type as an `.isra` clone, +20 per
+pump, so the pump calls `start()` once after the fold.
+
 ### Narrowing scalar vtable fields is free
 
 `uint16_t`/`uint8_t` instead of `size_t` for size and alignment: identical text, 8 bytes less
@@ -203,6 +211,91 @@ So when tidying hot template code, measure the tidy-up, and isolate *which* part
 here three changes were bundled and only one was responsible. Record a refactor that was
 deliberately not taken, with its numbers, in this skill and the `doc/plans/` note, never as a
 code comment: comments are for what a reader of the current code needs.
+
+### Key a base on what its code reads, not on a type that carries it
+
+`event_pump`'s `push_and_wait` support was first templated on the queue type, so eight pumps
+over eight queues carried eight copies of the same forwarding code. Keying it on the queue's
+signature set, the only thing the code reads, made the eight copies one: 0 at one or two pumps,
+−40 at four and −224 / −220 (no LTO / LTO) at eight on a linked cortex-m4 firmware. Forcing the
+forwarding function out of line on top of that cost +28 to +32 on single-pump programs and
+gained nothing at eight: once the template arguments match there is one instantiation, so fix
+the arguments and leave inlining to GCC. The larger saving was sharing the forwarding *together
+with the reschedule that follows it*: the rows of every pump's handler receiver tail-call one
+`_finish()` per signature set, which ends in the one out-of-line
+`_reschedulable::_reschedule()`, −524 / −428 at eight pumps. A shared completion alone left each
+row with its own reschedule and frame (`doc/plans/push-and-wait.md`).
+
+### One out-of-line reschedule for every schedulable
+
+The promise, the task holder, the arena core and the pump each held a `task_core&` and called
+`core.reschedule( *this )`, an out-of-line `ll_list< schedulable >::link_back`, with its argument
+setup at every site that puts the object back on the ready list. One non-template base holding
+the core reference and a `[[gnu::noinline]] _reschedule()`, `_reschedulable : schedulable`,
+moves that setup into one function, 4 bytes less per caller: −36 / −44 on the coroutine firmware
+(four holders, three arenas, five pumps), −6 to −26 on every call probe, ±0 on the README rows
+and the thread firmware, which have no schedulable. RAM is unchanged except for the pump, which
+keeps its context for the handlers beside the core, +1 pointer (`doc/plans/push-and-wait.md`,
+"One reschedule for every schedulable").
+
+### An operation state's constructor runs at every call site
+
+`co_await sender` constructs the operation state inside the coroutine frame, inlined at the
+site, so every member the constructor initialises is a store per site. A per-type constant such
+as a vtable pointer belongs in `start()`, one function per operation state type: −8 bytes per
+`push_and_wait` site. The same effect sank two other ideas, smaller on a one-site probe and
+larger from a few sites on: a stop callback as a direct member instead of in an optional (−16 at
+one site, +36 at eight, +76 at sixteen), and the receiver's address and vtable stored by the
+constructor instead of by `start()` (−48, +60, +116) (`doc/plans/push-and-wait.md`).
+
+### Erase an operation state over its receiver, not only over its element type
+
+`_queue_call_op` keyed on the receiver type was compiled once per producer task type, ~376 bytes
+each, which a probe with a single `task< void >` producer never showed. Storing the receiver's
+address in the node and building the vtable rows on the receiver itself (`_sig_vtable< S... >(
+_tag< R >, _tag< R > )`) leaves one copy per core, signature set and stoppability, and the
+rows are the same functions a task's continuation vtable instantiates for that receiver, so they
+fold in firmware that awaits child tasks. Cost: one pointer of RAM per in-flight call. Probe with
+two producer task types before measuring an operation state's sharing.
+
+### One virtual is cheaper as a function pointer in the object
+
+A class with a single virtual function pays a vptr pointing at a three-word vtable per derived
+type, of which one word is the function; a function pointer stored in the object is that one
+word and no vtable. `_inplace_stop_callback_base`, whose destructor is already non-virtual, had
+exactly one: `_execute()` gave every `inplace_stop_callback<F>` a vptr, a vtable and a base
+vtable, and `std::optional::reset()` on it re-stored the base vptr in the destructor. A function
+pointer set by the derived constructor, with the `_source` member that only the constructor read
+dropped: −32 to −36 on the scale probes without LTO, −46 to −76 on the README's cancellable
+configurations, −4 bytes of RAM per callback. Classes with more virtuals are unmeasured.
+
+The constructor's register-or-run-now logic, ~46 bytes inlined per callback type, as one
+out-of-line non-template `_register()` breaks even with one kind of stoppable operation and
+saves ~40 per further kind; a probe with a single callback type shows it as noise, so measure
+such sharing on a configuration with two.
+
+### Measure a feature's scaling in three forms
+
+For `push_and_wait` the growth per element type and per queue was measured with the feature,
+with the hand-rolled form it replaces, and with fire-and-forget that waits for nothing. Only the
+third form separates the feature's own cost from the cost of the handlers, call sites and pump
+dispatch that every form pays: per awaited element type the feature adds an 8-byte call
+descriptor, and its call site is smaller than `try_push()` plus a suspension, while a type costs
+~600 bytes in total, most of it the two coroutines and the glue that starts them. Against the
+hand-rolled form alone the feature looks like a saving, and in absolute terms like ~600 bytes
+per type. `doc/plans/push-and-wait/scale/` (local, ignored by git) is a linked-firmware harness
+for this kind of sweep: generated probes, three forms, LTO on and off, bucketed symbol
+attribution of the last increment. A per-site slope needs each site's awaits in a coroutine of
+its own: routing them through one shared helper coroutine makes the slope the helper's cost.
+
+### Review a feature's size from both ends
+
+For a feature's size pass, run two independent reviews: one bottom-up from the disassembly and
+symbols of the linked probes (`doc/plans/push-and-wait/symdiff.py`), one top-down from what each
+template is keyed on. For `push_and_wait` their findings were disjoint, and together they cut
+the feature's cost over fire and forget from 507 to 379 bytes at one element type and from
+128 / 120 to 20 / 40 per further queue, no LTO / LTO (`doc/plans/push-and-wait.md`, "Second
+round").
 
 ### Use `size -A`, not a line regex over `objdump -h`
 
@@ -488,4 +581,108 @@ downcast. That is a deliberate trade for a straightforward design: a vtable exte
 descriptor, with a `bool` in the descriptor's padding saying it is one, keeps the descriptor at
 8 bytes instead of 12 and measured 4 bytes smaller per element type in every queue, +160 for the
 pointer on a 40-type firmware and +16 on a four-type queue (`doc/plans/desc-ptr.md`). A nullable
-`destroy` would add a second test in `_release()`, 2 to 4 bytes.
+`destroy` would add a second test in `_release_node()`, 2 to 4 bytes.
+
+### A descriptor that reuses a vtable pays for every thunk in it
+
+A call node's descriptor points at its element type's node vtable, so a type that a program only
+ever hands to `push_and_wait()` still instantiates `construct` and `destroy` thunks that no path
+can reach: about 45 bytes per such type on cortex-m4, still paid. A vtable for call descriptors
+holding only the payload-taking `take`, the same thunk the node vtable uses, would remove them
+for 12 bytes of rodata per type that is also pushed; measured, not applied. The alternatives
+measured in `doc/plans/push-and-wait.md` (`patch.py` variants `callvt`, `calltk`, `allvt`; scale
+probes of kind `ntc` and form `callboth`): a node-taking `take` with a second thunk per type
+reading the call node's `_src` costs 40 bytes per non-trivially-copyable type that is both
+pushed and called and nothing for trivially copyable ones; giving every call descriptor a vtable
+costs 31 bytes per trivially copyable type in a call queue plus 6 to 13 per such queue, since the
+queue loses its compile-time byte path, and still leaves `_payload()` in place for the parked
+consumer's delivery. Probe element types only through the operation under test and the baseline
+silently loses the thunks the other paths would need: a type the firmware both pushes and calls
+is the honest point.
+
+### Key per-type thunks on the element type alone, not on the queue's type list
+
+`_queue_node_ops< T, Ts... >` carried `Ts...` only because `take` emplaced into
+`inplace_variant< Ts... >`, yet all three thunks and the vtable were instantiated once per (type,
+type list), so an element type used by several queues with different type lists paid for every
+copy. Letting the thunk construct into the variant's storage and the queue set the index from the
+descriptor (`take( src, dst._data() )`, then `dst._mark( d.index )`) makes the ops struct and its
+vtable depend on `T` alone: measured −104 bytes per further queue sharing two element types, −4
+to −5 per type otherwise, ±8 everywhere else, in programs with or without `push_and_wait()`.
+Moving only `destroy` and `construct` to a `T`-only base recovers half of that. Probe with a type
+that appears in several queues with different type lists (`scale/` axis `shared`); the
+disjoint-queues axis cannot show this at all.
+A node-taking `take` that casts and calls a shared per-type body is byte-identical to two full
+thunks, because GCC inlines the body into both wrappers; forcing it out of line saved 16 per type
+that is both pushed and called and cost 6 per type in every program with vtable types
+(`doc/plans/push-and-wait.md`, batch two).
+
+### Keep a variant's storage at offset 0, and its empty marker a small constant
+
+A type-less base for `inplace_variant` that could address the storage itself needs the storage at
+a fixed non-zero offset, `alignof( std::max_align_t )`, and every site that materialises an
+alternative's address then pays 2 bytes: `add r0, r4, #8` has no 2-byte Thumb encoding (the
+immediate stops at 7) where `mov r0, r4` had one. Measured +130 / +296 (no LTO / LTO) on the
+40-type thread firmware and +4 bytes of RAM per 4-byte-aligned variant. An index-only base ahead
+of the storage measured the same, for three reasons worth knowing separately: an 8-byte-aligned
+alternative pushes the storage to offset 8 again; `std::size_t( -1 )` as the empty marker needs
+`mov.w` and `cmn.w` where a constant below 256 fits 2 bytes; and moving the first store to
+offset 0 made GCC place a shared epilogue *before* a 40-way `visit` dispatch, which `tbb`,
+forward-only, could not reach, turning a 40-byte byte table into a 160-byte word table. The
+layout that costs nothing keeps the storage first and the index after it, which with bases means
+the storage must itself be the first base: `inplace_variant : _inplace_storage< Size, Align >,
+_inplace_variant_base`, bases laid out in declaration order, `npos` the byte maximum. Against
+the previous header: ±0 on the README rows and the thread firmware, −18 / −12 on the coroutine
+firmware, with `_take()` forced inline. Without that, the two statements that replaced one
+helper call made GCC stop inlining `_take()` into the pump's `_receive()`: a 24-byte copy per
+queue, +54 on the coroutine firmware (`doc/plans/push-and-wait.md`, "The variant's type-less
+base").
+
+### A hand-rolled optional: clear the flag inline, destroy out of line, skip both for trivial types
+
+`_bare_optional< T >`, whose `emplace()` requires emptiness, replaced a union-and-flag, an
+enum-and-union, two `std::optional`s and a single-alternative `inplace_variant`. Its `reset()`
+shape decides the bytes. Fully inline, it cost the coroutine firmware +48 / +46: a task holder
+resets at two sites, and `std::optional`'s shared out-of-line `_M_reset` had held the operation
+state's destructor, while two inline resets made GCC emit that destructor out of line plus two
+calls. `[[gnu::noinline]]` on the whole `reset()` was worse again, +56 / +58 against the inline
+form, because every optional over an `int` or `uint8_t` got a 10-byte function it does not need.
+The shape applied: `if constexpr ( std::is_trivially_destructible_v< T > )` clears the flag and
+nothing else, and any other `T` calls one `[[gnu::noinline]] _destroy()` per type: coroutine
+firmware −58 / −54 against the inline form and −10 / −8 against the header before
+`_bare_optional`, README cancellable rows −14 to −28, call probes +4
+(`doc/plans/push-and-wait.md`, "`_bare_optional`"). Measure the trivially destructible
+instantiations of any utility template separately; they are the ones a blanket attribute hurts.
+
+### Let the typed layer release what the erased layer delivers
+
+`_queue_core` released every node after delivering it, which made it tell calls from items and,
+for a call, complete a receiver it knew nothing about: a type-erased entry in every call vtable, a
+`Call` template parameter splitting core sharing, and a pump that nulled the node's vtable pointer
+to make the release inert. Moving `_release()` into `async_queue`, which knows the signature set,
+and letting each waiter release what it took removed all three: README rows −6 to −8 on m0+ and
+−8 or +2 on m4, call probes −20 to −42, thread firmware −24 / −12, at a release call per pump
+kind, about 8 bytes, +34 / +24 on a five-pump firmware. Keeping the release in the core behind a
+kind test instead saved the per-pump bytes but cost the shared core +10 to +22 on every README
+row (`doc/plans/push-and-wait.md`, "The release belongs to the queue"). When an erased layer must
+know something only the typed layer knows, move the operation up rather than the knowledge down.
+
+### Measure the shape of a lifetime fix too
+
+Three fixes in `push_and_wait()`'s operation states were each cheapest in a different shape
+(`doc/plans/push-and-wait.md`, "Defects from the six-reviewer round, fixed"):
+
+- A stop check before registering a stop callback, so that a receiver stopped inside `start()`
+  can destroy the operation state, costs 8 to 24 bytes per stoppable operation type: the inlined
+  `stop_requested()` and a second stopped completion. Letting the arm call `_cancel()` itself, to
+  reuse its completion, cost 8 to 22 bytes more, since GCC inlined `_cancel()` and the unlink in
+  it.
+- zll's link destructor unlinks a node that is still linked, so an explicit `zll::detach` in a
+  derived destructor is pure cost, 8 to 14 bytes. Detach explicitly only where code that runs
+  before the base destructor must see the list without the node, such as `_service()` on a
+  closeable queue.
+- In that destructor a nested `if ( !detached ) { … }` measured 2 to 6 bytes smaller than an early
+  return, and without the closeable branch it is byte-identical to the original.
+
+Probe the configuration a fix is for: no call probe had a closeable queue, so the `close()` fix
+measured ±0 everywhere until one was added (+4 / +10).

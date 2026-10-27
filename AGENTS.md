@@ -11,6 +11,10 @@ After editing test files, always build first. Run tests only after a successful 
 Never attempt to run tests against a stale binary. A passing test against an old binary proves
 nothing.
 
+Use absolute paths in every shell command. Run a tool that must start in a directory, such as
+`cmake --workflow`, in a subshell, `( cd /abs/dir && cmake --workflow --preset m4 )`: a bare
+`cd` carries over into the commands that follow.
+
 ## Implementing a new feature
 
 Follow this workflow when adding any new feature to the library. Each step requires user
@@ -126,6 +130,43 @@ patterns and pitfalls discovered:
   typed arena for `_ctx`/`_mem` access.
 - **Two-phase cleanup is critical** — `finish_cleanup()` runs on a fresh `run_once()` tick after the
   destroy sender completes, ensuring the op_state is fully inactive before deallocation.
+
+### Feature Implementation Reference: `push_and_wait`
+
+`push_and_wait()` queues an element and completes once a consumer has processed it. Patterns and
+pitfalls from the work; the size lessons are in the code-size skill:
+
+- **A `completion_signatures` set as the whole configuration of a mechanism** —
+  `push_and_wait_signatures` decides the reply type, whether errors can be reported, whether a
+  queued call is cancellable, and whether the operation exists at all (empty set). Validate the
+  set with `static_assert`s carrying one message per rule, and expose the per-rule traits so
+  tests can check them; the asserts themselves cannot be negative-tested.
+- **Let the consumer's completion flow through the existing row vtable** — `_sig_vtable< S... >`
+  erases a receiver over any signature set; the call node points at it through an empty common
+  base, and everything that completes a call knows the set and casts to the full type. Taking the
+  element completes the call through the nullary value row, which is why `pop()` and `try_pop()`
+  exist only for sets that have one.
+- **Strict mapping is a compile-time check in the consumer** — the pump static_asserts that
+  every completion of its handler's sender has a row, through the `_vtable_can_call_*` concepts.
+  A `task< void >` handler therefore needs error and stopped rows next to the value row; say so
+  in the docs, users will reach for the nullary set first.
+- **Keep knowledge of calls out of the type-erased core** — `_queue_core< Mem, Closeable >` is
+  shared by queues of any element types and signature set, so its `_release_node()` only destroys
+  and deallocates an item node. A waiter's `_receive()` owns the node it took and passes it to the
+  queue's `_release()`, which knows the set and completes a call through the nullary value row;
+  only a pump holding a call keeps the node instead.
+- **`||` with a class operand inside `ecor.hpp` resolves to the sender `operator||`**, which is
+  unconstrained: `cond || _slot` tried to copy an `inplace_variant` into an `_or_sender`. Write
+  `static_cast< bool >( x )` for a class operand.
+- **A receiver may destroy its operation state in any completion**, including the stopped one
+  that a stop requested before `start()` fires from inside the stop callback's registration.
+  Save in locals whatever the code still needs before completing, and check `stop_requested()`
+  before registering a callback. In tests, `op_slot` in `queue_utest.cpp` keeps a destroyed
+  operation state's storage readable and overwritten, so a later read crashes and a later write
+  fails a `CHECK` in the debug preset, without a sanitizer.
+- **Anything that leaves the queue by itself must service it** — a pending `close()` completes
+  only from `_service()`, so a node that unlinks itself, such as a cancelled or destroyed call,
+  services the core afterwards.
 
 ## Source comments
 

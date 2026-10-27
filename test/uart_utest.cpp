@@ -587,10 +587,12 @@ TEST_CASE( "Test_Transaction_Cancellation_Pending" )
         int                 value   = 0;
         uint8_t             buffer[42];
 
-        auto op =
-            t.u.transact( buffer, 10 )
-                .connect( capturing_receiver{
-                    .value_count = &value, .stopped_count = &stopped, .stop_source = &stop_src } );
+        auto op = t.u.transact( buffer, 10 )
+                      .connect(
+                          capturing_receiver{
+                              .value_count   = &value,
+                              .stopped_count = &stopped,
+                              .stop_source   = &stop_src } );
 
         op.start();
         stop_src.request_stop();
@@ -617,10 +619,12 @@ TEST_CASE( "Test_Transaction_InFlight_Cancellation_Ignored" )
         std::string req = "slow:1000000";
         std::memcpy( buffer, req.data(), req.size() );
 
-        auto op =
-            t.u.transact( buffer, req.size() )
-                .connect( capturing_receiver{
-                    .value_count = &value, .stopped_count = &stopped, .stop_source = &stop_src } );
+        auto op = t.u.transact( buffer, req.size() )
+                      .connect(
+                          capturing_receiver{
+                              .value_count   = &value,
+                              .stopped_count = &stopped,
+                              .stop_source   = &stop_src } );
 
         op.start();
 
@@ -847,8 +851,9 @@ TEST_CASE( "Test_Transaction_Errors_Comprehensive" )
                 // For now, let's verify that it DOES error.
 
                 auto op = t.u.transact( buffer, c.arg.size() )
-                              .connect( capturing_receiver{
-                                  .value_count = &value_count, .error_count = &error_count } );
+                              .connect(
+                                  capturing_receiver{
+                                      .value_count = &value_count, .error_count = &error_count } );
                 op.start();
 
                 t.run_until( [&] {
@@ -950,7 +955,7 @@ TEST_CASE( "Test_Transaction_Empty_Source" )
         uint8_t buffer[16]{};
         int     value_count = 0;
         auto    op          = source.schedule( uart_trans{ .buffer = buffer, .tx_used = 4 } )
-                      .connect( capturing_receiver{ .value_count = &value_count } );
+                                  .connect( capturing_receiver{ .value_count = &value_count } );
         op.start();
 
         auto* entry = source.query_next();
@@ -1023,10 +1028,11 @@ TEST_CASE( "Test_Transaction_FlowControl" * doctest::skip() )
 
         for ( int i = 0; i < 5; ++i ) {
                 ops.push_back( t.u.transact( buffers[i], req.size() )
-                                   .connect( capturing_receiver{
-                                       .value_count   = &state[i].value,
-                                       .stopped_count = &state[i].stopped,
-                                       .stop_source   = &stop_src } ) );
+                                   .connect(
+                                       capturing_receiver{
+                                           .value_count   = &state[i].value,
+                                           .stopped_count = &state[i].stopped,
+                                           .stop_source   = &stop_src } ) );
                 ops.back().start();
         }
 
@@ -1081,8 +1087,9 @@ TEST_CASE( "Test_UART_Error_Overrun" )
         int        error_count  = 0;
 
         auto op = t.u.transact( buffer, req.size() )
-                      .connect( capturing_receiver{
-                          .error_count = &error_count, .error_value = &result_error } );
+                      .connect(
+                          capturing_receiver{
+                              .error_count = &error_count, .error_value = &result_error } );
         op.start();
 
         t.run_until(
@@ -1105,8 +1112,9 @@ TEST_CASE( "Test_UART_Error_Framing" )
         int        error_count  = 0;
 
         auto op = t.u.transact( buffer, req.size() )
-                      .connect( capturing_receiver{
-                          .error_count = &error_count, .error_value = &result_error } );
+                      .connect(
+                          capturing_receiver{
+                              .error_count = &error_count, .error_value = &result_error } );
         op.start();
 
         t.run_until(
@@ -1129,8 +1137,9 @@ TEST_CASE( "Test_UART_Error_Parity" )
         int        error_count  = 0;
 
         auto op = t.u.transact( buffer, req.size() )
-                      .connect( capturing_receiver{
-                          .error_count = &error_count, .error_value = &result_error } );
+                      .connect(
+                          capturing_receiver{
+                              .error_count = &error_count, .error_value = &result_error } );
         op.start();
 
         t.run_until(
@@ -1153,8 +1162,9 @@ TEST_CASE( "Test_UART_Error_Timeout" )
         int        error_count  = 0;
 
         auto op = t.u.transact( buffer, req.size() )
-                      .connect( capturing_receiver{
-                          .error_count = &error_count, .error_value = &result_error } );
+                      .connect(
+                          capturing_receiver{
+                              .error_count = &error_count, .error_value = &result_error } );
         op.start();
 
         t.run_until(
@@ -1177,8 +1187,9 @@ TEST_CASE( "Test_UART_Error_NACK" )
         int        error_count  = 0;
 
         auto op = t.u.transact( buffer, req.size() )
-                      .connect( capturing_receiver{
-                          .error_count = &error_count, .error_value = &result_error } );
+                      .connect(
+                          capturing_receiver{
+                              .error_count = &error_count, .error_value = &result_error } );
         op.start();
 
         t.run_until(
@@ -1259,20 +1270,23 @@ TEST_CASE( "Test_Transaction_Stop_All_Pending" )
         std::memcpy( bc, req.data(), req.size() );
 
         auto oa = t.u.transact( ba, req.size() )
-                      .connect( capturing_receiver{
-                          .value_count   = &value_a,
-                          .stopped_count = &stopped_a,
-                          .stop_source   = &stop_a } );
+                      .connect(
+                          capturing_receiver{
+                              .value_count   = &value_a,
+                              .stopped_count = &stopped_a,
+                              .stop_source   = &stop_a } );
         auto ob = t.u.transact( bb, req.size() )
-                      .connect( capturing_receiver{
-                          .value_count   = &value_b,
-                          .stopped_count = &stopped_b,
-                          .stop_source   = &stop_b } );
+                      .connect(
+                          capturing_receiver{
+                              .value_count   = &value_b,
+                              .stopped_count = &stopped_b,
+                              .stop_source   = &stop_b } );
         auto oc = t.u.transact( bc, req.size() )
-                      .connect( capturing_receiver{
-                          .value_count   = &value_c,
-                          .stopped_count = &stopped_c,
-                          .stop_source   = &stop_c } );
+                      .connect(
+                          capturing_receiver{
+                              .value_count   = &value_c,
+                              .stopped_count = &stopped_c,
+                              .stop_source   = &stop_c } );
 
         oa.start();
         ob.start();
@@ -1316,10 +1330,11 @@ TEST_CASE( "Test_Transaction_Stop_Mixed_Pending" )
         auto oa =
             t.u.transact( ba, req.size() ).connect( capturing_receiver{ .value_count = &value_a } );
         auto ob = t.u.transact( bb, req.size() )
-                      .connect( capturing_receiver{
-                          .value_count   = &value_b,
-                          .stopped_count = &stopped_b,
-                          .stop_source   = &stop_b } );
+                      .connect(
+                          capturing_receiver{
+                              .value_count   = &value_b,
+                              .stopped_count = &stopped_b,
+                              .stop_source   = &stop_b } );
         auto oc =
             t.u.transact( bc, req.size() ).connect( capturing_receiver{ .value_count = &value_c } );
 
@@ -1365,13 +1380,14 @@ TEST_CASE( "Test_Transaction_Stop_Requeue" )
             t.u.transact( bb, req.size() ).connect( capturing_receiver{ .value_count = &value_b } );
 
         auto oa = t.u.transact( ba, req.size() )
-                      .connect( _requeue_on_stop_receiver{
-                          .stop_count     = &stopped_a,
-                          .stop_source    = &stop_a,
-                          .followup_op    = &followup,
-                          .start_followup = []( void* p ) {
-                                  static_cast< decltype( followup )* >( p )->start();
-                          } } );
+                      .connect(
+                          _requeue_on_stop_receiver{
+                              .stop_count     = &stopped_a,
+                              .stop_source    = &stop_a,
+                              .followup_op    = &followup,
+                              .start_followup = []( void* p ) {
+                                      static_cast< decltype( followup )* >( p )->start();
+                              } } );
 
         oa.start();
         stop_a.request_stop();

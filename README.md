@@ -1287,6 +1287,7 @@ The first template parameter is a compile-time configuration satisfying `ecor::q
 | `push_api` | how much of `push()` exists | `async_queue_api::try_only` |
 | `is_closeable` | the queue supports `close()` and `closed()` | `false` |
 | `trivially_copyable_only` | element types must be trivially copyable, checked at compile time | `true` |
+| `push_and_wait_signatures` | completion signatures of `push_and_wait()`; empty removes it | `ecor::completion_signatures<>` |
 
 Each direction is set independently. The levels are cumulative — `cancellable` provides
 everything `parking` does:
@@ -1315,7 +1316,7 @@ struct sensor_cfg : ecor::queue_default_cfg<sensor_mem> {
 using sensor_queue = ecor::async_queue<sensor_cfg, int>;
 ```
 
-At `stoppable` a parked waiter reacts to the stop token in its receiver's environment; below
+At `cancellable` a parked waiter reacts to the stop token in its receiver's environment; below
 that no `inplace_stop_callback` is instantiated even for receivers that carry one.
 `is_closeable` governs the shutdown protocol, and is independent of both: with it off `close()`
 and `closed()` do not exist, and a parked waiter can only be resolved by delivery or by its own
@@ -1336,13 +1337,13 @@ when push parks, one `pop()` when pop parks, and `close()` when closeable.
 
 | configuration | cortex-m0plus | cortex-m4 |
 |---|---|---|
-| both `try_only` (default) | 636 | 606 |
-| `is_closeable` only | 926 (+290) | 904 (+298) |
-| `pop_api = parking` | 912 (+276) | 866 (+260) |
-| `pop_api = cancellable` | 1142 (+506) | 1094 (+488) |
-| both `parking` | 1278 (+642) | 1224 (+618) |
-| both `cancellable` | 1740 (+1104) | 1672 (+1066) |
-| both `cancellable`, plus `is_closeable` | 2070 (+1434) | 2022 (+1416) |
+| both `try_only` (default) | 628 | 598 |
+| `is_closeable` only | 918 (+290) | 896 (+298) |
+| `pop_api = parking` | 902 (+274) | 864 (+266) |
+| `pop_api = cancellable` | 1082 (+454) | 1040 (+442) |
+| both `parking` | 1268 (+640) | 1222 (+624) |
+| both `cancellable` | 1586 (+958) | 1556 (+958) |
+| both `cancellable`, plus `is_closeable` | 1940 (+1312) | 1916 (+1318) |
 
 The absolute figures depend on the element types and on how many of the queue's operations a
 program instantiates; the deltas are the part that transfers. The push rows grow with the
@@ -1421,11 +1422,108 @@ ecor::task<void> produce(ecor::task_ctx& ctx, ecor::async_queue<pcfg, int>& q)
 > **Deadlock hazard:** a consumer must not `co_await push()` on the queue it is draining. It is
 > the only thing that can free room, so it would wait on itself. Use `try_push()` there.
 
+### Waiting for Processing — `push_and_wait`
+
+`push_and_wait()` queues an element and completes once a consumer has *processed* it, not
+merely accepted it. The consumer receives the caller's object, and whatever a pump's handler
+writes into it is visible after the `co_await`. A call keeps its place in the FIFO among pushed
+items.
+
+The operation is opt-in through `push_and_wait_signatures`, a `completion_signatures` set that
+defines the whole mechanism. Exactly one `set_value_t` row, with at most one argument, is the
+reply. `set_error_t` rows let a failing handler report. `set_stopped_t()` lets a queued call be
+cancelled through its receiver's stop token and lets `close()` reject calls started after it, so
+a closeable queue requires that row. The default, an empty set, means the operation does not
+exist and the queue carries nothing of it.
+
+```cpp
+struct bus_mem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+struct read_reg { uint8_t addr; uint16_t value; };
+
+struct bus_cfg : ecor::queue_default_cfg<bus_mem> {
+    using push_and_wait_signatures = ecor::completion_signatures<
+        ecor::set_value_t(uint16_t),             // the reply
+        ecor::set_error_t(ecor::task_error),     // a task handler can fail
+        ecor::set_stopped_t()>;                  // and can be stopped
+};
+using bus_queue = ecor::async_queue<bus_cfg, read_reg>;
+
+struct bus_driver { };
+
+// Runs in the pump below; its completion becomes the caller's.
+ecor::task<uint16_t> handle(ecor::task_ctx& ctx, bus_driver& d, read_reg& r)
+{
+    r.value = 0x1234;        // written into the caller's object
+    co_return r.value;
+}
+
+// The pump's sender type carries the reply, so every handler on this queue returns one.
+using bus_pump = ecor::event_pump<
+    ecor::pump_default_cfg<ecor::task_ctx, ecor::task<uint16_t>>, bus_queue, bus_driver>;
+
+ecor::task<void> read_status(ecor::task_ctx& ctx, bus_queue& q)
+{
+    read_reg r{ .addr = 0x10 };
+    uint16_t v = co_await q.push_and_wait(r);   // resumes once the handler has finished
+    process_message(v);
+    process_message(r.value);
+}
+
+void run_bus(ecor::task_ctx& ctx, bus_queue& q, bus_driver& d)
+{
+    bus_pump p{ctx, q, d};
+    p.start();
+    while (ctx.core.run_once()) { }
+}
+```
+
+The consumer that takes a call completes it:
+
+- An `event_pump` completes it when its handler's sender completes, with that completion. Every
+  completion of the handler's sender must have a signature in the set, so a handler returning
+  `ecor::task<void>` needs `set_error_t(ecor::task_error)` and `set_stopped_t()` next to
+  `set_value_t()`. A completion without one is a compile error.
+- A `pop()` receiver completes it when its `set_value` returns; the borrowed reference points at
+  the caller's object. A task awaiting `q.pop() | ecor::as_variant` gets a copy, so the call
+  completes before that task looks at it.
+- `try_pop()` completes it as soon as it takes the element, moving from the caller's object when
+  the type is not trivially copyable.
+
+`pop()` and `try_pop()` can only complete a call with `set_value()`, so a queue whose set replies
+with a value has neither: its calls are answered by pump handlers.
+
+> **Lifetime:** `push_and_wait()` takes a reference to an object of one of the queue's element
+> types; a temporary is rejected at compile time. The object must outlive the operation, which a
+> coroutine's local does by itself. Code that connects and starts the sender by hand keeps the
+> element alive until completion, and must not destroy the operation state while a consumer
+> holds the call.
+
+> **Deadlock hazard:** a handler must not `co_await push_and_wait()` on the queue it drains: its
+> pump cannot take the call until that handler has finished.
+
+A stop requested while the call is still queued removes it from the queue and completes it
+stopped. Once a consumer has taken the call it completes with that consumer's outcome; the
+awaiting task still sees the stop request at its next suspension point.
+
+A call never allocates from the memory resource and never fails for lack of room: it is the
+producer's own operation state, and the element stays in the caller's storage. The code behind it
+is shared across element types and awaiting tasks, so it adds a few bytes per type and per queue.
+A queue whose set is empty carries none of it.
+
 ### Shutdown
 
 `close()` stops accepting new values and returns a sender that completes once the queue has
-drained. Parked producers are stopped immediately, items already accepted are still delivered,
-and parked consumers are stopped once nothing is left:
+drained. Parked producers are stopped immediately, items and calls already accepted are still
+delivered, and parked consumers are stopped once nothing is left. A call counts as delivered once
+a consumer has taken it, so a call a pump is still handling completes after `close()` does:
 
 ```cpp
 struct cmem {
@@ -1444,7 +1542,7 @@ struct ccfg : ecor::queue_default_cfg<cmem> {
 ecor::task<void> shutdown_queue(ecor::task_ctx& ctx, ecor::async_queue<ccfg, int>& q)
 {
     co_await q.close();
-    // every item has been handed to a consumer, every waiter has been completed
+    // everything queued has been handed to a consumer; parked waiters have completed
 }
 ```
 
@@ -1599,7 +1697,7 @@ struct led_handler
 
 A handler may also provide `on_error(err)` and `on_stopped()`; the pump calls them when a
 handler's sender fails or is cancelled, and then carries on with the next event. Without them,
-failures are ignored.
+the failure of a pushed event is ignored; a call's failure always reaches its caller.
 
 ### Stopping
 
@@ -1640,19 +1738,24 @@ ecor::task<void> shutdown_pump(
 A running handler is *asked* to stop through the stop token in its environment — it is never
 cut off. The sender returned by `stop()` completes once the pump is genuinely idle, which may
 be after that handler finishes. Events left in the queue stay there; draining or destroying
-them belongs to whoever owns the queue.
+them belongs to whoever owns the queue. Calls left there keep their callers waiting until another
+consumer takes them or their stop tokens cancel them.
 
 ### Key Properties
 
 - **Event driven** — the pump parks on the queue while idle and is woken by a push. No timer,
   no polling.
 - **One handler at a time**, in queue order.
-- **The event is moved out of the queue node before the handler starts**, into storage inside
-  the pump, so a slow handler pins no queue memory. The handler receives it by reference.
+- **A pushed event is moved out of the queue node before the handler starts**, into storage
+  inside the pump, so a slow handler pins no queue memory. The handler receives it by reference.
 - **Several pumps may share one queue**, which gives work-sharing: each event goes to the
   longest-waiting pump.
-- **A handler must not `co_await push()` on the queue it is draining** — it is the consumer, so
-  it would wait for space only it can free. Use `try_push()` there.
+- **A handler must not `co_await push()` or `push_and_wait()` on the queue it is draining** — it
+  is the consumer, so it would wait for room, or for a consumer, that only it can provide. Use
+  `try_push()` there.
+- **A call is answered by the handler's completion** — for an element queued with
+  `push_and_wait()` the pump hands the handler the caller's own object and forwards the
+  handler's value, error or stop to the caller once the handler's sender completes.
 
 ## Assert customization
 

@@ -18,7 +18,7 @@ repos:
         "types_or": [c++, c]
         args: ["-style=file"]
         require_serial: false
-        additional_dependencies: ["clang-format==18.1.1"]
+        additional_dependencies: ["clang-format==22.1.8"]
       - id: cmake-format
         name: cmake-format
         entry: cmake-format
