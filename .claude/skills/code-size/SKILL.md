@@ -328,6 +328,17 @@ the feature's cost over fire and forget from 507 to 379 bytes at one element typ
 128 / 120 to 20 / 40 per further queue, no LTO / LTO (`doc/plans/push-and-wait.md`, "Second
 round").
 
+### Measure each change inside the combination that ships
+
+Changes measured one at a time on the same header do not predict their combination.
+`callbase`, which puts a call's stopped row first in every vtable so that the shared operation
+state needs no signature set, cost a closeable call queue 6 to 14 bytes on its own: its new
+`_complete_stopped()`, called from three places, went out of line. Forcing it inline was worse
+on its own, +16..+20, yet applied after the other three changes of the same round it was
+byte-identical on every object probe and still saved 192 to 212 bytes from a core's second
+signature set on. Measure each change on top of the ones it ships with, or leave each out of the
+whole in turn, before deciding (`doc/plans/push-and-wait.md`, "Size round after the commits").
+
 ### Use `size -A`, not a line regex over `objdump -h`
 
 Template-heavy section names get long enough that `objdump -h` wraps them onto a second line,

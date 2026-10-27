@@ -2189,6 +2189,75 @@ static task< void > pw_done_task( task_ctx&, call_q& q, req& r, int& done )
         ++done;
 }
 
+TEST_CASE( "_sigs_front - moves a signature to the front and keeps the others in order" )
+{
+        using stop = set_stopped_t();
+        using err  = set_error_t( task_error );
+        using val  = set_value_t( int );
+
+        static_assert( std::same_as<
+                       _sigs_front_t< stop, completion_signatures<> >,
+                       completion_signatures<> > );
+        // Without the signature, and with it already in front, the set is unchanged.
+        static_assert( std::same_as<
+                       _sigs_front_t< stop, completion_signatures< val, err > >,
+                       completion_signatures< val, err > > );
+        static_assert( std::same_as<
+                       _sigs_front_t< stop, completion_signatures< stop, val, err > >,
+                       completion_signatures< stop, val, err > > );
+        static_assert( std::same_as<
+                       _sigs_front_t< stop, completion_signatures< stop > >,
+                       completion_signatures< stop > > );
+        // From the back and from the middle, the others keep their order.
+        static_assert( std::same_as<
+                       _sigs_front_t< stop, completion_signatures< val, err, stop > >,
+                       completion_signatures< stop, val, err > > );
+        static_assert(
+            std::same_as<
+                _sigs_front_t< stop, completion_signatures< val, stop, err, set_value_t() > >,
+                completion_signatures< stop, val, err, set_value_t() > > );
+        // Every occurrence moves, and any signature can be the key.
+        static_assert( std::same_as<
+                       _sigs_front_t< stop, completion_signatures< val, stop, err, stop > >,
+                       completion_signatures< stop, stop, val, err > > );
+        static_assert( std::same_as<
+                       _sigs_front_t< err, completion_signatures< val, stop, err > >,
+                       completion_signatures< err, val, stop > > );
+}
+
+TEST_CASE( "_queue_call_vtable_t - sorts set_stopped_t() first and answers every row" )
+{
+        using mid_sigs =
+            completion_signatures< set_value_t(), set_stopped_t(), set_error_t( task_error ) >;
+        using mid_vt = _queue_call_vtable_t< mid_sigs >;
+        static_assert( std::derived_from< mid_vt, _queue_call_vtable< set_stopped_t() > > );
+        static_assert( _vtable_can_call_value< mid_vt > );
+        static_assert( _vtable_can_call_error< mid_vt, task_error > );
+        static_assert( _vtable_can_call_stopped< mid_vt > );
+
+        using reply_vt = _queue_call_vtable_t< reply_cfg::push_and_wait_signatures >;
+        static_assert( std::derived_from< reply_vt, _queue_call_vtable< set_stopped_t() > > );
+        static_assert( _vtable_can_call_value< reply_vt, int > );
+        static_assert( !_vtable_can_call_value< reply_vt > );
+
+        using done_vt = _queue_call_vtable_t< done_cfg::push_and_wait_signatures >;
+        static_assert( !std::derived_from< done_vt, _queue_call_vtable< set_stopped_t() > > );
+        static_assert( _vtable_can_call_value< done_vt > );
+        static_assert( !_vtable_can_call_stopped< done_vt > );
+
+        // The operation state reaches the stopped row through the single-signature base, from
+        // the node's base pointer; a consumer reaches every row through the full type.
+        std::vector< std::string >     log;
+        call_recv                      r{ &log, "c" };
+        _queue_call_vtable_base const* vt = &_queue_call_vtable_of< call_recv, mid_sigs >;
+        static_cast< _queue_call_vtable< set_stopped_t() > const* >( vt )->invoke(
+            set_stopped_t{}, &r );
+        static_cast< mid_vt const* >( vt )->invoke(
+            set_error_t{}, &r, task_error::task_unfinished );
+        static_cast< mid_vt const* >( vt )->invoke( set_value_t{}, &r );
+        CHECK( log == std::vector< std::string >{ "c:stopped", "c:error", "c:value" } );
+}
+
 TEST_CASE( "push_and_wait - exists exactly when the signature set is not empty" )
 {
         static_assert( !_has_push_and_wait< async_queue< minimal_cfg, int > > );
@@ -2244,6 +2313,22 @@ TEST_CASE( "push_and_wait - layout is pinned alongside the rest of the queue" )
         static_assert( call_q::_call_desc_of< req >.index == call_q::_desc_of< req >.index );
         CHECK( typed_call_q::_call_desc_of< counted >.vt != nullptr );
         CHECK( typed_call_q::_call_desc_of< counted >.vt == typed_call_q::_desc_of< counted >.vt );
+
+        // A set with a stopped signature has it sorted to the front of its vtable, whose
+        // single-signature instantiation is then a base of the vtable: the call's operation
+        // state completes a call stopped through that base, without the set.
+        static_assert( std::same_as<
+                       _sigs_front_t< set_stopped_t(), call_cfg::push_and_wait_signatures >,
+                       completion_signatures<
+                           set_stopped_t(),
+                           set_value_t(),
+                           set_error_t( task_error ) > > );
+        static_assert( std::derived_from<
+                       _queue_call_vtable_t< call_cfg::push_and_wait_signatures >,
+                       _queue_call_vtable< set_stopped_t() > > );
+        static_assert( !std::derived_from<
+                       _queue_call_vtable_t< done_cfg::push_and_wait_signatures >,
+                       _queue_call_vtable< set_stopped_t() > > );
 
         // Queues with and without calls share one core: the code that tells a call from an
         // allocated node lives in the queue, which knows the call's signatures.
@@ -2502,9 +2587,8 @@ TEST_CASE( "event_pump - forwards the handler's completion to the call row by ro
 TEST_CASE(
     "event_pump - a handler whose completion has no call signature is rejected at compile time" )
 {
-        using vt_t = _apply_to_sigs_t< _queue_call_vtable, reply_cfg::push_and_wait_signatures >;
-        using nullary_vt_t =
-            _apply_to_sigs_t< _queue_call_vtable, done_cfg::push_and_wait_signatures >;
+        using vt_t         = _queue_call_vtable_t< reply_cfg::push_and_wait_signatures >;
+        using nullary_vt_t = _queue_call_vtable_t< done_cfg::push_and_wait_signatures >;
 
         static_assert(
             _queue_call_accepts< vt_t, outcome_sender::completion_signatures, false >::value );

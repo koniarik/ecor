@@ -143,9 +143,12 @@ pitfalls from the work; the size lessons are in the code-size skill:
   tests can check them; the asserts themselves cannot be negative-tested.
 - **Let the consumer's completion flow through the existing row vtable** — `_sig_vtable< S... >`
   erases a receiver over any signature set; the call node points at it through an empty common
-  base, and everything that completes a call knows the set and casts to the full type. Taking the
-  element completes the call through the nullary value row, which is why `pop()` and `try_pop()`
-  exist only for sets that have one.
+  base. A consumer that completes a call knows the set and casts to the full type. The call's own
+  operation state knows no set: the set is sorted with `set_stopped_t()` first, which makes
+  `_queue_call_vtable< set_stopped_t() >` a base of every vtable that has a stopped row, and the
+  operation state completes a call stopped through that base. Taking the element completes the
+  call through the nullary value row, which is why `pop()` and `try_pop()` exist only for sets
+  that have one.
 - **Strict mapping is a compile-time check in the consumer** — the pump static_asserts that
   every completion of its handler's sender has a row, through the `_vtable_can_call_*` concepts.
   A `task< void >` handler therefore needs error and stopped rows next to the value row; say so

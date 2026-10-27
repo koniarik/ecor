@@ -1351,6 +1351,45 @@ struct _sigs_contains_type< T, completion_signatures< Ts... > > : _contains_type
 template < typename U >
 concept _sigs_contains_set_stopped = _sigs_contains_type< set_stopped_t(), U >::value;
 
+template < typename Sig, typename Front, typename Back, typename... S >
+struct _sigs_front_impl;
+
+template < typename Sig, typename... F, typename... B >
+struct _sigs_front_impl< Sig, completion_signatures< F... >, completion_signatures< B... > >
+{
+        using type = completion_signatures< F..., B... >;
+};
+
+template < typename Sig, typename... F, typename... B, typename... S >
+struct _sigs_front_impl<
+    Sig,
+    completion_signatures< F... >,
+    completion_signatures< B... >,
+    Sig,
+    S... >
+  : _sigs_front_impl< Sig, completion_signatures< F..., Sig >, completion_signatures< B... >, S... >
+{
+};
+
+template < typename Sig, typename... F, typename... B, typename H, typename... S >
+struct _sigs_front_impl< Sig, completion_signatures< F... >, completion_signatures< B... >, H, S... >
+  : _sigs_front_impl< Sig, completion_signatures< F... >, completion_signatures< B..., H >, S... >
+{
+};
+
+/// `Sigs` with every `Sig` in it moved to the front, the other signatures in their order.
+template < typename Sig, typename Sigs >
+struct _sigs_front;
+
+template < typename Sig, typename... S >
+struct _sigs_front< Sig, completion_signatures< S... > >
+  : _sigs_front_impl< Sig, completion_signatures<>, completion_signatures<>, S... >
+{
+};
+
+template < typename Sig, typename Sigs >
+using _sigs_front_t = typename _sigs_front< Sig, Sigs >::type;
+
 template < typename Sigs1, typename Sigs2 >
 struct _sig_is_underset_of_impl;
 
@@ -6116,6 +6155,7 @@ struct _queue_push_sender
         }
 };
 
+/// The rows of a call's receiver over `S...`; see `_queue_call_vtable_t`.
 template < typename... S >
 struct _queue_call_vtable : _queue_call_vtable_base, _sig_vtable< S... >
 {
@@ -6126,8 +6166,31 @@ struct _queue_call_vtable : _queue_call_vtable_base, _sig_vtable< S... >
         }
 };
 
+/// With `set_stopped_t()` first, `_queue_call_vtable< set_stopped_t() >` is a base: a call's
+/// operation state completes it stopped through that base without knowing the set.
+template < typename S0, typename... S >
+struct _queue_call_vtable< set_stopped_t(), S0, S... > : _queue_call_vtable< set_stopped_t() >,
+                                                         _sig_vtable< S0, S... >
+{
+        template < typename R >
+        constexpr _queue_call_vtable( _tag< R > r ) noexcept
+          : _queue_call_vtable< set_stopped_t() >( r )
+          , _sig_vtable< S0, S... >( r, r )
+        {
+        }
+
+        using _queue_call_vtable< set_stopped_t() >::invoke;
+        using _sig_vtable< S0, S... >::invoke;
+};
+
+/// The call vtable of the signature set `Sigs`: its rows, with `set_stopped_t()` sorted first
+/// when the set has it.
+template < typename Sigs >
+using _queue_call_vtable_t =
+    _apply_to_sigs_t< _queue_call_vtable, _sigs_front_t< set_stopped_t(), Sigs > >;
+
 template < typename R, typename Sigs >
-inline constexpr _apply_to_sigs_t< _queue_call_vtable, Sigs > _queue_call_vtable_of{ _tag< R >{} };
+inline constexpr _queue_call_vtable_t< Sigs > _queue_call_vtable_of{ _tag< R >{} };
 
 template < typename Q, typename R >
 inline constexpr bool _queue_call_stoppable =
@@ -6137,13 +6200,10 @@ inline constexpr bool _queue_call_stoppable =
 /// queue node.
 ///
 /// Precondition: not destroyed while a consumer holds the call.
-template < typename Core, typename Sigs, bool Stoppable >
-struct _queue_call_op_base
-  : _queue_call_node,
-    _queue_cancel_base< _queue_call_op_base< Core, Sigs, Stoppable >, Stoppable >
+template < typename Core, bool Stoppable >
+struct _queue_call_op_base : _queue_call_node,
+                             _queue_cancel_base< _queue_call_op_base< Core, Stoppable >, Stoppable >
 {
-        using _vtable_t = _apply_to_sigs_t< _queue_call_vtable, Sigs >;
-
         static constexpr bool _closeable = Core::_closeable;
 
         _queue_call_op_base( Core& core, _queue_desc_head const& d, void* src ) noexcept
@@ -6169,18 +6229,18 @@ struct _queue_call_op_base
                 }
         }
 
-        void _start( auto stop_token, void* receiver, _vtable_t const& receiver_rows )
+        void _start( auto stop_token, void* receiver, _queue_call_vtable_base const& receiver_rows )
         {
                 _recv = receiver;
                 _vt   = &receiver_rows;
                 if constexpr ( _closeable )
                         if ( _core._is_closed() ) {
-                                _complete( set_stopped_t{} );
+                                _complete_stopped();
                                 return;
                         }
                 if constexpr ( Stoppable )
                         if ( !this->_arm( stop_token ) ) {
-                                _complete( set_stopped_t{} );
+                                _complete_stopped();
                                 return;
                         }
                 // A parked consumer may complete this call inside `_service()`, after which this
@@ -6197,17 +6257,18 @@ struct _queue_call_op_base
                         return;
                 zll::detach( static_cast< _queue_link& >( *this ) );
                 --_core._count;
-                // The receiver may destroy this object inside `_complete()`.
+                // The receiver may destroy this object inside `_complete_stopped()`.
                 Core& core = _core;
-                _complete( set_stopped_t{} );
+                _complete_stopped();
                 if constexpr ( _closeable )
                         core._service();
         }
 
-        template < typename Tag, typename... Args >
-        void _complete( Tag /*tag*/, Args&&... args )
+        /// Precondition: the call's signature set has a stopped row.
+        ECOR_FORCE_INLINE void _complete_stopped()
         {
-                static_cast< _vtable_t const* >( _vt )->invoke( Tag{}, _recv, (Args&&) args... );
+                static_cast< _queue_call_vtable< set_stopped_t() > const* >( _vt )->invoke(
+                    set_stopped_t{}, _recv );
         }
 
 private:
@@ -6216,10 +6277,10 @@ private:
 
 /// Operation state of `async_queue::push_and_wait()`: the shared part and the receiver.
 template < typename Core, typename Sigs, bool Stoppable, typename R >
-struct _queue_call_op final : _queue_call_op_base< Core, Sigs, Stoppable >
+struct _queue_call_op final : _queue_call_op_base< Core, Stoppable >
 {
         using operation_state_concept = operation_state_t;
-        using _base                   = _queue_call_op_base< Core, Sigs, Stoppable >;
+        using _base                   = _queue_call_op_base< Core, Stoppable >;
 
         _queue_call_op( Core& core, _queue_desc_head const& d, void* src, R r ) noexcept(
             std::is_nothrow_move_constructible_v< R > )
@@ -6400,7 +6461,7 @@ struct async_queue
         static constexpr bool _call = !std::same_as< _call_sigs_t, ecor::completion_signatures<> >;
 
         /// Vtable of a call's operation state, as `_queue_call_node::_vt` points at it.
-        using _call_vtable_t = _apply_to_sigs_t< _queue_call_vtable, _call_sigs_t >;
+        using _call_vtable_t = _queue_call_vtable_t< _call_sigs_t >;
 
         static_assert(
             !_call || _queue_call_sigs< _call_sigs_t >::basic,
@@ -6844,7 +6905,7 @@ struct _queue_call_accepts< VT, completion_signatures< S... >, Nullary >
 /// every signature has a row in the queue's call vtable, or the queue has no calls.
 template < typename Queue, typename HandlerSigs, bool Call = Queue::_call >
 inline constexpr bool _pump_answers_calls = _queue_call_accepts<
-    _apply_to_sigs_t< _queue_call_vtable, typename Queue::_call_sigs_t >,
+    _queue_call_vtable_t< typename Queue::_call_sigs_t >,
     HandlerSigs,
     _queue_call_sigs< typename Queue::_call_sigs_t >::nullary >::value;
 
@@ -6861,7 +6922,7 @@ struct _pump_call_base< Sigs, true > : _reschedulable
 {
         using _reschedulable::_reschedulable;
 
-        using _vtable_t = _apply_to_sigs_t< _queue_call_vtable, Sigs >;
+        using _vtable_t = _queue_call_vtable_t< Sigs >;
 
         static constexpr bool _nullary = _queue_call_sigs< Sigs >::nullary;
 
