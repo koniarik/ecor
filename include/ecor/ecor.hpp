@@ -5382,13 +5382,32 @@ struct _queue_call_node : _queue_node
         _queue_call_vtable_base const* _vt;
 };
 
+struct _queue_waiter;
+
+/// What a waiter type does when the queue drives it; see `_queue_waiter::_advance()` and
+/// `_queue_waiter::_receive()`.
+struct _queue_waiter_ops
+{
+        bool ( *advance )( _queue_waiter& );
+        void ( *receive )( _queue_waiter&, _queue_node& );
+};
+
+/// The `receive` of the waiters that are never delivered to: producers and the `close()` waiter.
+inline void _queue_waiter_never_receives( _queue_waiter& /*w*/, _queue_node& /*n*/ ) noexcept
+{
+        ECOR_ASSERT( false );  // NOLINT(misc-static-assert)
+}
+
 /// Link node for a parked waiter, erased over the queue's element types. Consumers, producers
 /// and the `close()` waiter all use it.
 struct _queue_waiter : _queue_link
 {
         /// The queue nudges this waiter to make progress. Returns true when the waiter has
         /// completed its receiver and unlinked itself, false when it still cannot proceed.
-        virtual bool _advance() = 0;
+        bool _advance()
+        {
+                return _ops->advance( *this );
+        }
 
         /// Take delivery of `n`, detached from the queue, and release it through the queue's
         /// `_release()`, unless the waiter keeps it: a pump keeps a call until its handler
@@ -5400,14 +5419,22 @@ struct _queue_waiter : _queue_link
         /// somewhere — a pump — takes it straight into its own storage, and never instantiates
         /// those rows at all.
         ///
-        /// Not pure: producers and the `close()` waiter are never delivered to.
-        virtual void _receive( _queue_node& /*n*/ )
+        /// Producers and the `close()` waiter are never delivered to.
+        void _receive( _queue_node& n )
         {
-                ECOR_ASSERT( false );  // NOLINT(misc-static-assert)
+                _ops->receive( *this, n );
         }
 
 protected:
+        explicit _queue_waiter( _queue_waiter_ops const& ops ) noexcept
+          : _ops( &ops )
+        {
+        }
+
         ~_queue_waiter() = default;
+
+private:
+        _queue_waiter_ops const* _ops;
 };
 
 /// Adds typed value delivery to `_queue_waiter`. The vtable carries one row per element type;
@@ -5416,8 +5443,9 @@ template < typename... Ts >
 struct _queue_consumer_node : _queue_waiter, _vtable_mixin< set_value_t( Ts& )... >
 {
         template < typename D >
-        explicit _queue_consumer_node( _tag< D > d ) noexcept
-          : _vtable_mixin< set_value_t( Ts& )... >( d )
+        _queue_consumer_node( _tag< D > d, _queue_waiter_ops const& ops ) noexcept
+          : _queue_waiter( ops )
+          , _vtable_mixin< set_value_t( Ts& )... >( d )
         {
         }
 
@@ -5813,7 +5841,7 @@ struct _queue_pop_op final
         static constexpr bool _closeable = Q::config_type::is_closeable;
 
         _queue_pop_op( Q& q, R r ) noexcept( std::is_nothrow_move_constructible_v< R > )
-          : Q::_consumer_node_t( _tag< _queue_pop_op >{} )
+          : Q::_consumer_node_t( _tag< _queue_pop_op >{}, _waiter_ops )
           , _q( q )
           , _r( std::move( r ) )
         {
@@ -5846,13 +5874,25 @@ struct _queue_pop_op final
                 _r.set_stopped();
         }
 
-        void _receive( _queue_node& n ) override
+        void _on_receive( _queue_node& n )
         {
                 // The receiver may destroy this object inside `_deliver()`.
                 Q& q = _q;
                 this->_deliver( Q::_payload( n ), n._desc->index );
                 q._release( n );
         }
+
+        static bool _advance_fn( _queue_waiter& w )
+        {
+                return static_cast< _queue_pop_op& >( w )._on_advance();
+        }
+
+        static void _receive_fn( _queue_waiter& w, _queue_node& n )
+        {
+                static_cast< _queue_pop_op& >( w )._on_receive( n );
+        }
+
+        static constexpr _queue_waiter_ops _waiter_ops{ &_advance_fn, &_receive_fn };
 
         /// Invoked through the consumer node's row for `T`. `val` is valid only until this returns.
         template < typename T >
@@ -5863,7 +5903,7 @@ struct _queue_pop_op final
         }
 
         /// A consumer is only nudged while the queue is closing.
-        bool _advance() override
+        bool _on_advance()
         {
                 if constexpr ( _closeable ) {
                         _unregister();
@@ -5917,7 +5957,8 @@ struct _queue_push_op_base
 
         _queue_push_op_base( Core& core, _queue_node_desc const& d, void* src, R r ) noexcept(
             std::is_nothrow_move_constructible_v< R > )
-          : _core( core )
+          : _queue_waiter( _waiter_ops )
+          , _core( core )
           , _desc( &d )
           , _src( src )
           , _r( std::move( r ) )
@@ -5953,7 +5994,16 @@ struct _queue_push_op_base
                 _r.set_stopped();
         }
 
-        bool _advance() override
+        static bool _advance_fn( _queue_waiter& w )
+        {
+                return static_cast< _queue_push_op_base& >( w )._on_advance();
+        }
+
+        static constexpr _queue_waiter_ops _waiter_ops{
+            &_advance_fn,
+            &_queue_waiter_never_receives };
+
+        bool _on_advance()
         {
                 if constexpr ( _closeable )
                         if ( _core._is_closed() ) {
@@ -6190,7 +6240,8 @@ struct _queue_close_op final : _queue_waiter
         using operation_state_concept = operation_state_t;
 
         _queue_close_op( Core& core, R r ) noexcept( std::is_nothrow_move_constructible_v< R > )
-          : _core( &core )
+          : _queue_waiter( _waiter_ops )
+          , _core( &core )
           , _r( std::move( r ) )
         {
         }
@@ -6208,11 +6259,20 @@ struct _queue_close_op final : _queue_waiter
         }
 
         /// The queue has drained, which is precisely what this sender was waiting for.
-        bool _advance() override
+        bool _on_advance()
         {
                 _r.set_value();
                 return true;
         }
+
+        static bool _advance_fn( _queue_waiter& w )
+        {
+                return static_cast< _queue_close_op& >( w )._on_advance();
+        }
+
+        static constexpr _queue_waiter_ops _waiter_ops{
+            &_advance_fn,
+            &_queue_waiter_never_receives };
 
 private:
         Core*                    _core;
@@ -6879,6 +6939,7 @@ struct event_pump : _pump_call_base< typename Queue::_call_sigs_t, Queue::_call 
 
         event_pump( ctx_type& ctx, Queue& q, Handler& h ) noexcept
           : _call_base( get_task_core( ctx ) )
+          , _queue_waiter( _waiter_ops )
           , _ctx( ctx )
           , _q( q )
           , _h( h )
@@ -6997,7 +7058,7 @@ private:
         /// Keep a call where it is, or move an item into the pump's own slot — the storage that
         /// keeps it alive for the handler — and return to the scheduler, so handler code never
         /// runs inside a producer's `push()`.
-        void _receive( _queue_node& n ) override
+        void _on_receive( _queue_node& n )
         {
                 if constexpr ( Queue::_call )
                         if ( n._desc->kind == _queue_node_kind::call ) {
@@ -7011,12 +7072,24 @@ private:
         }
 
         /// The queue is closing and has finished with this consumer.
-        bool _advance() override
+        bool _on_advance()
         {
                 _queue_done = true;
                 _reschedule();
                 return true;
         }
+
+        static bool _advance_fn( _queue_waiter& w )
+        {
+                return static_cast< event_pump& >( w )._on_advance();
+        }
+
+        static void _receive_fn( _queue_waiter& w, _queue_node& n )
+        {
+                static_cast< event_pump& >( w )._on_receive( n );
+        }
+
+        static constexpr _queue_waiter_ops _waiter_ops{ &_advance_fn, &_receive_fn };
 
         /// Leave the queue's waiter list and come back through the scheduler, so a stop is
         /// noticed even when nothing else would wake the pump.

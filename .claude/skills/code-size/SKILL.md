@@ -274,6 +274,19 @@ out-of-line non-template `_register()` breaks even with one kind of stoppable op
 saves ~40 per further kind; a probe with a single callback type shows it as noise, so measure
 such sharing on a configuration with two.
 
+### A table of function pointers beats virtuals in a secondary base
+
+`_queue_waiter` had two virtuals. The pump has it as a secondary base, so every pump paid two
+non-virtual thunks and a second vtable; every waiter type had a vtable of its own even where it
+overrode nothing, as `push()`'s operation state did once per element type; and every program
+with a waiter emitted `_queue_waiter`'s own vtable. The waiter now holds a pointer to one
+constant `_queue_waiter_ops` per waiter type, two function pointers, set by the waiter's
+constructor: the same size, and none of the three. −2 to −128 / −6 to −142 on the README rows,
+−248 / −178 on the coroutine firmware, −50 to −146 on every call probe, and on the scale probes
+−28 to −72 at one queue and up to −488 at eight, none growing. For an internal interface whose
+implementations are a closed set, prefer the table (`doc/plans/push-and-wait.md`, "Size round
+after the commits").
+
 ### Measure a feature's scaling in three forms
 
 For `push_and_wait` the growth per element type and per queue was measured with the feature,

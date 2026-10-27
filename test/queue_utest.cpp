@@ -1296,8 +1296,8 @@ TEST_CASE( "async_queue - layout is pinned, so the README size table cannot drif
         // One shared link node for the whole queue: just the zll header.
         static_assert( sizeof( _queue_link ) == 2 * ptr );
 
-        // A queued item adds its descriptor pointer; a waiter adds exactly one vptr, which is what
-        // keeps it to a single virtual and a single polymorphic base.
+        // A queued item adds its descriptor pointer; a waiter adds the pointer to its waiter
+        // type's operations and nothing else.
         static_assert( sizeof( _queue_node ) == 3 * ptr );
         static_assert( sizeof( _queue_waiter ) == 3 * ptr );
 
