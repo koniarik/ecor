@@ -1724,6 +1724,33 @@ struct stop_token_env
         }
 };
 
+/// The stop source of something that can be stopped, and the environment it hands down, whose
+/// stop token is the source's. With `Stoppable` false it holds nothing and hands down an empty
+/// environment.
+template < bool Stoppable >
+struct _stop_source_env
+{
+        using env_type = stop_token_env< inplace_stop_token >;
+
+        [[nodiscard]] env_type _env_of() const noexcept
+        {
+                return { _stop_src.get_token() };
+        }
+
+        inplace_stop_source _stop_src;
+};
+
+template <>
+struct _stop_source_env< false >
+{
+        using env_type = empty_env;
+
+        [[nodiscard]] static env_type _env_of() noexcept
+        {
+                return {};
+        }
+};
+
 /// ------------------------------------------------------------------------------
 
 /// Internal base for all linked-list entry types.
@@ -4042,7 +4069,7 @@ inline constexpr struct then_t
 /// are in use. Not intended to be used directly — use `task_holder` instead.
 ///
 template < task_config CFG = task_default_cfg >
-struct _task_holder_base : _reschedulable
+struct _task_holder_base : _reschedulable, private _stop_source_env< true >
 {
         using _task_t = task< void, CFG >;
 
@@ -4101,7 +4128,7 @@ private:
 
                 [[nodiscard]] stop_token_env< inplace_stop_token > get_env() const noexcept
                 {
-                        return { _holder->_stop_src.get_token() };
+                        return _holder->_env_of();
                 }
         };
 
@@ -4123,7 +4150,6 @@ private:
                 }
         }
 
-        inplace_stop_source              _stop_src;
         ll_source< unit, set_value_t() > _done_src;
         _bare_optional< _op_t >          _op;
 };
@@ -6732,20 +6758,12 @@ struct _pump_stop_base;
 template < typename Pump >
 struct _pump_stop_base< Pump, true >
 {
-        /// Carries the stop token to the queue's pop operation and to the running handler.
-        using env_type = stop_token_env< inplace_stop_token >;
-
-        [[nodiscard]] env_type _env_of() const noexcept
-        {
-                return { _stop_src.get_token() };
-        }
-
         /// Stop draining and return a sender that completes once the pump is idle. A running
         /// handler is asked to stop through its stop token; events left in the queue stay
         /// there.
         _ll_sender< unit, set_value_t() > stop()
         {
-                _stop_src.request_stop();
+                static_cast< Pump& >( *this )._stop_src.request_stop();
                 static_cast< Pump& >( *this )._unpark();
                 return _done_src.schedule();
         }
@@ -6755,7 +6773,7 @@ struct _pump_stop_base< Pump, true >
         /// on the way out.
         bool _stopping( bool queue_done )
         {
-                if ( !_stop_src.stop_requested() && !queue_done )
+                if ( !static_cast< Pump& >( *this )._stop_src.stop_requested() && !queue_done )
                         return false;
                 broadcast( _done_src, []( auto& e ) {
                         e.set_value();
@@ -6763,20 +6781,12 @@ struct _pump_stop_base< Pump, true >
                 return true;
         }
 
-        inplace_stop_source              _stop_src;
         ll_source< unit, set_value_t() > _done_src;
 };
 
 template < typename Pump >
 struct _pump_stop_base< Pump, false >
 {
-        using env_type = empty_env;
-
-        [[nodiscard]] env_type _env_of() const noexcept
-        {
-                return {};
-        }
-
         /// Only the queue closing can end an unstoppable pump.
         [[nodiscard]] bool _stopping( bool queue_done ) const noexcept
         {
@@ -6911,6 +6921,72 @@ struct _pump_call_base< Sigs, false > : _reschedulable
         }
 };
 
+/// Everything a pump's handler receiver reaches: the call half and the stop source.
+template < typename Sigs, bool Call, bool Stoppable >
+struct _pump_core : _pump_call_base< Sigs, Call >, _stop_source_env< Stoppable >
+{
+        explicit _pump_core( task_core& core ) noexcept
+          : _pump_call_base< Sigs, Call >( core )
+        {
+        }
+};
+
+/// Receives the completion of one handler run of a pump over `Core`. `Pump` is the pump when its
+/// handler has `on_error()` or `on_stopped()`, which run first; otherwise void.
+template < typename Core, typename Pump >
+struct _pump_handler_recv
+{
+        using receiver_concept = receiver_t;
+
+        Core* p;
+
+        void set_value( auto&&... vals ) noexcept
+        {
+                p->_finish( set_value_t{}, (decltype( vals )&&) vals... );
+        }
+
+        template < typename E >
+        void set_error( E&& err )
+        {
+                if constexpr ( !std::is_void_v< Pump > )
+                        static_cast< Pump* >( p )->_on_error( err );
+                p->_finish( set_error_t{}, (E&&) err );
+        }
+
+        void set_stopped()
+        {
+                if constexpr ( !std::is_void_v< Pump > )
+                        static_cast< Pump* >( p )->_on_stopped();
+                p->_finish( set_stopped_t{} );
+        }
+
+        [[nodiscard]] typename Core::env_type get_env() const noexcept
+        {
+                return p->_env_of();
+        }
+};
+
+/// True when the handler `H` has a hook for the completion `S`.
+template < typename H, typename S >
+inline constexpr bool _pump_hook_sig = false;
+
+template < typename H, typename E >
+inline constexpr bool _pump_hook_sig< H, set_error_t( E ) > =
+    requires( H& h, E& e ) { h.on_error( e ); };
+
+template < typename H >
+inline constexpr bool _pump_hook_sig< H, set_stopped_t() > = requires( H& h ) { h.on_stopped(); };
+
+/// True when the handler `H` has a hook for one of the completions `Sigs`.
+template < typename H, typename Sigs >
+struct _pump_has_hooks;
+
+template < typename H, typename... S >
+struct _pump_has_hooks< H, completion_signatures< S... > >
+  : std::bool_constant< ( _pump_hook_sig< H, S > || ... || false ) >
+{
+};
+
 /// Drains an `async_queue` by running a handler over each event in turn.
 ///
 /// The pump parks a consumer on the queue whenever it is idle, so it costs nothing while no
@@ -6924,11 +7000,12 @@ struct _pump_call_base< Sigs, false > : _reschedulable
 /// Preconditions: the context, queue and handler all outlive the pump, and the sender returned
 /// by `stop()` completes before the pump is destroyed.
 template < pump_config CFG, typename Queue, typename Handler >
-struct event_pump : _pump_call_base< typename Queue::_call_sigs_t, Queue::_call >,
+struct event_pump : _pump_core< typename Queue::_call_sigs_t, Queue::_call, CFG::is_stoppable >,
                     _queue_waiter,
                     _pump_stop_base< event_pump< CFG, Queue, Handler >, CFG::is_stoppable >
 {
-        using _call_base  = _pump_call_base< typename Queue::_call_sigs_t, Queue::_call >;
+        using _call_base =
+            _pump_core< typename Queue::_call_sigs_t, Queue::_call, CFG::is_stoppable >;
         using config_type = CFG;
         using ctx_type    = typename CFG::ctx_type;
         using sender_type = typename CFG::sender_type;
@@ -6970,7 +7047,7 @@ private:
         friend _pump_stop_base< event_pump, true >;
 
         using _stop_base = _pump_stop_base< event_pump, CFG::is_stoppable >;
-        using _env       = typename _stop_base::env_type;
+        using _env       = typename _call_base::env_type;
 
         static_assert(
             _pump_answers_calls< Queue, _sender_completions_t< sender_type, _env > >,
@@ -6979,38 +7056,27 @@ private:
 
         using _call_base::_reschedule;
 
-        /// Receives the completion of one handler run.
-        struct _handler_recv
+        friend _pump_handler_recv< _call_base, event_pump >;
+
+        template < typename E >
+        void _on_error( E& err )
         {
-                using receiver_concept = receiver_t;
+                if constexpr ( requires( Handler& h ) { h.on_error( err ); } )
+                        _h.on_error( err );
+        }
 
-                event_pump* p;
+        void _on_stopped()
+        {
+                if constexpr ( requires( Handler& h ) { h.on_stopped(); } )
+                        _h.on_stopped();
+        }
 
-                void set_value( auto&&... vals ) noexcept
-                {
-                        p->_finish( set_value_t{}, (decltype( vals )&&) vals... );
-                }
-
-                template < typename E >
-                void set_error( E&& err )
-                {
-                        if constexpr ( requires( Handler& h ) { h.on_error( err ); } )
-                                p->_h.on_error( err );
-                        p->_finish( set_error_t{}, (E&&) err );
-                }
-
-                void set_stopped()
-                {
-                        if constexpr ( requires( Handler& h ) { h.on_stopped(); } )
-                                p->_h.on_stopped();
-                        p->_finish( set_stopped_t{} );
-                }
-
-                [[nodiscard]] _env get_env() const noexcept
-                {
-                        return p->_env_of();
-                }
-        };
+        using _handler_recv = _pump_handler_recv<
+            _call_base,
+            std::conditional_t<
+                _pump_has_hooks< Handler, _sender_completions_t< sender_type, _env > >::value,
+                event_pump,
+                void > >;
 
         using _handler_op_t = connect_type< sender_type, _handler_recv >;
 

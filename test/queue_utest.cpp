@@ -1818,6 +1818,71 @@ TEST_CASE( "event_pump - an item taken before stop() is handled under the stop r
         CHECK( slog == std::vector< std::string >{ "stop:value" } );
 }
 
+namespace
+{
+        /// Handler whose coroutine fails, counted by its `on_error()` hook.
+        struct error_hook_handler
+        {
+                std::vector< std::string >* log;
+                int                         errors = 0;
+
+                void on_error( task_error )
+                {
+                        ++errors;
+                }
+        };
+
+        task< void > handle( task_ctx& ctx, error_hook_handler& h, int& ev )
+        {
+                h.log->push_back( "fail:" + std::to_string( ev ) );
+                std::ignore = ctx;
+                co_yield with_error( task_error::task_unfinished );
+        }
+
+        /// Handler without hooks, whose sender type is the one `error_hook_handler` returns.
+        struct hookless_handler
+        {
+                std::vector< std::string >* log;
+        };
+
+        task< void > handle( task_ctx& ctx, hookless_handler& h, int& ev )
+        {
+                h.log->push_back( "plain:" + std::to_string( ev ) );
+                std::ignore = ctx;
+                co_return;
+        }
+
+        using hook_q = async_queue< minimal_cfg, int >;
+        using error_hook_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, hook_q, error_hook_handler >;
+        using hookless_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, hook_q, hookless_handler >;
+}  // namespace
+
+TEST_CASE( "event_pump - an on_error() hook runs next to a hook-less pump with the same sender" )
+{
+        nd_mem                     mem;
+        task_ctx                   ctx{ mem };
+        hook_q                     qa{ mem }, qb{ mem };
+        std::vector< std::string > log;
+        error_hook_handler         ha{ &log };
+        hookless_handler           hb{ &log };
+
+        error_hook_pump_t pa{ ctx, qa, ha };
+        hookless_pump_t   pb{ ctx, qb, hb };
+        pa.start();
+        pb.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( qa.try_push( 1 ) );
+        CHECK( qb.try_push( 2 ) );
+        CHECK( qa.try_push( 3 ) );
+        ctx.core.run_n( 32 );
+
+        CHECK( log == std::vector< std::string >{ "fail:1", "plain:2", "fail:3" } );
+        CHECK( ha.errors == 2 );
+}
+
 // ---------------------------------------------------------------------------------------------
 // push_and_wait()
 

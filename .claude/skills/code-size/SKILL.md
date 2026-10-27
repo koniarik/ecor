@@ -287,6 +287,18 @@ constructor: the same size, and none of the three. −2 to −128 / −6 to −1
 implementations are a closed set, prefer the table (`doc/plans/push-and-wait.md`, "Size round
 after the commits").
 
+### A class nested in a class template is a new type per instantiation
+
+`event_pump::_handler_recv` read only the pump's signature set, call flag and stop source, plus
+the handler when it has hooks, but nested in the pump it was a new receiver per pump, and
+everything keyed on the receiver came with it: the handler's operation state, its destructor,
+its rows. At namespace scope as `_pump_handler_recv< Core, Pump >`, with `Core` holding exactly
+what the receiver reads and `Pump` void unless the handler has an `on_error()` or `on_stopped()`
+hook, pumps whose handlers return one sender type share all of it: 48 to 156 bytes less at two
+such pumps, up to 692 at eight. A one-pump probe sees only the cost: without LTO up to 4 bytes,
+and 16 to 28 on a stoppable pump, where the stop source's non-trivial destructor gives the
+shared core a 12-byte vtable of its own; with LTO none.
+
 ### Measure a feature's scaling in three forms
 
 For `push_and_wait` the growth per element type and per queue was measured with the feature,
