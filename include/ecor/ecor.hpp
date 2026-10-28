@@ -59,7 +59,7 @@
 /// (MSVC since VS 2019 16.9 with /Zc:__cplusplus or /std:c++20). All other major compilers
 /// honor the standard form.
 #ifndef ECOR_NO_UNIQUE_ADDRESS
-#if defined( _MSC_VER )
+#ifdef _MSC_VER
 #define ECOR_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
 #else
 #define ECOR_NO_UNIQUE_ADDRESS [[no_unique_address]]
@@ -72,7 +72,7 @@
 #ifndef ECOR_FORCE_INLINE
 #if defined( __clang__ ) || defined( __GNUC__ )
 #define ECOR_FORCE_INLINE __attribute__( ( always_inline ) ) inline
-#elif defined( _MSC_VER )
+#elifdef _MSC_VER
 #define ECOR_FORCE_INLINE __forceinline
 #else
 #define ECOR_FORCE_INLINE inline
@@ -84,7 +84,7 @@
 #ifndef ECOR_NOINLINE
 #if defined( __clang__ ) || defined( __GNUC__ )
 #define ECOR_NOINLINE __attribute__( ( noinline ) )
-#elif defined( _MSC_VER )
+#elifdef _MSC_VER
 #define ECOR_NOINLINE __declspec( noinline )
 #else
 #define ECOR_NOINLINE

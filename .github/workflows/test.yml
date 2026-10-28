@@ -45,12 +45,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build gdb gcc-15 g++-15
 
-      - name: install LLVM 20 with libc++
+      - name: install clang 20 with libc++
         if: matrix.compiler == 'clang'
-        run: |
-          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
-          sudo bash llvm.sh 20
-          sudo apt-get install -y libc++-20-dev libc++abi-20-dev
+        run: sudo apt-get install -y clang-20 libc++-20-dev libc++abi-20-dev
 
       - name: configure
         run: cmake --preset ${{ matrix.preset }}
