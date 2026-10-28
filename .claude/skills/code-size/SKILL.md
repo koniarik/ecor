@@ -407,7 +407,13 @@ that had nothing to do with the code; it is now `doc/plans/queue-config-size/`.
 ### Configuration flags earn their keep
 
 `queue_config`'s flags are worth ~620 bytes (both stoppable flags off, with stoppable receivers)
-and 254–278 (`is_closeable = false`). When a flag removes a completion path, also drop the
+and 254–278 (`is_closeable = false`). `event_pump`'s `is_stoppable` costs a program's first
+stoppable pump about 300 bytes over a plain one and each further one 110 to 200, on linked
+cortex-m0plus and cortex-m4 firmware with or without LTO, the `stop()` call and its receiver
+included (`doc/plans/push-and-wait/scale/`, forms `callstop` and `nonestop` against `call` and
+`none`). The header's comment once said 800, an object-file figure from before the stop
+callbacks lost their vtables: re-measure a published cost when the machinery under it changes.
+When a flag removes a completion path, also drop the
 corresponding signature from `completion_signatures` — otherwise receivers must still implement
 a completion that can never arrive.
 

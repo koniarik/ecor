@@ -6807,8 +6807,7 @@ struct pump_default_cfg
 
         /// Enables `stop()`, and with it the stop source, the completion source and the
         /// cancellation wiring that the pump's environment propagates into the queue's parked
-        /// consumer. Off by default: it is the most expensive flag in the library, worth around
-        /// 800 bytes of flash.
+        /// consumer. Off by default: it is the most expensive flag in the library.
         static constexpr bool is_stoppable = false;
 };
 
