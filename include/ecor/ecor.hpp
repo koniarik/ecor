@@ -2995,7 +2995,8 @@ struct task_default_trace
         /// Called from the promise destructor when the coroutine frame is being torn down while
         /// a continuation was still attached — meaning the task never delivered a completion
         /// to it. The promise will synthesize `set_stopped` for the continuation right after
-        /// this hook returns. Useful for spotting tasks abandoned by their op_state.
+        /// this hook returns. Useful for spotting tasks abandoned by their op_state. `promise`
+        /// is the promise's `_promise_cfg_base`.
         ECOR_FORCE_INLINE void on_destroy_with_continuation( auto& /*promise*/ ) noexcept
         {
         }
@@ -3211,6 +3212,15 @@ struct _promise_cfg_base : _promise_base
                 }
         }
 
+        /// A promise destroyed with its continuation still attached completes it stopped.
+        ~_promise_cfg_base() noexcept
+        {
+                if ( _cont_vtable ) {
+                        trace.on_destroy_with_continuation( *this );
+                        _cont_vtable->invoke( set_stopped_t{}, _cont_obj );
+                }
+        }
+
         ECOR_NO_UNIQUE_ADDRESS trace_type trace;
 
 protected:
@@ -3390,14 +3400,6 @@ struct _promise_type
         {
                 this->_cont_vtable = &_vtable_of< U, U, vtable >;
                 this->_cont_obj    = static_cast< void* >( &p );
-        }
-
-        ~_promise_type() noexcept
-        {
-                if ( this->_cont_vtable ) {
-                        this->trace.on_destroy_with_continuation( *this );
-                        this->_cont_vtable->invoke( set_stopped_t{}, this->_cont_obj );
-                }
         }
 };
 

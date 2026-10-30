@@ -371,7 +371,8 @@ vptr store in every destructor of the chain. The base's inheriting constructor, 
 at 32 promise constructions, brought the same vtable, +68 / +100 on the eight-pump probes. Any
 constructor or destructor of a dynamic base is an outlining candidate that costs a vtable when
 taken. With `schedulable` holding a function pointer neither cost exists: forcing the base's
-constructor inline is byte-identical on every probe of the suite.
+constructor inline is byte-identical on every probe of the suite, and the destructor lives in the
+base, −24 to −192 bytes on the task probes and −96 to −468 on the linked images.
 
 ### Measure a feature's scaling in three forms
 
