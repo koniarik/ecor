@@ -36,8 +36,8 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 
-from scenarios import FAMILIES  # noqa: E402
 from scenarios.common import CPU, TIERS, Measurement  # noqa: E402
+from scenarios.registry import FAMILIES  # noqa: E402
 
 CXX, SIZE = 'arm-none-eabi-g++', 'arm-none-eabi-size'
 

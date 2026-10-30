@@ -57,8 +57,8 @@ log, `test/size/build/.ninja_log` holding the commands.
 
 ## Adding probes
 
-A family is a module in `scenarios/` listed in `scenarios/__init__.py`, with `NAME`,
-`probes(tier)` and `report(results, headers, cpus, w)`; `scenarios/common.py` states the
+A family is a module in `scenarios/` listed in `scenarios/registry.py`, with `NAME`,
+`probes(tier)` and `report(results, headers, w)`; `scenarios/common.py` states the
 contract and holds the shared snippets. A probe is one translation unit returned as text by its
 `source()`, keyed by its dimensions as `name=value,...` so the report and the baseline can find
 it. The rules that keep a figure meaningful:
