@@ -2624,11 +2624,11 @@ struct _awaitable_extract_type< std::variant<> >
         using type = void;
 };
 
-template < typename PromiseType, typename ValueType >
+template < typename PromiseBase, typename ValueType >
 struct _task_awaitable_base
 {
         using value_type = ValueType;
-        using _env       = env_type< PromiseType >;
+        using _env       = env_type< PromiseBase >;
 
         /// Awaitable is never ready
         [[nodiscard]] constexpr bool await_ready() const noexcept
@@ -2653,7 +2653,10 @@ struct _task_awaitable_base
                 }
         }
 
-        void await_suspend( std::coroutine_handle< PromiseType > ch ) noexcept
+        /// Must take the handle, not the promise: with a reference parameter GCC inlines this
+        /// and `await_suspend` at every `co_await`.
+        template < typename P >
+        void _bind( std::coroutine_handle< P > ch ) noexcept
         {
                 this->_promise = &ch.promise();
                 this->_promise->trace.on_await_suspend( *this );
@@ -2701,7 +2704,7 @@ struct _task_awaitable_base
         };
 
 protected:
-        PromiseType*           _promise = nullptr;
+        PromiseBase*           _promise = nullptr;
         ECOR_NO_UNIQUE_ADDRESS _awaitable_expected< value_type > _exp;
 
 #ifdef ECOR_DEBUG_PARENT
@@ -2741,11 +2744,11 @@ protected:
 ///
 /// Awaitable resumes coroutine only on on_value signal.
 ///
-template < typename PromiseType, typename ValueType, typename Op >
-struct _task_awaitable : _task_awaitable_base< PromiseType, ValueType >
+template < typename PromiseBase, typename ValueType, typename Op >
+struct _task_awaitable : _task_awaitable_base< PromiseBase, ValueType >
 {
         using value_type = ValueType;
-        using _base      = _task_awaitable_base< PromiseType, ValueType >;
+        using _base      = _task_awaitable_base< PromiseBase, ValueType >;
 
         template < typename S >
         _task_awaitable( S&& sender )
@@ -2761,9 +2764,10 @@ struct _task_awaitable : _task_awaitable_base< PromiseType, ValueType >
         using _base::await_resume;
 
         /// Starts the operation state on awaiter suspension.
-        void await_suspend( std::coroutine_handle< PromiseType > ch ) noexcept
+        template < typename P >
+        void await_suspend( std::coroutine_handle< P > ch ) noexcept
         {
-                _base::await_suspend( ch );
+                _base::_bind( ch );
 #ifdef ECOR_DEBUG_PARENT
                 this->_bind_debug_parent( _op );
 #endif
@@ -2941,13 +2945,15 @@ struct task_default_trace
 
         /// Called when the task is completing its continuation with `set_error`. This happens
         /// either because an awaited child sender errored and the error was propagated, or
-        /// because the coroutine body threw (see `on_unhandled_exception`).
+        /// because the coroutine body threw (see `on_unhandled_exception`). `promise` is the
+        /// promise's `_promise_cfg_base`.
         ECOR_FORCE_INLINE void on_set_error( auto& /*promise*/, auto& /*error*/ ) noexcept
         {
         }
 
         /// Called when the task is completing its continuation with `set_stopped`, i.e. the
         /// task was cancelled (typically because an awaited child sender propagated stop).
+        /// `promise` is the promise's `_promise_cfg_base`.
         ECOR_FORCE_INLINE void on_set_stopped( auto& /*promise*/ ) noexcept
         {
         }
@@ -3134,6 +3140,65 @@ struct _promise_base : _reschedulable
         }
 };
 
+template < typename ErrSigs >
+using _task_cont_vtable_base =
+    _apply_to_sigs_t< _sig_vtable, _sigs_append_t< ErrSigs, set_stopped_t() > >;
+
+template < typename ErrSigs, typename ValueSig >
+struct _task_cont_vtable : _task_cont_vtable_base< ErrSigs >, _sig_vtable_row< ValueSig >
+{
+        template < typename D, typename B >
+        constexpr _task_cont_vtable( _tag< D > dt, _tag< B > bt ) noexcept
+          : _task_cont_vtable_base< ErrSigs >( dt, bt )
+          , _sig_vtable_row< ValueSig >( dt, bt )
+        {
+        }
+
+        using _task_cont_vtable_base< ErrSigs >::invoke;
+        using _sig_vtable_row< ValueSig >::invoke;
+};
+
+template < typename Trace, typename ErrSigs >
+struct _promise_cfg_base : _promise_base
+{
+        using trace_type     = Trace;
+        using _cont_vtable_t = _task_cont_vtable_base< ErrSigs >;
+
+        /// Must stay inline: out of line it stores this base's vptr, and the base gets a vtable
+        /// of its own.
+        ECOR_FORCE_INLINE explicit _promise_cfg_base( task_core& core ) noexcept
+          : _promise_base( core )
+        {
+        }
+
+        template < typename U >
+        void invoke_set_error( U&& err )
+        {
+                trace.on_set_error( *this, err );
+                ECOR_ASSERT( _cont_vtable );
+                if ( _cont_vtable ) {
+                        auto* r = std::exchange( _cont_vtable, nullptr );
+                        r->invoke( set_error_t{}, _cont_obj, (U&&) err );
+                }
+        }
+
+        void invoke_set_stopped()
+        {
+                trace.on_set_stopped( *this );
+                ECOR_ASSERT( _cont_vtable );
+                if ( _cont_vtable ) {
+                        auto* r = std::exchange( _cont_vtable, nullptr );
+                        r->invoke( set_stopped_t{}, _cont_obj );
+                }
+        }
+
+        ECOR_NO_UNIQUE_ADDRESS trace_type trace;
+
+protected:
+        _cont_vtable_t const* _cont_vtable = nullptr;
+        void*                 _cont_obj    = nullptr;
+};
+
 template < typename Task >
 struct _promise_type;
 
@@ -3161,8 +3226,8 @@ struct _promise_return_mixin< Task, void >
 };
 
 /// Promise type for the task. This implements the promise interface required for C++ coroutines,
-/// and inherits from the promise base and the value mixin to provide the necessary functionality
-/// for the task promise.
+/// and inherits from `_promise_cfg_base` and the value mixin to provide the necessary
+/// functionality for the task promise.
 ///
 /// - Suspends on initial_suspend, is expected to run after start() is called on the operation state
 ///   returned by connect().
@@ -3174,13 +3239,16 @@ struct _promise_return_mixin< Task, void >
 ///   co_awaiting on senders from the task coroutine.
 ///
 template < typename Task >
-struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task::value_type >
+struct _promise_type
+  : _promise_cfg_base< typename Task::config_type::trace_type, typename Task::_error_completions >,
+    _promise_return_mixin< Task, typename Task::value_type >
 {
         using value_type = typename Task::value_type;
         using cfg_type   = typename Task::config_type;
         using trace_type = typename cfg_type::trace_type;
-        using _promise_base::_promise_base;
-        using vtable = _apply_to_sigs_t< _sig_vtable, typename Task::completion_signatures >;
+        using _base      = _promise_cfg_base< trace_type, typename Task::_error_completions >;
+        using vtable =
+            _task_cont_vtable< typename Task::_error_completions, _value_setter_t< value_type > >;
 
         _promise_type( _promise_type const& )            = delete;
         _promise_type& operator=( _promise_type const& ) = delete;
@@ -3190,7 +3258,7 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
         {
                 /// XXX: we can't guarantee noexcept of the subcalls - try/catch?
                 task_memory_resource& a = get_memory_resource( ctx );
-                void*                 p = _alloc( sz, a );
+                void*                 p = _promise_base::_alloc( sz, a );
                 trace_type::on_alloc( ctx, sz, p );
                 return p;
         }
@@ -3199,16 +3267,15 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
         {
                 /// XXX: we can't guarantee noexcept of the subcalls - try/catch?
                 trace_type::on_dealloc( ptr, sz );
-                _dealloc( ptr, sz );
+                _promise_base::_dealloc( ptr, sz );
         }
 
         /// Construct the promise base by extracting the task core from the context argument and
         /// initializing the token.
         _promise_type( task_context auto&& ctx, auto&&... s )
-          : _promise_base( get_task_core( ctx ) )
-          , trace()
+          : _base( get_task_core( ctx ) )
         {
-                trace.on_promise_construct( *this, ctx, s... );
+                this->trace.on_promise_construct( *this, ctx, s... );
         }
 
         static Task get_return_object_on_allocation_failure()
@@ -3230,9 +3297,9 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
                 // already guarantees dispatch works (including implicit conversions). Build the
                 // _task_awaitable directly so the static_assert in await_transform is not hit.
                 using S      = _just_error< E >;
-                using recv_t = typename _task_awaitable_base< _promise_type, void >::_receiver;
+                using recv_t = typename _task_awaitable_base< _base, void >::_receiver;
                 using op_t   = connect_type< S, recv_t >;
-                return _task_awaitable< _promise_type, void, op_t >{
+                return _task_awaitable< _base, void, op_t >{
                     just_error( std::move( error.error ) ) };
         }
 
@@ -3252,9 +3319,9 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
                             "Sender used in co_await must only complete with a single set_value signature" );
                         using value_type = typename _awaitable_extract_type< vals >::type;
                         using recv_t =
-                            typename _task_awaitable_base< _promise_type, value_type >::_receiver;
+                            typename _task_awaitable_base< _base, value_type >::_receiver;
                         using op_t = connect_type< T, recv_t >;
-                        return _task_awaitable< _promise_type, value_type, op_t >{ (T&&) x };
+                        return _task_awaitable< _base, value_type, op_t >{ (T&&) x };
                 } else {
                         return (T&&) x;
                 }
@@ -3262,58 +3329,38 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
 
         void unhandled_exception() noexcept
         {
-                trace.on_unhandled_exception( *this );
+                this->trace.on_unhandled_exception( *this );
                 this->invoke_set_error(
                     cfg_type::convert_error( task_error::task_unhandled_exception ) );
         }
 
         void resume() override
         {
-                trace.on_resume( *this );
+                this->trace.on_resume( *this );
                 auto h = std::coroutine_handle< _promise_type >::from_promise( *this );
                 h.resume();
-        }
-
-        template < typename U >
-        void invoke_set_error( U&& err )
-        {
-                trace.on_set_error( *this, err );
-                ECOR_ASSERT( this->_cont_vtable );
-                if ( this->_cont_vtable ) {
-                        auto* r = std::exchange( this->_cont_vtable, nullptr );
-                        r->invoke( set_error_t{}, _cont_obj, (U&&) err );
-                }
         }
 
         template < typename... U >
         void invoke_set_value( U&&... v )
         {
-                trace.on_set_value( *this, v... );
+                this->trace.on_set_value( *this, v... );
                 ECOR_ASSERT( this->_cont_vtable );
                 if ( this->_cont_vtable ) {
                         auto* r = std::exchange( this->_cont_vtable, nullptr );
-                        r->invoke( set_value_t{}, this->_cont_obj, (U&&) v... );
-                }
-        }
-
-        void invoke_set_stopped()
-        {
-                trace.on_set_stopped( *this );
-                ECOR_ASSERT( this->_cont_vtable );
-                if ( this->_cont_vtable ) {
-                        auto* r = std::exchange( this->_cont_vtable, nullptr );
-                        r->invoke( set_stopped_t{}, this->_cont_obj );
+                        static_cast< vtable const* >( r )->invoke(
+                            set_value_t{}, this->_cont_obj, (U&&) v... );
                 }
         }
 
         std::suspend_always final_suspend() noexcept
         {
-                trace.on_final_suspend( *this );
-                if ( _cont_vtable ) {
+                this->trace.on_final_suspend( *this );
+                if ( this->_cont_vtable ) {
                         auto* r = std::exchange( this->_cont_vtable, nullptr );
                         r->invoke(
                             set_error_t{},
-                            _cont_obj,
+                            this->_cont_obj,
                             cfg_type::convert_error( task_error::task_unfinished ) );
                 }
                 return {};
@@ -3328,18 +3375,11 @@ struct _promise_type : _promise_base, _promise_return_mixin< Task, typename Task
 
         ~_promise_type() noexcept
         {
-                if ( _cont_vtable ) {
-                        trace.on_destroy_with_continuation( *this );
-                        this->_cont_vtable->invoke( set_stopped_t{}, _cont_obj );
+                if ( this->_cont_vtable ) {
+                        this->trace.on_destroy_with_continuation( *this );
+                        this->_cont_vtable->invoke( set_stopped_t{}, this->_cont_obj );
                 }
         }
-
-
-        ECOR_NO_UNIQUE_ADDRESS trace_type trace;
-
-private:
-        vtable const* _cont_vtable = nullptr;
-        void*         _cont_obj    = nullptr;
 };
 
 /// Operation state for the task sender. This is the type returned by the connect() function of the

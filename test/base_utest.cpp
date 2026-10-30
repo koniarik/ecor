@@ -2114,6 +2114,15 @@ struct task_cfg_convertible
 
 static_assert( ecor::task_config< task_cfg_convertible > );
 
+// Tasks of one configuration awaiting one sender share the awaitable whatever their value
+// types, and with it the receiver, the operation state and its rows.
+using _shared_await_src = ll_source< unit, set_value_t() >;
+static_assert( std::same_as<
+               decltype( std::declval< task< void >::promise_type& >().await_transform(
+                   std::declval< _shared_await_src& >().schedule() ) ),
+               decltype( std::declval< task< int >::promise_type& >().await_transform(
+                   std::declval< _shared_await_src& >().schedule() ) ) > );
+
 struct _convertible_cfg_receiver
 {
         using receiver_concept = ecor::receiver_t;

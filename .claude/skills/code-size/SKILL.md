@@ -18,6 +18,13 @@ been wrong at least once, in both directions. Build the variants and measure the
 
 ## The process
 
+`test/size/` is the harness. `python3 test/size/size.py --full` builds every probe family for
+cortex-m4 and writes `test/size/build/report.md`; `--against REF` compares the working tree's
+header with a commit's; `update-baseline` records the figures for the toolchain in use, and a
+later run fails on a probe that grew past the tolerance. A new measurement goes in as a probe
+or a family, see `test/size/README.md`, so that its numbers can be re-run; `explain PROBE
+--against REF` prints the section diff behind a delta.
+
 1. **Write a probe** — a single TU that instantiates the abstraction and *uses* every operation
    you care about, with `extern` declarations for everything else so nothing is optimized away.
 2. **Generate header variants** — copy `include/ecor/ecor.hpp` into per-variant directories and
@@ -90,8 +97,8 @@ Measure a change to shared template code against the previous header on programs
 what changed, too: the README configurations and the thread and coroutine firmware. A feature's
 own probes cannot show what it costs everyone else.
 
-Measure on both `cortex-m0plus` and `cortex-m4`. Conclusions have always agreed; magnitudes
-differ by 10–20%, and M4's better addressing modes sometimes flip a small result's sign.
+The suite measures `cortex-m4` only. The M0+ figures in the lessons below are from before that
+decision; the two cores always agreed on the conclusion, with magnitudes 10–20% apart.
 
 ## What we have learned
 
@@ -305,6 +312,57 @@ such pumps, up to 692 at eight. A one-pump probe sees only the cost: without LTO
 and 16 to 28 on a stoppable pump, where the stop source's non-trivial destructor gives the
 shared core a 12-byte vtable of its own; with LTO none.
 
+### Key an awaitable on the promise's configuration-level base
+
+`_task_awaitable_base< PromiseType, V >` and its `_receiver` were keyed on the awaiting
+`_promise_type< task< T, CFG > >`, though they read only the trace, `_reschedule()`, `get_env()`,
+`invoke_set_error()` and `invoke_set_stopped()`. `T` came in through the continuation vtable's
+type, whose value row sat between the error rows and the stopped row. With the value row last,
+behind a `_task_cont_vtable_base< ErrSigs >`, and `_promise_cfg_base< Trace, ErrSigs >` holding
+the trace and a pointer to that base, the awaitable, its receiver, the operation state connected
+to it and that state's rows exist once per task configuration and awaited value type instead of
+once per awaiting task type: ±0 with one task value type, −234 / −198 (M0+ / M4) with two
+awaiting four sender kinds, −902 / −766 with four; a further task value type costs 317 instead
+of 617 bytes of awaits (`doc/plans/awaitable-cfg.md`). The probe for this kind of sharing needs
+several awaiting task value types, as the receiver lesson above needs two producer task types.
+
+`await_suspend< P >` hands the coroutine handle to the base's `_bind< P >`, which computes the
+promise itself. Passing `ch.promise()` instead, a reference computed at the site, measured
+identical on probes of up to four coroutines with four awaits each and then cost 5 to 10 bytes
+per `co_await`: +260 / +224 at sixteen one-type coroutines with four awaits each, +4836 / +2912
+with 32 each, and with four task types and 32 awaits each a net +3454 / +1578 over HEAD, the
+sharing included. With the address computation at the site GCC inlines `await_suspend` at every
+`co_await` and outlines each op's `start()`, where with the handle it keeps one `await_suspend`
+per awaitable type with `start()` inlined, as at HEAD. Forcing the body out of line instead cost
+every one-type program 42 to 76 bytes. A probe of a few coroutines with a few awaits cannot see
+any of this: `doc/plans/awaitable-cfg/scale/` sweeps 1 to 16 coroutines over 1 or 4 value types
+with 4 to 32 awaits each, and the number of coroutines sharing an awaitable and the number of
+awaits per coroutine are dimensions of their own, next to the number of types. A non-template
+`await_suspend(
+std::coroutine_handle<> )` that recovers the base through `coroutine_handle< PromiseBase
+>::from_address` shares the function across task types as well, 34 more bytes at four types and
+260 at sixteen coroutines of four types, but violates `from_address`'s precondition by the
+standard's letter and was declined. Handing the awaitable its promise at construction measured
++538 / +686 at sixteen one-type coroutines. Check `nm` for an out-of-line instantiation before
+erasing a template parameter, and `-fopt-info-inline-all` (the harness's `EXTRA_FLAGS`) for why
+the inliner moved.
+
+The part of that variant which did save bytes was incidental: `_task_awaitable`'s constructor
+value-initialises its base with `: _base()`, which zero-fills the base at every site before the
+member initialisers run, a `memset` call for the 12-byte base of a `uint32_t` awaitable. Writing
+`: _base( p )`, or leaving the base to default-initialise, removes the fill: −40 on a one-type
+probe with four sites, −44 / −8 on the coroutine firmware. An empty-parenthesis mem-initialiser
+on a base whose members carry their own initialisers is a zero-fill, not a no-op.
+
+Moving the promise destructor's completion of an attached continuation into the base as a
+destructor saves 26 to 30 bytes per further task value type and costs 12 to 24 once: an abstract
+base with a non-trivial destructor gets a vtable of its own and a vptr store in every destructor
+of the chain. Not applied; re-measure if `schedulable::resume()` stops being virtual. The same
+happens to a constructor: the base's inheriting constructor went out of line at 32 promise
+constructions and brought the base's vtable with it, +68 / +100 on the eight-pump probes, so
+the base has an explicit `ECOR_FORCE_INLINE` constructor, HEAD's shape. Any constructor or
+destructor of a dynamic base is an outlining candidate that costs a vtable when taken.
+
 ### Measure a feature's scaling in three forms
 
 For `push_and_wait` the growth per element type and per queue was measured with the feature,
@@ -370,6 +428,14 @@ and then corrupts exactly the large realistic measurement you care about most.
 A counter that buckets `zll` symbols by node type must not collapse `ll_entry<T,S...>` to
 `ll_entry<…>`. Doing so merged 11 distinct instantiations into one bucket and understated the
 cost of collapsing them by more than 2×. Truncate for display only, after aggregating.
+
+### A symbol diff over an object counts ICF aliases in full
+
+`-fipa-icf` at `-Os` folds identical internal-linkage functions, such as the four
+`_queue_push_op` awaitables of the call probe, into one section that carries every name, and
+`nm --print-size` prints the full size under each of them. `push-and-wait/symdiff.py` then
+disagrees with `size -A` by the folded copies. `size -A` is the figure; use the symbol diff for
+attribution, and a section diff when the two disagree.
 
 ### A type must be *constructed* in the probe, not just referenced
 

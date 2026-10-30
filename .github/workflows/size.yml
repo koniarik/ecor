@@ -1,0 +1,47 @@
+name: size
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+    branches: ["master", "main"]
+
+jobs:
+  size:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: install the Arm GNU toolchain
+        run: |
+          curl -sSL -o toolchain.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi.tar.xz
+          mkdir -p "$HOME/arm" && tar -xJf toolchain.tar.xz -C "$HOME/arm" --strip-components=1
+          echo "$HOME/arm/bin" >> "$GITHUB_PATH"
+
+      - name: pick the header to compare against
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "SIZE_BASE=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_ENV"
+          elif git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+            echo "SIZE_BASE=${{ github.event.before }}" >> "$GITHUB_ENV"
+          else
+            echo "SIZE_BASE=HEAD~1" >> "$GITHUB_ENV"
+          fi
+
+      - name: measure
+        run: python3 test/size/size.py --full --against "$SIZE_BASE" --fail-on-growth
+
+      - name: upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-report
+          path: |
+            test/size/build/report.md
+            test/size/build/results.json

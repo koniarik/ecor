@@ -1,0 +1,1979 @@
+{
+ "toolchain": "arm-none-eabi-gcc-15.3.1",
+ "cpu": "cortex-m4",
+ "tier": "full",
+ "results": {
+  "arena/arenas=1,mems=1,objs=1": [
+   918,
+   0
+  ],
+  "arena/arenas=1,mems=1,objs=4": [
+   1654,
+   0
+  ],
+  "arena/arenas=2,mems=1,objs=1": [
+   1328,
+   0
+  ],
+  "arena/arenas=2,mems=1,objs=4": [
+   2760,
+   0
+  ],
+  "arena/arenas=2,mems=n,objs=1": [
+   1670,
+   0
+  ],
+  "arena/arenas=2,mems=n,objs=4": [
+   3090,
+   0
+  ],
+  "arena/arenas=4,mems=1,objs=1": [
+   1964,
+   0
+  ],
+  "arena/arenas=4,mems=1,objs=4": [
+   4836,
+   0
+  ],
+  "arena/arenas=4,mems=n,objs=1": [
+   2726,
+   0
+  ],
+  "arena/arenas=4,mems=n,objs=4": [
+   5546,
+   0
+  ],
+  "holder/holders=1,factory=fnptr,bodies=1,stop=0": [
+   1072,
+   0
+  ],
+  "holder/holders=1,factory=fnptr,bodies=1,stop=1": [
+   1160,
+   0
+  ],
+  "holder/holders=1,factory=lambda,bodies=1,stop=0": [
+   1050,
+   0
+  ],
+  "holder/holders=1,factory=lambda,bodies=1,stop=1": [
+   1138,
+   0
+  ],
+  "holder/holders=10,factory=fnptr,bodies=1,stop=0": [
+   1524,
+   0
+  ],
+  "holder/holders=10,factory=fnptr,bodies=1,stop=1": [
+   1970,
+   0
+  ],
+  "holder/holders=10,factory=fnptr,bodies=n,stop=0": [
+   4336,
+   0
+  ],
+  "holder/holders=10,factory=fnptr,bodies=n,stop=1": [
+   4762,
+   0
+  ],
+  "holder/holders=10,factory=lambda,bodies=1,stop=0": [
+   1854,
+   0
+  ],
+  "holder/holders=10,factory=lambda,bodies=1,stop=1": [
+   2316,
+   0
+  ],
+  "holder/holders=10,factory=lambda,bodies=n,stop=0": [
+   4538,
+   0
+  ],
+  "holder/holders=10,factory=lambda,bodies=n,stop=1": [
+   4996,
+   0
+  ],
+  "holder/holders=100,factory=fnptr,bodies=1,stop=0": [
+   6460,
+   0
+  ],
+  "holder/holders=100,factory=fnptr,bodies=1,stop=1": [
+   10430,
+   0
+  ],
+  "holder/holders=100,factory=fnptr,bodies=n,stop=0": [
+   36276,
+   0
+  ],
+  "holder/holders=100,factory=fnptr,bodies=n,stop=1": [
+   40094,
+   0
+  ],
+  "holder/holders=100,factory=lambda,bodies=1,stop=0": [
+   9978,
+   0
+  ],
+  "holder/holders=100,factory=lambda,bodies=1,stop=1": [
+   14116,
+   0
+  ],
+  "holder/holders=100,factory=lambda,bodies=n,stop=0": [
+   38762,
+   0
+  ],
+  "holder/holders=100,factory=lambda,bodies=n,stop=1": [
+   42896,
+   0
+  ],
+  "holder/holders=4,factory=fnptr,bodies=1,stop=0": [
+   1240,
+   0
+  ],
+  "holder/holders=4,factory=fnptr,bodies=1,stop=1": [
+   1450,
+   0
+  ],
+  "holder/holders=4,factory=fnptr,bodies=n,stop=0": [
+   2248,
+   0
+  ],
+  "holder/holders=4,factory=fnptr,bodies=n,stop=1": [
+   2446,
+   0
+  ],
+  "holder/holders=4,factory=lambda,bodies=1,stop=0": [
+   1346,
+   0
+  ],
+  "holder/holders=4,factory=lambda,bodies=1,stop=1": [
+   1552,
+   0
+  ],
+  "holder/holders=4,factory=lambda,bodies=n,stop=0": [
+   2302,
+   0
+  ],
+  "holder/holders=4,factory=lambda,bodies=n,stop=1": [
+   2500,
+   0
+  ],
+  "image/spec=medium,lto=0": [
+   441352,
+   49420
+  ],
+  "image/spec=medium,lto=1": [
+   426812,
+   49420
+  ],
+  "image/spec=small,lto=0": [
+   136832,
+   49292
+  ],
+  "image/spec=small,lto=1": [
+   131028,
+   49292
+  ],
+  "image/spec=special,lto=0": [
+   1534136,
+   49828
+  ],
+  "image/spec=special,lto=1": [
+   1482456,
+   49828
+  ],
+  "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=call": [
+   2944,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=closeable": [
+   2226,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=default": [
+   2094,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=imm,types=1,qcfg=default": [
+   774,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=imm,types=4,qcfg=call": [
+   1808,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=imm,types=4,qcfg=closeable": [
+   1060,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=imm,types=4,qcfg=default": [
+   930,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=imm,types=8,qcfg=default": [
+   1078,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=task,types=1,qcfg=default": [
+   1236,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=task,types=4,qcfg=call": [
+   2902,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=task,types=4,qcfg=closeable": [
+   2180,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=task,types=4,qcfg=default": [
+   2048,
+   0
+  ],
+  "pump/pumps=1,stoppable=0,handler=task,types=8,qcfg=default": [
+   3040,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=hooks,types=4,qcfg=call": [
+   3222,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=hooks,types=4,qcfg=closeable": [
+   2484,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=hooks,types=4,qcfg=default": [
+   2360,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=imm,types=1,qcfg=default": [
+   1038,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=imm,types=4,qcfg=call": [
+   2086,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=imm,types=4,qcfg=closeable": [
+   1324,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=imm,types=4,qcfg=default": [
+   1194,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=imm,types=8,qcfg=default": [
+   1342,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=task,types=1,qcfg=default": [
+   1502,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=task,types=4,qcfg=call": [
+   3184,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=task,types=4,qcfg=closeable": [
+   2446,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=task,types=4,qcfg=default": [
+   2318,
+   0
+  ],
+  "pump/pumps=1,stoppable=1,handler=task,types=8,qcfg=default": [
+   3314,
+   0
+  ],
+  "pump/pumps=2,stoppable=0,handler=imm,types=4,qcfg=default": [
+   1414,
+   0
+  ],
+  "pump/pumps=2,stoppable=0,handler=task,types=4,qcfg=default": [
+   3434,
+   0
+  ],
+  "pump/pumps=2,stoppable=1,handler=imm,types=4,qcfg=default": [
+   1842,
+   0
+  ],
+  "pump/pumps=2,stoppable=1,handler=task,types=4,qcfg=default": [
+   3866,
+   0
+  ],
+  "pump/pumps=4,stoppable=0,handler=imm,types=4,qcfg=default": [
+   2288,
+   0
+  ],
+  "pump/pumps=4,stoppable=0,handler=task,types=4,qcfg=default": [
+   6080,
+   0
+  ],
+  "pump/pumps=4,stoppable=1,handler=imm,types=4,qcfg=default": [
+   3020,
+   0
+  ],
+  "pump/pumps=4,stoppable=1,handler=task,types=4,qcfg=default": [
+   6804,
+   0
+  ],
+  "pump/pumps=8,stoppable=0,handler=imm,types=4,qcfg=default": [
+   4056,
+   0
+  ],
+  "pump/pumps=8,stoppable=0,handler=task,types=4,qcfg=default": [
+   11360,
+   0
+  ],
+  "pump/pumps=8,stoppable=1,handler=hooks,types=4,qcfg=default": [
+   13790,
+   0
+  ],
+  "pump/pumps=8,stoppable=1,handler=imm,types=4,qcfg=default": [
+   5322,
+   0
+  ],
+  "pump/pumps=8,stoppable=1,handler=task,types=4,qcfg=default": [
+   12794,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
+   4600,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
+   4890,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
+   1074,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=none,stop=1,types=1,queues=1,owning=0": [
+   1028,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=none,stop=1,types=1,queues=1,owning=1": [
+   1134,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=none,stop=1,types=4,queues=1,owning=0": [
+   1428,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=none,stop=1,types=4,queues=1,owning=1": [
+   1874,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=none,stop=1,types=4,queues=2,owning=0": [
+   2286,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=none,stop=1,types=4,queues=4,owning=0": [
+   3818,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=none,stop=1,types=8,queues=1,owning=0": [
+   1928,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=none,stop=1,types=8,queues=1,owning=1": [
+   2808,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
+   3336,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
+   3676,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3546,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3836,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
+   4974,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
+   5284,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
+   1408,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=none,stop=1,types=1,queues=1,owning=0": [
+   1336,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=none,stop=1,types=1,queues=1,owning=1": [
+   1442,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=none,stop=1,types=4,queues=1,owning=0": [
+   1772,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=none,stop=1,types=4,queues=1,owning=1": [
+   2214,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=none,stop=1,types=4,queues=2,owning=0": [
+   2802,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=none,stop=1,types=4,queues=4,owning=0": [
+   4722,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=none,stop=1,types=8,queues=1,owning=0": [
+   2356,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=none,stop=1,types=8,queues=1,owning=1": [
+   3224,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3922,
+   0
+  ],
+  "queue/pop=cancellable,push=cancellable,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   4228,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
+   4600,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
+   4762,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
+   1074,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=0,call=none,stop=1,types=4,queues=1,owning=0": [
+   1314,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
+   3336,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
+   3550,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3546,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3708,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
+   4974,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
+   5154,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
+   1408,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=1,call=none,stop=1,types=4,queues=1,owning=0": [
+   1650,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3922,
+   0
+  ],
+  "queue/pop=cancellable,push=parking,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   4102,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
+   4348,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
+   4462,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
+   810,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=none,stop=1,types=1,queues=1,owning=0": [
+   780,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=none,stop=1,types=1,queues=1,owning=1": [
+   872,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=none,stop=1,types=4,queues=1,owning=0": [
+   986,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=none,stop=1,types=4,queues=1,owning=1": [
+   1336,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=none,stop=1,types=4,queues=2,owning=0": [
+   1600,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=none,stop=1,types=4,queues=4,owning=0": [
+   2668,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=none,stop=1,types=8,queues=1,owning=0": [
+   1194,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=none,stop=1,types=8,queues=1,owning=1": [
+   1914,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
+   3080,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
+   3246,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3294,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3404,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
+   4670,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
+   4804,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
+   1088,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=1,call=none,stop=1,types=4,queues=1,owning=0": [
+   1276,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3614,
+   0
+  ],
+  "queue/pop=cancellable,push=try_only,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3752,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
+   4600,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
+   4778,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
+   1074,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=0,call=none,stop=1,types=4,queues=1,owning=0": [
+   1308,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
+   3336,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
+   3566,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3546,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3724,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
+   4974,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
+   5170,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
+   1408,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=1,call=none,stop=1,types=4,queues=1,owning=0": [
+   1644,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3922,
+   0
+  ],
+  "queue/pop=parking,push=cancellable,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   4118,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
+   4600,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
+   4648,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
+   1074,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=none,stop=1,types=1,queues=1,owning=0": [
+   770,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=none,stop=1,types=1,queues=1,owning=1": [
+   876,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=none,stop=1,types=4,queues=1,owning=0": [
+   1130,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=none,stop=1,types=4,queues=1,owning=1": [
+   1570,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=none,stop=1,types=4,queues=2,owning=0": [
+   1858,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=none,stop=1,types=4,queues=4,owning=0": [
+   3162,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=none,stop=1,types=8,queues=1,owning=0": [
+   1620,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=none,stop=1,types=8,queues=1,owning=1": [
+   2504,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
+   3336,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
+   3388,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3546,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3598,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
+   4974,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
+   5040,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
+   1408,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=1,call=none,stop=1,types=4,queues=1,owning=0": [
+   1474,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3922,
+   0
+  ],
+  "queue/pop=parking,push=parking,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3988,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
+   4348,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
+   4356,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
+   810,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=none,stop=1,types=1,queues=1,owning=0": [
+   608,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=none,stop=1,types=1,queues=1,owning=1": [
+   704,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=none,stop=1,types=4,queues=1,owning=0": [
+   814,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=none,stop=1,types=4,queues=1,owning=1": [
+   1164,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=none,stop=1,types=4,queues=2,owning=0": [
+   1324,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=none,stop=1,types=4,queues=4,owning=0": [
+   2204,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=none,stop=1,types=8,queues=1,owning=0": [
+   1022,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=none,stop=1,types=8,queues=1,owning=1": [
+   1744,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
+   3080,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
+   3084,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3294,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3302,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
+   4670,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
+   4684,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
+   1088,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=1,call=none,stop=1,types=4,queues=1,owning=0": [
+   1102,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3614,
+   0
+  ],
+  "queue/pop=parking,push=try_only,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3628,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
+   4370,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
+   4548,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
+   860,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=0,call=none,stop=1,types=4,queues=1,owning=0": [
+   1086,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=0,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
+   3282,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=0,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
+   3452,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
+   3106,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
+   3336,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3316,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3494,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
+   4716,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
+   4914,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
+   1162,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=1,call=none,stop=1,types=4,queues=1,owning=0": [
+   1400,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=1,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
+   3622,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=1,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
+   3820,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3664,
+   0
+  ],
+  "queue/pop=try_only,push=cancellable,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3858,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
+   4370,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
+   4422,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
+   860,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=0,call=none,stop=1,types=4,queues=1,owning=0": [
+   908,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=0,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
+   3282,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=0,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
+   3326,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
+   3106,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
+   3158,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3316,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3368,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
+   4716,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
+   4778,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
+   1162,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=1,call=none,stop=1,types=4,queues=1,owning=0": [
+   1224,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=1,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
+   3622,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=1,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
+   3684,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3664,
+   0
+  ],
+  "queue/pop=try_only,push=parking,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3722,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
+   4112,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=1,queues=1,owning=0": [
+   2224,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=1,queues=1,owning=1": [
+   2370,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
+   4112,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=4,queues=1,owning=1": [
+   4546,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=4,queues=2,owning=0": [
+   7056,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=4,queues=4,owning=0": [
+   12936,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=8,queues=1,owning=0": [
+   6548,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=8,queues=1,owning=1": [
+   7412,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
+   578,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=none,stop=1,types=1,queues=1,owning=0": [
+   432,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=none,stop=1,types=1,queues=1,owning=1": [
+   524,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=none,stop=1,types=4,queues=1,owning=0": [
+   578,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=none,stop=1,types=4,queues=1,owning=1": [
+   928,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=none,stop=1,types=4,queues=2,owning=0": [
+   862,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=none,stop=1,types=4,queues=4,owning=0": [
+   1346,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=none,stop=1,types=8,queues=1,owning=0": [
+   726,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=none,stop=1,types=8,queues=1,owning=1": [
+   1452,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
+   3012,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=1,queues=1,owning=0": [
+   1654,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=1,queues=1,owning=1": [
+   1796,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
+   3012,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=4,queues=1,owning=1": [
+   3440,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=4,queues=2,owning=0": [
+   5028,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=4,queues=4,owning=0": [
+   9008,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=8,queues=1,owning=0": [
+   4668,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=8,queues=1,owning=1": [
+   5530,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
+   2846,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
+   2846,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3058,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=1,queues=1,owning=0": [
+   1746,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=1,queues=1,owning=1": [
+   1888,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3058,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=1,owning=1": [
+   3492,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=2,owning=0": [
+   5104,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=4,owning=0": [
+   9180,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=8,queues=1,owning=0": [
+   4654,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=8,queues=1,owning=1": [
+   5518,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
+   4406,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=1,queues=1,owning=0": [
+   2486,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=1,queues=1,owning=1": [
+   2626,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
+   4416,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=4,queues=1,owning=1": [
+   4844,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=4,queues=2,owning=0": [
+   7542,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=4,queues=4,owning=0": [
+   13546,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=8,queues=1,owning=0": [
+   6896,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=8,queues=1,owning=1": [
+   7754,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
+   844,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=none,stop=1,types=1,queues=1,owning=0": [
+   666,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=none,stop=1,types=1,queues=1,owning=1": [
+   762,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=none,stop=1,types=4,queues=1,owning=0": [
+   854,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=none,stop=1,types=4,queues=1,owning=1": [
+   1204,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=none,stop=1,types=4,queues=2,owning=0": [
+   1266,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=none,stop=1,types=4,queues=4,owning=0": [
+   1954,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=none,stop=1,types=8,queues=1,owning=0": [
+   1046,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=none,stop=1,types=8,queues=1,owning=1": [
+   1768,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
+   3316,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
+   3326,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
+   3354,
+   0
+  ],
+  "queue/pop=try_only,push=try_only,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
+   3364,
+   0
+  ],
+  "ram/type=async_arena": [
+   56,
+   0
+  ],
+  "ram/type=async_ptr": [
+   4,
+   0
+  ],
+  "ram/type=await_ll": [
+   24,
+   0
+  ],
+  "ram/type=await_seq": [
+   32,
+   0
+  ],
+  "ram/type=await_task": [
+   20,
+   0
+  ],
+  "ram/type=call_op": [
+   28,
+   0
+  ],
+  "ram/type=circular_buffer_memory_u16": [
+   16,
+   0
+  ],
+  "ram/type=close_op": [
+   20,
+   0
+  ],
+  "ram/type=inplace_stop_callback": [
+   16,
+   0
+  ],
+  "ram/type=inplace_stop_source": [
+   12,
+   0
+  ],
+  "ram/type=inplace_stop_token": [
+   4,
+   0
+  ],
+  "ram/type=ll_op": [
+   20,
+   0
+  ],
+  "ram/type=ll_source": [
+   8,
+   0
+  ],
+  "ram/type=pop_op_cancellable": [
+   44,
+   0
+  ],
+  "ram/type=pop_op_parking": [
+   24,
+   0
+  ],
+  "ram/type=promise_int": [
+   28,
+   0
+  ],
+  "ram/type=promise_void": [
+   28,
+   0
+  ],
+  "ram/type=pump": [
+   76,
+   0
+  ],
+  "ram/type=pump_stoppable": [
+   96,
+   0
+  ],
+  "ram/type=push_op_cancellable": [
+   52,
+   0
+  ],
+  "ram/type=push_op_parking": [
+   32,
+   0
+  ],
+  "ram/type=queue_all": [
+   44,
+   0
+  ],
+  "ram/type=queue_both_cancellable": [
+   36,
+   0
+  ],
+  "ram/type=queue_both_parking": [
+   36,
+   0
+  ],
+  "ram/type=queue_call": [
+   36,
+   0
+  ],
+  "ram/type=queue_closeable": [
+   44,
+   0
+  ],
+  "ram/type=queue_default": [
+   36,
+   0
+  ],
+  "ram/type=queue_pop_cancellable": [
+   36,
+   0
+  ],
+  "ram/type=queue_pop_parking": [
+   36,
+   0
+  ],
+  "ram/type=seq_op": [
+   28,
+   0
+  ],
+  "ram/type=seq_source": [
+   4,
+   0
+  ],
+  "ram/type=task_core": [
+   8,
+   0
+  ],
+  "ram/type=task_ctx": [
+   20,
+   0
+  ],
+  "ram/type=task_holder": [
+   60,
+   0
+  ],
+  "ram/type=task_memory_resource": [
+   12,
+   0
+  ],
+  "ram/type=task_op": [
+   8,
+   0
+  ],
+  "ram/type=task_void": [
+   8,
+   0
+  ],
+  "source/kind=ll,n=1,stopcheck=0,drain=broadcast,await=0": [
+   242,
+   0
+  ],
+  "source/kind=ll,n=1,stopcheck=0,drain=broadcast,await=1": [
+   834,
+   0
+  ],
+  "source/kind=ll,n=1,stopcheck=0,drain=next,await=0": [
+   218,
+   0
+  ],
+  "source/kind=ll,n=1,stopcheck=0,drain=next,await=1": [
+   806,
+   0
+  ],
+  "source/kind=ll,n=1,stopcheck=1,drain=next,await=0": [
+   286,
+   0
+  ],
+  "source/kind=ll,n=1,stopcheck=1,drain=next,await=1": [
+   886,
+   0
+  ],
+  "source/kind=ll,n=12,stopcheck=0,drain=broadcast,await=0": [
+   1890,
+   0
+  ],
+  "source/kind=ll,n=12,stopcheck=0,drain=broadcast,await=1": [
+   3614,
+   0
+  ],
+  "source/kind=ll,n=12,stopcheck=0,drain=next,await=0": [
+   1582,
+   0
+  ],
+  "source/kind=ll,n=12,stopcheck=0,drain=next,await=1": [
+   3282,
+   0
+  ],
+  "source/kind=ll,n=12,stopcheck=1,drain=next,await=0": [
+   2678,
+   0
+  ],
+  "source/kind=ll,n=12,stopcheck=1,drain=next,await=1": [
+   4078,
+   0
+  ],
+  "source/kind=ll,n=2,stopcheck=0,drain=broadcast,await=0": [
+   406,
+   0
+  ],
+  "source/kind=ll,n=2,stopcheck=0,drain=broadcast,await=1": [
+   1074,
+   0
+  ],
+  "source/kind=ll,n=2,stopcheck=0,drain=next,await=0": [
+   358,
+   0
+  ],
+  "source/kind=ll,n=2,stopcheck=0,drain=next,await=1": [
+   1014,
+   0
+  ],
+  "source/kind=ll,n=2,stopcheck=1,drain=next,await=0": [
+   514,
+   0
+  ],
+  "source/kind=ll,n=2,stopcheck=1,drain=next,await=1": [
+   1174,
+   0
+  ],
+  "source/kind=ll,n=4,stopcheck=0,drain=broadcast,await=0": [
+   788,
+   0
+  ],
+  "source/kind=ll,n=4,stopcheck=0,drain=broadcast,await=1": [
+   1682,
+   0
+  ],
+  "source/kind=ll,n=4,stopcheck=0,drain=next,await=0": [
+   612,
+   0
+  ],
+  "source/kind=ll,n=4,stopcheck=0,drain=next,await=1": [
+   1510,
+   0
+  ],
+  "source/kind=ll,n=4,stopcheck=1,drain=next,await=0": [
+   960,
+   0
+  ],
+  "source/kind=ll,n=4,stopcheck=1,drain=next,await=1": [
+   1802,
+   0
+  ],
+  "source/kind=ll,n=50,stopcheck=0,drain=broadcast,await=0": [
+   7594,
+   0
+  ],
+  "source/kind=ll,n=50,stopcheck=0,drain=broadcast,await=1": [
+   13266,
+   0
+  ],
+  "source/kind=ll,n=50,stopcheck=0,drain=next,await=0": [
+   6250,
+   0
+  ],
+  "source/kind=ll,n=50,stopcheck=0,drain=next,await=1": [
+   11998,
+   0
+  ],
+  "source/kind=ll,n=50,stopcheck=1,drain=next,await=0": [
+   10886,
+   0
+  ],
+  "source/kind=ll,n=50,stopcheck=1,drain=next,await=1": [
+   14594,
+   0
+  ],
+  "source/kind=ll,n=8,stopcheck=0,drain=broadcast,await=0": [
+   1350,
+   0
+  ],
+  "source/kind=ll,n=8,stopcheck=0,drain=broadcast,await=1": [
+   2676,
+   0
+  ],
+  "source/kind=ll,n=8,stopcheck=0,drain=next,await=0": [
+   1122,
+   0
+  ],
+  "source/kind=ll,n=8,stopcheck=0,drain=next,await=1": [
+   2444,
+   0
+  ],
+  "source/kind=ll,n=8,stopcheck=1,drain=next,await=0": [
+   1890,
+   0
+  ],
+  "source/kind=ll,n=8,stopcheck=1,drain=next,await=1": [
+   3012,
+   0
+  ],
+  "source/kind=seq,n=1,stopcheck=0,drain=next,await=0": [
+   312,
+   0
+  ],
+  "source/kind=seq,n=1,stopcheck=0,drain=next,await=1": [
+   984,
+   0
+  ],
+  "source/kind=seq,n=1,stopcheck=1,drain=next,await=0": [
+   392,
+   0
+  ],
+  "source/kind=seq,n=1,stopcheck=1,drain=next,await=1": [
+   1080,
+   0
+  ],
+  "source/kind=seq,n=12,stopcheck=0,drain=next,await=0": [
+   1964,
+   0
+  ],
+  "source/kind=seq,n=12,stopcheck=0,drain=next,await=1": [
+   3972,
+   0
+  ],
+  "source/kind=seq,n=12,stopcheck=1,drain=next,await=0": [
+   3104,
+   0
+  ],
+  "source/kind=seq,n=12,stopcheck=1,drain=next,await=1": [
+   4780,
+   0
+  ],
+  "source/kind=seq,n=2,stopcheck=0,drain=next,await=0": [
+   618,
+   0
+  ],
+  "source/kind=seq,n=2,stopcheck=0,drain=next,await=1": [
+   1398,
+   0
+  ],
+  "source/kind=seq,n=2,stopcheck=1,drain=next,await=0": [
+   794,
+   0
+  ],
+  "source/kind=seq,n=2,stopcheck=1,drain=next,await=1": [
+   1582,
+   0
+  ],
+  "source/kind=seq,n=4,stopcheck=0,drain=next,await=0": [
+   1064,
+   0
+  ],
+  "source/kind=seq,n=4,stopcheck=0,drain=next,await=1": [
+   2086,
+   0
+  ],
+  "source/kind=seq,n=4,stopcheck=1,drain=next,await=0": [
+   1424,
+   0
+  ],
+  "source/kind=seq,n=4,stopcheck=1,drain=next,await=1": [
+   2398,
+   0
+  ],
+  "source/kind=seq,n=50,stopcheck=0,drain=next,await=0": [
+   5634,
+   0
+  ],
+  "source/kind=seq,n=50,stopcheck=0,drain=next,await=1": [
+   12754,
+   0
+  ],
+  "source/kind=seq,n=50,stopcheck=1,drain=next,await=0": [
+   9602,
+   0
+  ],
+  "source/kind=seq,n=50,stopcheck=1,drain=next,await=1": [
+   14716,
+   0
+  ],
+  "source/kind=seq,n=8,stopcheck=0,drain=next,await=0": [
+   1580,
+   0
+  ],
+  "source/kind=seq,n=8,stopcheck=0,drain=next,await=1": [
+   3130,
+   0
+  ],
+  "source/kind=seq,n=8,stopcheck=1,drain=next,await=0": [
+   2376,
+   0
+  ],
+  "source/kind=seq,n=8,stopcheck=1,drain=next,await=1": [
+   3702,
+   0
+  ],
+  "task/cfg=convert,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   6852,
+   0
+  ],
+  "task/cfg=convert,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   7590,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=1,kinds=core4,shared=0,stop=0": [
+   1814,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=1,kinds=core4,shared=1,stop=0": [
+   1818,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=1,kinds=none,shared=1,stop=0": [
+   618,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=32,kinds=core4,shared=0,stop=0": [
+   11602,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=32,kinds=core4,shared=1,stop=0": [
+   11852,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=32,kinds=none,shared=1,stop=0": [
+   802,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=4,kinds=core4,shared=0,stop=0": [
+   2710,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=4,kinds=core4,shared=1,stop=0": [
+   2726,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=4,kinds=none,shared=1,stop=0": [
+   634,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=8,kinds=core4,shared=0,stop=0": [
+   3772,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=8,kinds=core4,shared=1,stop=0": [
+   3812,
+   0
+  ],
+  "task/cfg=default,types=1,coros=1,awaits=8,kinds=none,shared=1,stop=0": [
+   658,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=1,kinds=core4,shared=0,stop=0": [
+   11500,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=1,kinds=core4,shared=1,stop=0": [
+   9630,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=1,kinds=none,shared=1,stop=0": [
+   4490,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=32,kinds=core4,shared=0,stop=0": [
+   168296,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=32,kinds=core4,shared=1,stop=0": [
+   168858,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=32,kinds=none,shared=1,stop=0": [
+   7466,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=4,kinds=core4,shared=0,stop=0": [
+   26024,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=4,kinds=core4,shared=1,stop=0": [
+   22682,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=4,kinds=none,shared=1,stop=0": [
+   4778,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=8,kinds=core4,shared=0,stop=0": [
+   43016,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=8,kinds=core4,shared=1,stop=0": [
+   39738,
+   0
+  ],
+  "task/cfg=default,types=1,coros=16,awaits=8,kinds=none,shared=1,stop=0": [
+   5162,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=1,kinds=core4,shared=0,stop=0": [
+   3846,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=1,kinds=core4,shared=1,stop=0": [
+   3544,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=1,kinds=none,shared=1,stop=0": [
+   1474,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=32,kinds=core4,shared=0,stop=0": [
+   43028,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=32,kinds=core4,shared=1,stop=0": [
+   43326,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=32,kinds=none,shared=1,stop=0": [
+   2218,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=4,kinds=all7,shared=1,stop=0": [
+   8225,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=4,kinds=core4,shared=0,stop=0": [
+   7460,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   6782,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=1": [
+   6814,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=4,kinds=ll,shared=1,stop=0": [
+   2426,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=4,kinds=none,shared=1,stop=0": [
+   1546,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=8,kinds=core4,shared=0,stop=0": [
+   11708,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=8,kinds=core4,shared=1,stop=0": [
+   11046,
+   0
+  ],
+  "task/cfg=default,types=1,coros=4,awaits=8,kinds=none,shared=1,stop=0": [
+   1642,
+   0
+  ],
+  "task/cfg=default,types=4,coros=1,awaits=1,kinds=core4,shared=1,stop=0": [
+   1818,
+   0
+  ],
+  "task/cfg=default,types=4,coros=1,awaits=1,kinds=none,shared=1,stop=0": [
+   618,
+   0
+  ],
+  "task/cfg=default,types=4,coros=1,awaits=32,kinds=core4,shared=1,stop=0": [
+   11852,
+   0
+  ],
+  "task/cfg=default,types=4,coros=1,awaits=32,kinds=none,shared=1,stop=0": [
+   802,
+   0
+  ],
+  "task/cfg=default,types=4,coros=1,awaits=4,kinds=core4,shared=1,stop=0": [
+   2726,
+   0
+  ],
+  "task/cfg=default,types=4,coros=1,awaits=4,kinds=none,shared=1,stop=0": [
+   634,
+   0
+  ],
+  "task/cfg=default,types=4,coros=1,awaits=8,kinds=core4,shared=1,stop=0": [
+   3812,
+   0
+  ],
+  "task/cfg=default,types=4,coros=1,awaits=8,kinds=none,shared=1,stop=0": [
+   658,
+   0
+  ],
+  "task/cfg=default,types=4,coros=16,awaits=1,kinds=core4,shared=1,stop=0": [
+   10636,
+   0
+  ],
+  "task/cfg=default,types=4,coros=16,awaits=1,kinds=none,shared=1,stop=0": [
+   5272,
+   0
+  ],
+  "task/cfg=default,types=4,coros=16,awaits=32,kinds=core4,shared=1,stop=0": [
+   169832,
+   0
+  ],
+  "task/cfg=default,types=4,coros=16,awaits=32,kinds=none,shared=1,stop=0": [
+   8264,
+   0
+  ],
+  "task/cfg=default,types=4,coros=16,awaits=4,kinds=core4,shared=1,stop=0": [
+   23656,
+   0
+  ],
+  "task/cfg=default,types=4,coros=16,awaits=4,kinds=none,shared=1,stop=0": [
+   5576,
+   0
+  ],
+  "task/cfg=default,types=4,coros=16,awaits=8,kinds=core4,shared=1,stop=0": [
+   40712,
+   0
+  ],
+  "task/cfg=default,types=4,coros=16,awaits=8,kinds=none,shared=1,stop=0": [
+   5960,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=1,kinds=core4,shared=1,stop=0": [
+   3940,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=1,kinds=none,shared=1,stop=0": [
+   1866,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=32,kinds=core4,shared=1,stop=0": [
+   43890,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=32,kinds=none,shared=1,stop=0": [
+   2606,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=4,kinds=all7,shared=1,stop=0": [
+   9163,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   7466,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=1": [
+   7502,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=4,kinds=ll,shared=1,stop=0": [
+   2848,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=4,kinds=none,shared=1,stop=0": [
+   1934,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=8,kinds=core4,shared=1,stop=0": [
+   11610,
+   0
+  ],
+  "task/cfg=default,types=4,coros=4,awaits=8,kinds=none,shared=1,stop=0": [
+   2030,
+   0
+  ],
+  "task/cfg=default,types=8,coros=1,awaits=1,kinds=core4,shared=1,stop=0": [
+   1818,
+   0
+  ],
+  "task/cfg=default,types=8,coros=1,awaits=1,kinds=none,shared=1,stop=0": [
+   618,
+   0
+  ],
+  "task/cfg=default,types=8,coros=1,awaits=32,kinds=core4,shared=1,stop=0": [
+   11852,
+   0
+  ],
+  "task/cfg=default,types=8,coros=1,awaits=32,kinds=none,shared=1,stop=0": [
+   802,
+   0
+  ],
+  "task/cfg=default,types=8,coros=1,awaits=4,kinds=core4,shared=1,stop=0": [
+   2726,
+   0
+  ],
+  "task/cfg=default,types=8,coros=1,awaits=4,kinds=none,shared=1,stop=0": [
+   634,
+   0
+  ],
+  "task/cfg=default,types=8,coros=1,awaits=8,kinds=core4,shared=1,stop=0": [
+   3812,
+   0
+  ],
+  "task/cfg=default,types=8,coros=1,awaits=8,kinds=none,shared=1,stop=0": [
+   658,
+   0
+  ],
+  "task/cfg=default,types=8,coros=16,awaits=1,kinds=core4,shared=1,stop=0": [
+   11302,
+   0
+  ],
+  "task/cfg=default,types=8,coros=16,awaits=1,kinds=none,shared=1,stop=0": [
+   5960,
+   0
+  ],
+  "task/cfg=default,types=8,coros=16,awaits=32,kinds=core4,shared=1,stop=0": [
+   170730,
+   0
+  ],
+  "task/cfg=default,types=8,coros=16,awaits=32,kinds=none,shared=1,stop=0": [
+   8916,
+   0
+  ],
+  "task/cfg=default,types=8,coros=16,awaits=4,kinds=core4,shared=1,stop=0": [
+   24554,
+   0
+  ],
+  "task/cfg=default,types=8,coros=16,awaits=4,kinds=none,shared=1,stop=0": [
+   6228,
+   0
+  ],
+  "task/cfg=default,types=8,coros=16,awaits=8,kinds=core4,shared=1,stop=0": [
+   41610,
+   0
+  ],
+  "task/cfg=default,types=8,coros=16,awaits=8,kinds=none,shared=1,stop=0": [
+   6612,
+   0
+  ],
+  "task/cfg=default,types=8,coros=4,awaits=1,kinds=core4,shared=1,stop=0": [
+   3940,
+   0
+  ],
+  "task/cfg=default,types=8,coros=4,awaits=1,kinds=none,shared=1,stop=0": [
+   1866,
+   0
+  ],
+  "task/cfg=default,types=8,coros=4,awaits=32,kinds=core4,shared=1,stop=0": [
+   43890,
+   0
+  ],
+  "task/cfg=default,types=8,coros=4,awaits=32,kinds=none,shared=1,stop=0": [
+   2606,
+   0
+  ],
+  "task/cfg=default,types=8,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   7466,
+   0
+  ],
+  "task/cfg=default,types=8,coros=4,awaits=4,kinds=none,shared=1,stop=0": [
+   1934,
+   0
+  ],
+  "task/cfg=default,types=8,coros=4,awaits=8,kinds=core4,shared=1,stop=0": [
+   11610,
+   0
+  ],
+  "task/cfg=default,types=8,coros=4,awaits=8,kinds=none,shared=1,stop=0": [
+   2030,
+   0
+  ],
+  "task/cfg=err2,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   6814,
+   0
+  ],
+  "task/cfg=err2,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   7522,
+   0
+  ],
+  "task/cfg=err3,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   6846,
+   0
+  ],
+  "task/cfg=err3,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   7578,
+   0
+  ],
+  "task/cfg=trace,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   6880,
+   0
+  ],
+  "task/cfg=trace,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   7654,
+   0
+  ]
+ }
+}
