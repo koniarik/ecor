@@ -287,6 +287,16 @@ out-of-line non-template `_register()` breaks even with one kind of stoppable op
 saves ~40 per further kind; a probe with a single callback type shows it as noise, so measure
 such sharing on a configuration with two.
 
+`schedulable` had one virtual, `resume()`, so every promise type, task holder, arena core and
+pump paid a 12-byte vtable, as did the abstract base itself, and every destructor in those
+chains re-stored a vptr. A function pointer passed up the constructor chain, with
+`schedulable::_resume_of< D >` as the thunk, shrank every probe that has a schedulable and grew
+none, `sizeof` unchanged: −48 to −222 bytes on the task probes, −46 to −612 on the pump probes,
+−114 to −1110 on the holder probes, −144 to −1000 on the linked images. A type with a second
+virtual has to fold it into the same pointer, or it pays both: `task_holder` with its virtual
+`_make_task()` grew from 60 to 64 bytes and by ~10 bytes of code per construction until its
+resume thunk passed the factory's `_make` to the shared `_run()` (`doc/plans/schedulable-fnptr.md`).
+
 ### A table of function pointers beats virtuals in a secondary base
 
 `_queue_waiter` had two virtuals. The pump has it as a secondary base, so every pump paid two
@@ -309,8 +319,8 @@ its rows. At namespace scope as `_pump_handler_recv< Core, Pump >`, with `Core` 
 what the receiver reads and `Pump` void unless the handler has an `on_error()` or `on_stopped()`
 hook, pumps whose handlers return one sender type share all of it: 48 to 156 bytes less at two
 such pumps, up to 692 at eight. A one-pump probe sees only the cost: without LTO up to 4 bytes,
-and 16 to 28 on a stoppable pump, where the stop source's non-trivial destructor gives the
-shared core a 12-byte vtable of its own; with LTO none.
+and 16 to 28 on a stoppable pump, where the stop source's non-trivial destructor gave the
+shared core a 12-byte vtable of its own while `schedulable` was polymorphic; with LTO none.
 
 ### Key an awaitable on the promise's configuration-level base
 
@@ -354,14 +364,14 @@ member initialisers run, a `memset` call for the 12-byte base of a `uint32_t` aw
 probe with four sites, −44 / −8 on the coroutine firmware. An empty-parenthesis mem-initialiser
 on a base whose members carry their own initialisers is a zero-fill, not a no-op.
 
-Moving the promise destructor's completion of an attached continuation into the base as a
-destructor saves 26 to 30 bytes per further task value type and costs 12 to 24 once: an abstract
-base with a non-trivial destructor gets a vtable of its own and a vptr store in every destructor
-of the chain. Not applied; re-measure if `schedulable::resume()` stops being virtual. The same
-happens to a constructor: the base's inheriting constructor went out of line at 32 promise
-constructions and brought the base's vtable with it, +68 / +100 on the eight-pump probes, so
-the base has an explicit `ECOR_FORCE_INLINE` constructor, HEAD's shape. Any constructor or
-destructor of a dynamic base is an outlining candidate that costs a vtable when taken.
+While `schedulable` was polymorphic, moving the promise destructor's completion of an attached
+continuation into the base as a destructor saved 26 to 30 bytes per further task value type and
+cost 12 to 24 once: an abstract base with a non-trivial destructor gets a vtable of its own and a
+vptr store in every destructor of the chain. The base's inheriting constructor, taken out of line
+at 32 promise constructions, brought the same vtable, +68 / +100 on the eight-pump probes. Any
+constructor or destructor of a dynamic base is an outlining candidate that costs a vtable when
+taken. With `schedulable` holding a function pointer neither cost exists: forcing the base's
+constructor inline is byte-identical on every probe of the suite.
 
 ### Measure a feature's scaling in three forms
 

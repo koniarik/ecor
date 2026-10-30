@@ -2508,12 +2508,32 @@ private:
 
 /// Base class for any item that can be placed in the `task_core` ready queue and resumed.
 ///
-/// Derive from `schedulable` and override `resume()` to create custom schedulable items that
-/// can be enqueued into `task_core` via `reschedule()`.
+/// A derived type passes the constructor the function that runs it, and `resume()` calls that
+/// function with the item; `_resume_of< D >` is such a function for a type `D` with a member
+/// `_resume()`. Enqueue items into `task_core` via `reschedule()`.
 ///
 struct schedulable : zll::ll_base< schedulable >
 {
-        virtual void resume() = 0;
+        using resume_fn = void ( * )( schedulable& );
+
+        explicit schedulable( resume_fn resume ) noexcept
+          : _resume_fn( resume )
+        {
+        }
+
+        void resume()
+        {
+                _resume_fn( *this );
+        }
+
+        template < typename D >
+        static void _resume_of( schedulable& item )
+        {
+                static_cast< D& >( item )._resume();
+        }
+
+private:
+        resume_fn _resume_fn;
 };
 
 /// Maintains a list of ready tasks that can be resumed. Used by the library to re-schedule woken-up
@@ -2558,8 +2578,9 @@ private:
 /// A schedulable that puts itself back on its core's ready list.
 struct _reschedulable : schedulable
 {
-        explicit _reschedulable( task_core& core ) noexcept
-          : _core( core )
+        _reschedulable( task_core& core, resume_fn resume ) noexcept
+          : schedulable( resume )
+          , _core( core )
         {
         }
 
@@ -3117,8 +3138,8 @@ struct _promise_base : _reschedulable
         _promise_base( _promise_base const& )            = delete;
         _promise_base& operator=( _promise_base const& ) = delete;
 
-        _promise_base( task_core& c )
-          : _reschedulable( c )
+        _promise_base( task_core& c, resume_fn resume )
+          : _reschedulable( c, resume )
         {
         }
 
@@ -3164,10 +3185,8 @@ struct _promise_cfg_base : _promise_base
         using trace_type     = Trace;
         using _cont_vtable_t = _task_cont_vtable_base< ErrSigs >;
 
-        /// Must stay inline: out of line it stores this base's vptr, and the base gets a vtable
-        /// of its own.
-        ECOR_FORCE_INLINE explicit _promise_cfg_base( task_core& core ) noexcept
-          : _promise_base( core )
+        _promise_cfg_base( task_core& core, resume_fn resume ) noexcept
+          : _promise_base( core, resume )
         {
         }
 
@@ -3273,7 +3292,7 @@ struct _promise_type
         /// Construct the promise base by extracting the task core from the context argument and
         /// initializing the token.
         _promise_type( task_context auto&& ctx, auto&&... s )
-          : _base( get_task_core( ctx ) )
+          : _base( get_task_core( ctx ), &schedulable::_resume_of< _promise_type > )
         {
                 this->trace.on_promise_construct( *this, ctx, s... );
         }
@@ -3334,7 +3353,7 @@ struct _promise_type
                     cfg_type::convert_error( task_error::task_unhandled_exception ) );
         }
 
-        void resume() override
+        void _resume()
         {
                 this->trace.on_resume( *this );
                 auto h = std::coroutine_handle< _promise_type >::from_promise( *this );
@@ -4157,8 +4176,8 @@ struct _task_holder_base : _reschedulable, private _stop_source_env< true >
         _task_holder_base( _task_holder_base&& )                 = delete;
         _task_holder_base& operator=( _task_holder_base&& )      = delete;
 
-        explicit _task_holder_base( task_core& core )
-          : _reschedulable( core )
+        _task_holder_base( task_core& core, resume_fn resume )
+          : _reschedulable( core, resume )
         {
         }
 
@@ -4178,8 +4197,24 @@ struct _task_holder_base : _reschedulable, private _stop_source_env< true >
         }
 
 protected:
-        /// Override in the concrete subclass to produce the next task instance.
-        virtual _task_t _make_task() = 0;
+        using _make_fn = _task_t ( * )( _task_holder_base& );
+
+        /// One step of the restart loop; `make` produces the next task instance.
+        void _run( _make_fn make )
+        {
+                if ( _op ) {
+                        _op->clear();  // explicitly free the done coroutine frame
+                        _op.reset();
+                }
+                if ( _stop_src.stop_requested() ) {
+                        broadcast( _done_src, []( auto& e ) {
+                                e.set_value();
+                        } );
+                } else {
+                        _op.emplace( make( *this ).connect( _recv{ this } ) );
+                        _op->start();
+                }
+        }
 
 private:
         struct _recv
@@ -4213,22 +4248,6 @@ private:
 
         using _op_t = connect_type< _task_t, _recv >;
 
-        void resume() override
-        {
-                if ( _op ) {
-                        _op->clear();  // explicitly free the done coroutine frame
-                        _op.reset();
-                }
-                if ( _stop_src.stop_requested() ) {
-                        broadcast( _done_src, []( auto& e ) {
-                                e.set_value();
-                        } );
-                } else {
-                        _op.emplace( _make_task().connect( _recv{ this } ) );
-                        _op->start();
-                }
-        }
-
         ll_source< unit, set_value_t() > _done_src;
         _bare_optional< _op_t >          _op;
 };
@@ -4257,7 +4276,9 @@ struct task_holder : _task_holder_base< CFG >
         using base = _task_holder_base< CFG >;
 
         task_holder( Ctx& ctx, Factory factory )
-          : _task_holder_base< CFG >( get_task_core( ctx ) )
+          : _task_holder_base< CFG >(
+                get_task_core( ctx ),
+                &schedulable::_resume_of< task_holder > )
           , _ctx( ctx )
           , _factory( std::move( factory ) )
         {
@@ -4267,9 +4288,17 @@ struct task_holder : _task_holder_base< CFG >
         using base::stop;
 
 private:
-        task< void, CFG > _make_task() override
+        friend schedulable;
+
+        void _resume()
         {
-                return _factory( _ctx );
+                this->_run( &_make );
+        }
+
+        static task< void, CFG > _make( base& holder )
+        {
+                auto& self = static_cast< task_holder& >( holder );
+                return self._factory( self._ctx );
         }
 
         Ctx&    _ctx;
@@ -4442,7 +4471,7 @@ protected:
 struct _async_arena_core_base : _reschedulable
 {
         explicit _async_arena_core_base( task_core& core ) noexcept
-          : _reschedulable( core )
+          : _reschedulable( core, &schedulable::_resume_of< _async_arena_core_base > )
         {
         }
 
@@ -4460,7 +4489,7 @@ struct _async_arena_core_base : _reschedulable
                 _reschedule();
         }
 
-        void resume() override
+        void _resume()
         {
                 if ( _active ) {
                         _active->finish_cleanup();
@@ -7036,8 +7065,8 @@ struct _pump_call_base< Sigs, false > : _reschedulable
 template < typename Sigs, bool Call, bool Stoppable >
 struct _pump_core : _pump_call_base< Sigs, Call >, _stop_source_env< Stoppable >
 {
-        explicit _pump_core( task_core& core ) noexcept
-          : _pump_call_base< Sigs, Call >( core )
+        _pump_core( task_core& core, schedulable::resume_fn resume ) noexcept
+          : _pump_call_base< Sigs, Call >( core, resume )
         {
         }
 };
@@ -7126,7 +7155,7 @@ struct event_pump : _pump_core< typename Queue::_call_sigs_t, Queue::_call, CFG:
         static constexpr bool is_stoppable = CFG::is_stoppable;
 
         event_pump( ctx_type& ctx, Queue& q, Handler& h ) noexcept
-          : _call_base( get_task_core( ctx ) )
+          : _call_base( get_task_core( ctx ), &schedulable::_resume_of< event_pump > )
           , _queue_waiter( _waiter_ops )
           , _ctx( ctx )
           , _q( q )
@@ -7191,12 +7220,14 @@ private:
 
         using _handler_op_t = connect_type< sender_type, _handler_recv >;
 
+        friend schedulable;
+
         /// Drives one step. Reached from `start()`, from a delivered event and from a handler
         /// completion; which of those it was is read off `_op`, the held call and `_slot`.
         ///
         /// An event already taken is handled even once the pump is stopping: its handler sees
         /// the stop request through its environment.
-        void resume() override
+        void _resume()
         {
                 // Whatever was in flight has completed by the time the pump is scheduled
                 // again; a handler that finished also releases the event it was given.
