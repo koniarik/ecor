@@ -117,10 +117,10 @@ struct rec_trace
                 if ( g_log )
                         g_log->push( ev::alloc, p, int( sz ) );
         }
-        static void on_dealloc( void* p, std::size_t sz ) noexcept
+        static void on_dealloc( void* p ) noexcept
         {
                 if ( g_log )
-                        g_log->push( ev::dealloc, p, int( sz ) );
+                        g_log->push( ev::dealloc, p );
         }
         void on_promise_construct( auto& p, auto&, auto&&... ) noexcept
         {
@@ -394,11 +394,10 @@ TEST_CASE( "trace - A1 int task value completion" )
         auto sv = idx_of( log, ev::set_value );
         CHECK( log.evs[sv[0]].ival == 7 );
 
-        // alloc/dealloc addresses and sizes match
+        // alloc/dealloc addresses match
         auto ai = idx_of( log, ev::alloc );
         auto di = idx_of( log, ev::dealloc );
         CHECK( log.evs[ai[0]].who == log.evs[di[0]].who );
-        CHECK( log.evs[ai[0]].ival == log.evs[di[0]].ival );
 
         // All promise-bearing events point to the same instance
         auto        pci   = idx_of( log, ev::promise_construct );
@@ -512,7 +511,7 @@ TEST_CASE( "trace - A3 throwing task unhandled exception and set_error" )
         CHECK( log.count( ev::destroy_with_continuation ) == 0 );
 }
 
-TEST_CASE( "trace - A4 on_dealloc arguments match on_alloc" )
+TEST_CASE( "trace - A4 on_dealloc gets the frame on_alloc got" )
 {
         nd_mem    mem;
         task_ctx  ctx{ mem };
@@ -534,7 +533,6 @@ TEST_CASE( "trace - A4 on_dealloc arguments match on_alloc" )
         REQUIRE( ai.size() == 1 );
         REQUIRE( di.size() == 1 );
         CHECK( log.evs[ai[0]].who == log.evs[di[0]].who );
-        CHECK( log.evs[ai[0]].ival == log.evs[di[0]].ival );
         CHECK( log.evs[ai[0]].ival > 0 );
 }
 

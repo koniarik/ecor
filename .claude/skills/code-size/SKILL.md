@@ -291,6 +291,16 @@ and drop its shared `destroy()` clone. The wrapper called directly, force-inline
 handle by `const&`, restored every probe. Check an option's off state against HEAD on the whole
 suite, not on the probes it is about.
 
+### An unsized `operator delete` takes the frame size out of every coroutine
+
+When a promise declares both forms, the coroutine's destroy path calls the sized `operator
+delete` ([dcl.fct.def.coroutine]) and so materialises its frame size, a constant per coroutine.
+Declaring only `operator delete( void* )` and keeping the size in the allocation header, beside
+the memory resource, saves 1.9 bytes per coroutine: −3648 / −5528 (LTO off / on) on the
+1000-coroutine program, for +2 to +8 once where a program has one or two coroutines. The header
+grows from one word to two, room that `alignof( std::max_align_t )` reserves anyway on Cortex-M
+and x86-64; on a 64-bit host whose `max_align_t` is 8-byte aligned it grows from 8 to 16 bytes.
+
 ### Erase an operation state over its receiver, not only over its element type
 
 `_queue_call_op` keyed on the receiver type was compiled once per producer task type, ~376 bytes

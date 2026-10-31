@@ -2993,7 +2993,7 @@ struct task_default_trace
 
         /// Called from `_promise_type::operator delete` just before the coroutine frame is
         /// returned to the task memory resource. Pairs 1:1 with `on_alloc`.
-        ECOR_FORCE_INLINE static void on_dealloc( void* /*p*/, std::size_t const /*sz*/ ) noexcept
+        ECOR_FORCE_INLINE static void on_dealloc( void* /*p*/ ) noexcept
         {
         }
 
@@ -3179,10 +3179,11 @@ struct task;
 struct _promise_base : _reschedulable
 {
         static constexpr std::size_t align   = alignof( std::max_align_t );
-        static constexpr std::size_t spacing = align > sizeof( void* ) ? align : sizeof( void* );
+        static constexpr std::size_t spacing = align > 2 * sizeof( void* ) ? align :
+                                                                             2 * sizeof( void* );
 
         /// Allocate memory for the task promise using the task memory resource, and store a pointer
-        /// to the memory resource in the allocated memory for later use in deallocation.
+        /// to the memory resource and the allocation's size in front of it for deallocation.
         static void* _alloc( std::size_t sz, task_memory_resource& mem )
         {
                 sz += spacing;
@@ -3194,21 +3195,30 @@ struct _promise_base : _reschedulable
                     std::assume_aligned< alignof( void* ) >( vp ),
                     reinterpret_cast< void const* >( &pmem ),
                     sizeof( void* ) );
+                std::memcpy(
+                    std::assume_aligned< alignof( void* ) >( (char*) vp + sizeof( void* ) ),
+                    reinterpret_cast< void const* >( &sz ),
+                    sizeof( std::size_t ) );
                 return ( (char*) vp ) + spacing;
         }
 
         /// Deallocate memory for the task promise using the task memory resource. This retrieves
-        /// the pointer to the memory resource that was stored in the allocated memory during
-        /// allocation, and uses it to deallocate the memory for the task promise.
-        static void _dealloc( void* const ptr, std::size_t const sz )
+        /// the pointer to the memory resource and the size that were stored in front of the memory
+        /// during allocation, and uses them to deallocate it.
+        static void _dealloc( void* const ptr )
         {
                 void*                 beg = ( (char*) ptr ) - spacing;
                 task_memory_resource* mem = nullptr;
+                std::size_t           sz  = 0;
                 std::memcpy(
                     reinterpret_cast< void* >( &mem ),
                     std::assume_aligned< alignof( void* ) >( beg ),
                     sizeof( void* ) );
-                deallocate( *mem, beg, sz + spacing, align );
+                std::memcpy(
+                    reinterpret_cast< void* >( &sz ),
+                    std::assume_aligned< alignof( void* ) >( (char*) beg + sizeof( void* ) ),
+                    sizeof( std::size_t ) );
+                deallocate( *mem, beg, sz, align );
         }
 
         _promise_base( _promise_base const& )            = delete;
@@ -3450,11 +3460,11 @@ struct _promise_type : _promise_cfg_base<
                 return p;
         }
 
-        void operator delete( void* const ptr, std::size_t const sz ) noexcept
+        void operator delete( void* const ptr ) noexcept
         {
                 /// XXX: we can't guarantee noexcept of the subcalls - try/catch?
-                trace_type::on_dealloc( ptr, sz );
-                _promise_base::_dealloc( ptr, sz );
+                trace_type::on_dealloc( ptr );
+                _promise_base::_dealloc( ptr );
         }
 
         /// Construct the promise base by extracting the task core from the context argument and
