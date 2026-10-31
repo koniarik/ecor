@@ -211,6 +211,54 @@
    1364,
    0
   ],
+  "coroutine/value=int,awaiting=child_task,coros=1": [
+   812,
+   0
+  ],
+  "coroutine/value=int,awaiting=child_task,coros=16": [
+   5778,
+   0
+  ],
+  "coroutine/value=int,awaiting=ll_source,coros=1": [
+   706,
+   0
+  ],
+  "coroutine/value=int,awaiting=ll_source,coros=16": [
+   5164,
+   0
+  ],
+  "coroutine/value=int,awaiting=none,coros=1": [
+   560,
+   0
+  ],
+  "coroutine/value=int,awaiting=none,coros=16": [
+   4146,
+   0
+  ],
+  "coroutine/value=void,awaiting=child_task,coros=1": [
+   812,
+   0
+  ],
+  "coroutine/value=void,awaiting=child_task,coros=16": [
+   5746,
+   0
+  ],
+  "coroutine/value=void,awaiting=ll_source,coros=1": [
+   706,
+   0
+  ],
+  "coroutine/value=void,awaiting=ll_source,coros=16": [
+   5132,
+   0
+  ],
+  "coroutine/value=void,awaiting=none,coros=1": [
+   558,
+   0
+  ],
+  "coroutine/value=void,awaiting=none,coros=16": [
+   4114,
+   0
+  ],
   "holder/holders=1,factory=capture,bodies=1,stop=0": [
    998,
    0
