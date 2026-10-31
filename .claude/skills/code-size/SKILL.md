@@ -310,7 +310,14 @@ into the parameter and moved it into the sender through stack slots it never rea
 `seq_source` await with a payload, −38048 / −45944 (LTO off / on, −2.5% / −3.1%) on the
 1000-coroutine program. Keep the payload-less call an overload of its own, `schedule( K )`, that
 constructs `T{}` inside: a default argument `T&& val = T{}` makes every call site materialise
-an empty temporary and pass its address, +24 bytes on a coroutine of 32 such awaits. The same
+an empty temporary and pass its address, +24 bytes on a coroutine of 32 such awaits. Where GCC
+inlines the awaitable's constructor at a single site, the operation state's own by-value
+constructors (`_sh_op`, `_sh_entry`, `_sh_link`) leave the same dead stores and the sender
+change alone grew that site by 4 bytes; forwarding the key and payload through them as
+templates removes those too: −20 bytes at such a site, up to −1500 on 50 source types. It costs
+about 1.7 bytes per operation state connected directly from a temporary sender outside a
+coroutine, whose key and payload GCC then keeps in a stack slot instead of registers (+20 and +68
+on the plain-receiver probes of 12 and 50 sources), a use declined as not mainstream. The same
 change for `ll_source` is mixed: +23 bytes per await with a 5-byte payload and up to +4608 on
 the `task` probes, against −13120 / −7912 on the 1000-coroutine program; it stays out until
 that is understood.

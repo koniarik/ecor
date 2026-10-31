@@ -1920,8 +1920,10 @@ private:
 template < typename K >
 struct _sh_link : zll::sh_base< _sh_link< K > >
 {
-        explicit _sh_link( K k ) noexcept( std::is_nothrow_move_constructible_v< K > )
-          : key( std::move( k ) )
+        template < typename KK >
+                requires( std::constructible_from< K, KK > )
+        explicit _sh_link( KK&& k ) noexcept( std::is_nothrow_constructible_v< K, KK > )
+          : key( (KK&&) k )
         {
         }
 
@@ -1951,12 +1953,12 @@ struct _sh_entry< K, D, completion_signatures< S... > > : _vtable_mixin< S... >,
 
         ECOR_NO_UNIQUE_ADDRESS D data;
 
-        template < typename Derived >
-        _sh_entry( K k, D d, _tag< Derived > /*derived*/ ) noexcept(
-            std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< D > )
+        template < typename Derived, typename KK, typename DD >
+        _sh_entry( KK&& k, DD&& d, _tag< Derived > /*derived*/ ) noexcept(
+            std::is_nothrow_constructible_v< K, KK > && std::is_nothrow_constructible_v< D, DD > )
           : _vtable_mixin< S... >{ _tag< Derived >{} }
-          , _sh_link< K >( std::move( k ) )
-          , data( std::move( d ) )
+          , _sh_link< K >( (KK&&) k )
+          , data( (DD&&) d )
         {
         }
 
@@ -2033,10 +2035,11 @@ struct _sh_op : seq_entry< K, T, S... >
                         return false;
         }
 
-        _sh_op( auto& heap, K key, T val, R receiver ) noexcept(
-            std::is_nothrow_move_constructible_v< R > &&
-            std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< T > )
-          : seq_entry< K, T, S... >( std::move( key ), std::move( val ), _tag< _sh_op >{} )
+        template < typename KK, typename TT >
+        _sh_op( auto& heap, KK&& key, TT&& val, R receiver ) noexcept(
+            std::is_nothrow_move_constructible_v< R > && std::is_nothrow_constructible_v< K, KK > &&
+            std::is_nothrow_constructible_v< T, TT > )
+          : seq_entry< K, T, S... >( (KK&&) key, (TT&&) val, _tag< _sh_op >{} )
           , _r( std::move( receiver ) )
           , _heap( heap )
         {
