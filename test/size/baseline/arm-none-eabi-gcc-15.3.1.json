@@ -139,6 +139,78 @@
    1716,
    0
   ],
+  "co_await/kind=ll_source,awaits=16": [
+   1540,
+   0
+  ],
+  "co_await/kind=ll_source,awaits=8": [
+   1096,
+   0
+  ],
+  "co_await/kind=ll_source_payload,awaits=16": [
+   1972,
+   0
+  ],
+  "co_await/kind=ll_source_payload,awaits=8": [
+   1518,
+   0
+  ],
+  "co_await/kind=ll_source_payload_value,awaits=16": [
+   1932,
+   0
+  ],
+  "co_await/kind=ll_source_payload_value,awaits=8": [
+   1324,
+   0
+  ],
+  "co_await/kind=push_and_wait,awaits=16": [
+   2264,
+   0
+  ],
+  "co_await/kind=push_and_wait,awaits=8": [
+   1648,
+   0
+  ],
+  "co_await/kind=seq_source,awaits=16": [
+   1810,
+   0
+  ],
+  "co_await/kind=seq_source,awaits=8": [
+   1310,
+   0
+  ],
+  "co_await/kind=seq_source_payload_value,awaits=16": [
+   2408,
+   0
+  ],
+  "co_await/kind=seq_source_payload_value,awaits=8": [
+   1640,
+   0
+  ],
+  "co_await/kind=suspend,awaits=16": [
+   911,
+   0
+  ],
+  "co_await/kind=suspend,awaits=8": [
+   779,
+   0
+  ],
+  "co_await/kind=task_int,awaits=16": [
+   2048,
+   0
+  ],
+  "co_await/kind=task_int,awaits=8": [
+   1408,
+   0
+  ],
+  "co_await/kind=task_void,awaits=16": [
+   1896,
+   0
+  ],
+  "co_await/kind=task_void,awaits=8": [
+   1364,
+   0
+  ],
   "holder/holders=1,factory=capture,bodies=1,stop=0": [
    998,
    0
