@@ -4583,6 +4583,94 @@ TEST_CASE( "task_holder - basic operations" )
         }
 }
 
+namespace
+{
+        /// A factory with state of its own. Each call reports its ordinal through `made`, so a
+        /// holder that calls the instance it stores shows 1, 2, 3, ... and a copy made per call
+        /// would show 1 every time.
+        struct th_counting_factory
+        {
+                ll_source< unit, set_value_t() >* trig;
+                int*                              count;
+                int*                              made;
+                int                               calls = 0;
+
+                ecor::task< void > operator()( task_ctx& c )
+                {
+                        *made = ++calls;
+                        return th_count_task( c, *trig, *count );
+                }
+        };
+}  // namespace
+
+TEST_CASE( "task_holder - stateful functor factory" )
+{
+        nd_mem                           mem;
+        task_ctx                         ctx{ mem };
+        ll_source< unit, set_value_t() > trig;
+        int                              count_a = 0, count_b = 0;
+        int                              made_a = 0, made_b = 0;
+
+        // Two holders of one type whose factories differ only in state.
+        task_holder a{ ctx, th_counting_factory{ &trig, &count_a, &made_a } };
+        task_holder b{ ctx, th_counting_factory{ &trig, &count_b, &made_b } };
+        static_assert( std::is_same_v< decltype( a ), decltype( b ) > );
+        a.start();
+        b.start();
+        while ( ctx.core.run_once() )
+                ;  // both factories called once; tasks suspended at co_await trig
+        CHECK( made_a == 1 );
+        CHECK( made_b == 1 );
+        CHECK( count_a == 0 );
+        CHECK( count_b == 0 );
+
+        broadcast( trig, []( auto& e ) {
+                e.set_value();
+        } );
+        while ( ctx.core.run_once() )
+                ;
+        CHECK( count_a == 1 );
+        CHECK( count_b == 1 );
+        CHECK( made_a == 2 );
+        CHECK( made_b == 2 );
+
+        // Stop `a` through the configuration base; `b` keeps restarting.
+        _task_holder_base<>& base_a = a;
+        bool                 done_a = false;
+        auto                 d_a    = base_a.stop().connect( th_done_recv{ &done_a } );
+        d_a.start();
+        broadcast( trig, []( auto& e ) {
+                e.set_value();
+        } );
+        while ( ctx.core.run_once() )
+                ;
+        REQUIRE( done_a );
+        CHECK( count_a == 2 );
+        CHECK( made_a == 2 );
+        CHECK( count_b == 2 );
+        CHECK( made_b == 3 );
+
+        broadcast( trig, []( auto& e ) {
+                e.set_value();
+        } );
+        while ( ctx.core.run_once() )
+                ;
+        CHECK( count_a == 2 );
+        CHECK( count_b == 3 );
+        CHECK( made_b == 4 );
+
+        // tear-down of `b`
+        bool done_b = false;
+        auto d_b    = b.stop().connect( th_done_recv{ &done_b } );
+        d_b.start();
+        broadcast( trig, []( auto& e ) {
+                e.set_value();
+        } );
+        while ( ctx.core.run_once() )
+                ;
+        REQUIRE( done_b );
+}
+
 // -------------------------------------------------------------------------------
 // ecor::wait_until_stopped tests
 

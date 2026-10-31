@@ -4164,22 +4164,30 @@ inline constexpr struct then_t
 
 /// -------------------------------------------------------------------------------
 
-/// Implementation base for `task_holder`. Templated only on `CFG` so all restart/stop logic is
-/// instantiated once per configuration, regardless of how many different factory or context types
-/// are in use. Not intended to be used directly — use `task_holder` instead.
+/// Implementation base for `task_holder`. Templated only on `CFG`, so the restart loop, its
+/// resume thunk, the stop logic and the running operation state are instantiated once per
+/// configuration, regardless of how many different factory or context types are in use; a
+/// factory type adds only the function that calls it, whose address the base stores. Not
+/// intended to be used directly — use `task_holder` instead.
 ///
 template < task_config CFG = task_default_cfg >
 struct _task_holder_base : _reschedulable, private _stop_source_env< true >
 {
         using _task_t = task< void, CFG >;
 
+        /// Produces the next task instance from the holder that stores the function.
+        using _make_fn = _task_t ( * )( _task_holder_base& );
+
         _task_holder_base( _task_holder_base const& )            = delete;
         _task_holder_base& operator=( _task_holder_base const& ) = delete;
         _task_holder_base( _task_holder_base&& )                 = delete;
         _task_holder_base& operator=( _task_holder_base&& )      = delete;
 
-        _task_holder_base( task_core& core, resume_fn resume )
-          : _reschedulable( core, resume )
+        /// Must stay out of line: the body is the same for every factory type, and a holder is
+        /// constructed at every site that declares one.
+        ECOR_NOINLINE _task_holder_base( task_core& core, _make_fn make )
+          : _reschedulable( core, &schedulable::_resume_of< _task_holder_base > )
+          , _make( make )
         {
         }
 
@@ -4198,11 +4206,11 @@ struct _task_holder_base : _reschedulable, private _stop_source_env< true >
                 return _done_src.schedule();
         }
 
-protected:
-        using _make_fn = _task_t ( * )( _task_holder_base& );
+private:
+        friend schedulable;
 
-        /// One step of the restart loop; `make` produces the next task instance.
-        void _run( _make_fn make )
+        /// One step of the restart loop.
+        void _resume()
         {
                 if ( _op ) {
                         _op->clear();  // explicitly free the done coroutine frame
@@ -4213,12 +4221,11 @@ protected:
                                 e.set_value();
                         } );
                 } else {
-                        _op.emplace( make( *this ).connect( _recv{ this } ) );
+                        _op.emplace( _make( *this ).connect( _recv{ this } ) );
                         _op->start();
                 }
         }
 
-private:
         struct _recv
         {
                 using receiver_concept = receiver_t;
@@ -4250,6 +4257,7 @@ private:
 
         using _op_t = connect_type< _task_t, _recv >;
 
+        _make_fn                         _make;
         ll_source< unit, set_value_t() > _done_src;
         _bare_optional< _op_t >          _op;
 };
@@ -4278,9 +4286,7 @@ struct task_holder : _task_holder_base< CFG >
         using base = _task_holder_base< CFG >;
 
         task_holder( Ctx& ctx, Factory factory )
-          : _task_holder_base< CFG >(
-                get_task_core( ctx ),
-                &schedulable::_resume_of< task_holder > )
+          : _task_holder_base< CFG >( get_task_core( ctx ), &_make )
           , _ctx( ctx )
           , _factory( std::move( factory ) )
         {
@@ -4290,13 +4296,6 @@ struct task_holder : _task_holder_base< CFG >
         using base::stop;
 
 private:
-        friend schedulable;
-
-        void _resume()
-        {
-                this->_run( &_make );
-        }
-
         static task< void, CFG > _make( base& holder )
         {
                 auto& self = static_cast< task_holder& >( holder );
