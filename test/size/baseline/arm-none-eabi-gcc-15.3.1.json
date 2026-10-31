@@ -43,6 +43,102 @@
    5448,
    0
   ],
+  "awaited/kind=child,rows=full,n=1,distinct=0": [
+   1120,
+   0
+  ],
+  "awaited/kind=child,rows=full,n=1,distinct=1": [
+   1122,
+   0
+  ],
+  "awaited/kind=child,rows=full,n=2,distinct=0": [
+   1476,
+   0
+  ],
+  "awaited/kind=child,rows=full,n=2,distinct=1": [
+   1650,
+   0
+  ],
+  "awaited/kind=child,rows=full,n=4,distinct=0": [
+   2092,
+   0
+  ],
+  "awaited/kind=child,rows=full,n=4,distinct=1": [
+   2702,
+   0
+  ],
+  "awaited/kind=child,rows=full,n=8,distinct=0": [
+   3354,
+   0
+  ],
+  "awaited/kind=child,rows=full,n=8,distinct=1": [
+   4852,
+   0
+  ],
+  "awaited/kind=source,rows=full,n=1,distinct=0": [
+   772,
+   0
+  ],
+  "awaited/kind=source,rows=full,n=1,distinct=1": [
+   774,
+   0
+  ],
+  "awaited/kind=source,rows=full,n=2,distinct=0": [
+   948,
+   0
+  ],
+  "awaited/kind=source,rows=full,n=2,distinct=1": [
+   950,
+   0
+  ],
+  "awaited/kind=source,rows=full,n=4,distinct=0": [
+   1216,
+   0
+  ],
+  "awaited/kind=source,rows=full,n=4,distinct=1": [
+   1288,
+   0
+  ],
+  "awaited/kind=source,rows=full,n=8,distinct=0": [
+   1796,
+   0
+  ],
+  "awaited/kind=source,rows=full,n=8,distinct=1": [
+   1964,
+   0
+  ],
+  "awaited/kind=source,rows=value,n=1,distinct=0": [
+   724,
+   0
+  ],
+  "awaited/kind=source,rows=value,n=1,distinct=1": [
+   726,
+   0
+  ],
+  "awaited/kind=source,rows=value,n=2,distinct=0": [
+   852,
+   0
+  ],
+  "awaited/kind=source,rows=value,n=2,distinct=1": [
+   854,
+   0
+  ],
+  "awaited/kind=source,rows=value,n=4,distinct=0": [
+   1100,
+   0
+  ],
+  "awaited/kind=source,rows=value,n=4,distinct=1": [
+   1144,
+   0
+  ],
+  "awaited/kind=source,rows=value,n=8,distinct=0": [
+   1600,
+   0
+  ],
+  "awaited/kind=source,rows=value,n=8,distinct=1": [
+   1708,
+   0
+  ],
   "holder/holders=1,factory=capture,bodies=1,stop=0": [
    982,
    0

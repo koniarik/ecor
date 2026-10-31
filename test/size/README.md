@@ -23,6 +23,7 @@ Each module in `scenarios/` is a family with its dimensions in its docstring:
 | `queue` | every `async_queue` configuration; element types, owning types, queues on one memory |
 | `pump` | pumps per program, stoppability, handler kinds, element types, queue flags |
 | `task` | task configurations, value types, coroutines, awaits per coroutine, what is awaited |
+| `awaited` | one coroutine awaiting 1 to 8 sources or child tasks of one or of distinct value types |
 | `source` | `ll_source` and `seq_source` count, stop polling, draining, awaiting |
 | `holder` | holders per program, factory type, distinct coroutine bodies, stopping |
 | `arena` | arenas, distinct memory resource types, object types |
