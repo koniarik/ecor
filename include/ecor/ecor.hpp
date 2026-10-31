@@ -2453,6 +2453,10 @@ struct _bare_optional
         _bare_optional& operator=( _bare_optional const& ) = delete;
 
         ~_bare_optional()
+                requires( std::is_trivially_destructible_v< T > )
+        = default;
+
+        ~_bare_optional()
         {
                 reset();
         }
@@ -2522,6 +2526,9 @@ private:
                 _storage() noexcept
                 {
                 }
+                ~_storage()
+                        requires( std::is_trivially_destructible_v< T > )
+                = default;
                 ~_storage()
                 {
                 }

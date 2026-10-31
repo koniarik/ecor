@@ -291,6 +291,21 @@ and drop its shared `destroy()` clone. The wrapper called directly, force-inline
 handle by `const&`, restored every probe. Check an option's off state against HEAD on the whole
 suite, not on the probes it is about.
 
+### A coroutine with no destroy code at all can grow: GCC moves the trap before its table
+
+GCC dispatches a coroutine's resume index through two jump tables, one for the destroy path and
+one for resume. Once no suspension point has destroy code, it turns the destroy table into range
+checks and bit tests that fall into a `udf` trap, and places that trap before the resume table;
+`tbb` and `tbh` branch forward only, so the resume table falls back to 4-byte words. A
+trivially destructible `_bare_optional< T >` for trivial `T` made the owning awaitables of
+`int`-valued senders destroy-free and showed both sides: a coroutine whose resume table was
+already 4-byte words lost its destroy table outright (−1076 on one of 140 awaits), one with
+`tbb`/`tbh` tables paid the fallback (+28 to +58), and one whose destroy dispatch was a single
+range check paid 12 to 16 for the bit test. Net with `promise_owns_operations`: −9876 / −10176 on
+the 1000-coroutine program, +3208 / +3092 on the 300-coroutine one, −1324 / −1348 on the
+100-coroutine one; unchanged in the default configuration. Same in GCC 16.2. For a scalar `T` the
+value slot's destructor already compiled to nothing, so the tables were the whole effect.
+
 ### An unsized `operator delete` takes the frame size out of every coroutine
 
 When a promise declares both forms, the coroutine's destroy path calls the sized `operator

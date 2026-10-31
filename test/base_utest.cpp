@@ -3806,6 +3806,16 @@ TEST_CASE( "task - promise_owns_operations adds two pointers to the promise and 
             std::declval< _plain_ll_source& >().schedule() ) );
         static_assert( !std::is_trivially_destructible_v< default_awaitable > );
         static_assert( std::is_trivially_destructible_v< owning_awaitable > );
+
+        using owning_int_awaitable = decltype( std::declval< owning_promise& >().await_transform(
+            std::declval< ll_source< unit, set_value_t( int ) >& >().schedule() ) );
+        static_assert( std::is_trivially_destructible_v< owning_int_awaitable > );
+}
+
+TEST_CASE( "_bare_optional - trivially destructible exactly when its value type is" )
+{
+        static_assert( std::is_trivially_destructible_v< _bare_optional< int > > );
+        static_assert( !std::is_trivially_destructible_v< _bare_optional< std::string > > );
 }
 
 struct test_exception : std::exception

@@ -176,7 +176,7 @@
    0
   ],
   "co_await/kind=ll_source_payload_value,awaits=16,cfg=owning": [
-   1786,
+   1798,
    0
   ],
   "co_await/kind=ll_source_payload_value,awaits=8": [
@@ -184,7 +184,7 @@
    0
   ],
   "co_await/kind=ll_source_payload_value,awaits=8,cfg=owning": [
-   1290,
+   1306,
    0
   ],
   "co_await/kind=push_and_wait,awaits=16": [
@@ -224,7 +224,7 @@
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=16,cfg=owning": [
-   2134,
+   2144,
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=8": [
@@ -232,7 +232,7 @@
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=8,cfg=owning": [
-   1544,
+   1560,
    0
   ],
   "co_await/kind=suspend,awaits=16": [
@@ -768,7 +768,7 @@
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0,cfg=owning": [
-   117768,
+   116444,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1": [
@@ -776,7 +776,7 @@
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1,cfg=owning": [
-   109772,
+   108424,
    49292
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0": [
@@ -784,7 +784,7 @@
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0,cfg=owning": [
-   1338648,
+   1328772,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1": [
@@ -792,7 +792,7 @@
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1,cfg=owning": [
-   1232068,
+   1221892,
    49828
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0": [
@@ -800,7 +800,7 @@
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0,cfg=owning": [
-   368316,
+   371524,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1": [
@@ -808,7 +808,7 @@
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1,cfg=owning": [
-   348300,
+   351392,
    49420
   ],
   "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=call": [
