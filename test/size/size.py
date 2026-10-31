@@ -89,7 +89,7 @@ def generate(probes, hdrs, build):
     """Writes the probe sources and the CMake matrix; returns one manifest row per target."""
     lines, manifest = [], []
     for i, p in enumerate(probes):
-        if p.is_image:
+        if p.is_program:
             d = build / 'src' / p.family / f'{i:04d}'
             files = []
             for name, text in p.sources():
@@ -100,10 +100,10 @@ def generate(probes, hdrs, build):
             write_if_changed(src, p.source())
         for h, hdir in hdrs.items():
             target = f'{p.family}_{i:04d}_{h}'
-            if p.is_image:
-                lines.append(f'size_image({target} {hdir.as_posix()} {CPU} {int(p.lto)} '
+            if p.is_program:
+                lines.append(f'size_program({target} {hdir.as_posix()} {CPU} {int(p.lto)} '
                              + ' '.join(files) + ')')
-                artifact = (build / 'images' / f'{target}.elf').as_posix()
+                artifact = (build / 'programs' / f'{target}.elf').as_posix()
             else:
                 defs = ' '.join(f'{k}={v}' for k, v in p.defines.items())
                 lines.append(f'size_probe({target} {src.as_posix()} {hdir.as_posix()} {CPU} {defs})')

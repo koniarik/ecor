@@ -16,7 +16,7 @@ object holds the library's code and the probe's glue and nothing else. Every typ
 measurement is constructed and every operation started: a type that is only referenced leaves
 its constructor, its vtable and its virtuals out of the object.
 
-An image probe has `sources()` instead, a list of (file name, text) linked into one executable
+A program probe has `sources()` instead, a list of (file name, text) linked into one executable
 entered at `_start` with the library's startup code left out; its figure is the linked
 program's.
 """
@@ -40,7 +40,7 @@ class Probe:
     key: str
     source: Callable[[], str] = None
     defines: dict = field(default_factory=dict)
-    sources: Callable[[], list] = None   # image probes: [(file name, text), ...]
+    sources: Callable[[], list] = None   # program probes: [(file name, text), ...]
     lto: bool = False
 
     @property
@@ -48,7 +48,7 @@ class Probe:
         return f'{self.family}/{self.key}'
 
     @property
-    def is_image(self):
+    def is_program(self):
         return self.sources is not None
 
 

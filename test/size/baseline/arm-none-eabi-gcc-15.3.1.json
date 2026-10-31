@@ -299,29 +299,29 @@
    2298,
    0
   ],
-  "image/spec=medium,lto=0": [
-   440020,
-   49420
-  ],
-  "image/spec=medium,lto=1": [
-   425172,
-   49420
-  ],
-  "image/spec=small,lto=0": [
+  "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0": [
    136304,
    49292
   ],
-  "image/spec=small,lto=1": [
+  "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1": [
    130484,
    49292
   ],
-  "image/spec=special,lto=0": [
+  "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0": [
    1530040,
    49828
   ],
-  "image/spec=special,lto=1": [
+  "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1": [
    1475740,
    49828
+  ],
+  "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0": [
+   440020,
+   49420
+  ],
+  "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1": [
+   425172,
+   49420
   ],
   "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=call": [
    2868,

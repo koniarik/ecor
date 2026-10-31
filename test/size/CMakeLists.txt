@@ -43,13 +43,13 @@ function(size_probe target source header_dir cpu)
                                            ${ECOR_SIZE_EXTRA_FLAGS})
 endfunction()
 
-# size_image(<target> <header dir> <cpu> <lto 0|1> <source> ...): a linked
+# size_program(<target> <header dir> <cpu> <lto 0|1> <source> ...): a linked
 # executable with no startup code, entered at `_start`, with unreferenced
 # sections dropped, so that the figure is what a program pays after linking.
-function(size_image target header_dir cpu lto)
+function(size_program target header_dir cpu lto)
   add_executable(${target} ${ARGN})
   set_target_properties(
-    ${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/images
+    ${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/programs
                          SUFFIX .elf)
   target_include_directories(${target} PRIVATE ${header_dir})
   target_link_libraries(${target} PRIVATE zll)

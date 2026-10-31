@@ -27,7 +27,7 @@ Each module in `scenarios/` is a family with its dimensions in its docstring:
 | `holder` | holders per program, factory type, distinct coroutine bodies, stopping |
 | `arena` | arenas, distinct memory resource types, object types |
 | `ram` | `sizeof` of every abstraction and operation state, tolerance zero |
-| `image` | linked programs of coroutines, holders, queues, pumps and sources, with and without LTO |
+| `program` | complete programs of 100, 300 or 1000 coroutines, with holders, queues, sources |
 
 `--family NAME` runs one of them.
 

@@ -292,7 +292,7 @@ pump paid a 12-byte vtable, as did the abstract base itself, and every destructo
 chains re-stored a vptr. A function pointer passed up the constructor chain, with
 `schedulable::_resume_of< D >` as the thunk, shrank every probe that has a schedulable and grew
 none, `sizeof` unchanged: −48 to −222 bytes on the task probes, −46 to −612 on the pump probes,
-−114 to −1110 on the holder probes, −144 to −1000 on the linked images. A type with a second
+−114 to −1110 on the holder probes, −144 to −1000 on the complete programs. A type with a second
 virtual has to fold it into the same pointer, or it pays both: `task_holder` with its virtual
 `_make_task()` grew from 60 to 64 bytes and by ~10 bytes of code per construction until its
 resume thunk passed the factory's `_make` to the shared `_run()` (`doc/plans/schedulable-fnptr.md`).
@@ -372,7 +372,7 @@ at 32 promise constructions, brought the same vtable, +68 / +100 on the eight-pu
 constructor or destructor of a dynamic base is an outlining candidate that costs a vtable when
 taken. With `schedulable` holding a function pointer neither cost exists: forcing the base's
 constructor inline is byte-identical on every probe of the suite, and the destructor lives in the
-base, −24 to −192 bytes on the task probes and −96 to −468 on the linked images.
+base, −24 to −192 bytes on the task probes and −96 to −468 on the complete programs.
 
 ### Measure a feature's scaling in three forms
 

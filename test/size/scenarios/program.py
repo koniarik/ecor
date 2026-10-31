@@ -1,10 +1,10 @@
-"""Linked images: generated programs of coroutines, holders, queues, pumps and sources.
+"""Complete programs: coroutines, task holders, queues with pumps, and sources, linked.
 
-An image is a program linked without startup code and entered at `_start`, with unreferenced
+A probe is a program linked without startup code and entered at `_start`, with unreferenced
 sections dropped, so its figure is what the program pays. `_start` runs the library's static
 initialisation, starts one `task_holder` per root coroutine and one `event_pump` per queue, and
 loops forever pushing an element into every queue, draining every source and running the core.
-A spec sets the population:
+The probe's key is its population:
 
   coros     coroutine functions in all, `holders` of them roots that a holder restarts and that
             await the others, so every function is reachable; the rest cycle through shapes:
@@ -14,21 +14,22 @@ A spec sets the population:
   types     distinct `task< T >` value types the functions cycle through
   queues    queues of `qtypes` element types each, drained by a pump with task handlers
   ll, seq   `ll_source` and `seq_source` instances of distinct payload types
+  lto       linked with link-time optimisation (1) or without (0)
 
-Dimensions: spec small | medium | special; lto 0 | 1.
+Populations: 100, 300 and 1000 coroutines, each linked with and without LTO.
 """
 import re
 import subprocess
 
 from .common import Probe, cell, flash_of, key_of
 
-NAME = 'image'
+NAME = 'program'
 
-SPECS = {
-    'small': dict(coros=100, types=5, holders=10, queues=1, qtypes=4, ll=5, seq=2),
-    'medium': dict(coros=300, types=10, holders=30, queues=2, qtypes=6, ll=15, seq=5),
-    'special': dict(coros=1000, types=20, holders=100, queues=5, qtypes=8, ll=50, seq=10),
-}
+POPULATIONS = (
+    dict(coros=100, types=5, holders=10, queues=1, qtypes=4, ll=5, seq=2),
+    dict(coros=300, types=10, holders=30, queues=2, qtypes=6, ll=15, seq=5),
+    dict(coros=1000, types=20, holders=100, queues=5, qtypes=8, ll=50, seq=10),
+)
 PER_TU = 50
 
 VT = ['void', 'int', 'bool', 'uint8_t', 'uint16_t', 'uint32_t', 'int8_t', 'int16_t', 'int32_t',
@@ -54,13 +55,21 @@ BUCKETS = [
 
 def probes(tier):
     out = []
-    for spec in SPECS:
+    for pop in POPULATIONS:
         for lto in (0, 1):
-            if tier == 'quick' and (spec != 'small' or lto):
+            if tier == 'quick' and (pop is not POPULATIONS[0] or lto):
                 continue
-            k = key_of(spec=spec, lto=lto)
-            out.append(Probe(NAME, k, sources=lambda spec=spec: sources(spec), lto=bool(lto)))
+            out.append(Probe(NAME, key_of(**pop, lto=lto), sources=lambda pop=pop: sources(pop),
+                             lto=bool(lto)))
     return out
+
+
+def describe(pop):
+    """The population in words, for the report."""
+    queues = f"{pop['queues']} queue{'' if pop['queues'] == 1 else 's'}"
+    return (f"{pop['coros']} coroutines over {pop['types']} value types, {pop['holders']} holders,"
+            f" {queues} of {pop['qtypes']} element types, {pop['ll']} `ll_source`s,"
+            f" {pop['seq']} `seq_source`s")
 
 
 def ret(t):
@@ -81,8 +90,8 @@ def await_child(j, t):
     return f'co_await c{j}( ctx );' if t == 'void' else f'{{ auto v = co_await c{j}( ctx ); sink( &v ); }}'
 
 
-def sources(spec):
-    S = SPECS[spec]
+def sources(pop):
+    S = pop
     coros, types, holders = S['coros'], S['types'], S['holders']
     queues, qtypes, nll, nseq = S['queues'], S['qtypes'], S['ll'], S['seq']
     others = coros - holders
@@ -320,16 +329,16 @@ def buckets(path):
 
 def report(results, headers, w):
     names = [b for b, _ in BUCKETS] + ['other']
-    w('### linked images: `.text + .rodata`, `.data + .bss`, and the flash by symbol family')
+    w('### complete programs: `.text + .rodata`, `.data + .bss`, and the flash by symbol family')
     w('')
     w('Buckets come from the demangled names of sized symbols, so code inlined elsewhere counts'
       ' where it landed; `.data + .bss` is dominated by the 32 KiB frame and 16 KiB node buffers.')
     w('')
-    w('| image | lto | flash | ram | ' + ' | '.join(names) + ' |')
+    w('| program | lto | flash | ram | ' + ' | '.join(names) + ' |')
     w('|---|---:|---:|---:|' + '---:|' * len(names))
-    for spec in SPECS:
+    for pop in POPULATIONS:
         for lto in (0, 1):
-            k = key_of(spec=spec, lto=lto)
+            k = key_of(**pop, lto=lto)
             m = results.get(('cur', k))
             if m is None:
                 continue
@@ -339,5 +348,6 @@ def report(results, headers, w):
                 if o is not None:
                     c += f' [{h}: {m.flash - o:+d}]'
             b = buckets(m.path)
-            w(f'| {spec} | {lto} | {c} | {m.ram} | ' + ' | '.join(str(b[n]) for n in names) + ' |')
+            w(f'| {describe(pop)} | {lto} | {c} | {m.ram} | ' + ' | '.join(str(b[n]) for n in names)
+              + ' |')
     w('')
