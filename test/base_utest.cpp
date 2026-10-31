@@ -3225,6 +3225,21 @@ TEST_CASE( "seq_source - sources with one key type keep their entries apart" )
         CHECK( log_b == std::vector< int >{ 20, 40 } );
 }
 
+TEST_CASE( "seq_source - schedule copies a payload passed as an lvalue" )
+{
+        seq_source< uint32_t, int, set_value_t( int ) > src;
+        std::vector< int >                              log;
+        int                                             payload = 20;
+
+        auto op = src.schedule( 2, payload ).connect( int_log_receiver{ &log } );
+        payload = 30;
+        op.start();
+        auto* e = src.query_next();
+        REQUIRE( e != nullptr );
+        e->set_value( e->data );
+        CHECK( log == std::vector< int >{ 20 } );
+}
+
 struct _completion_counter
 {
         using receiver_concept = ecor::receiver_t;

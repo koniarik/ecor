@@ -301,6 +301,20 @@ the memory resource, saves 1.9 bytes per coroutine: −3648 / −5528 (LTO off /
 grows from one word to two, room that `alignof( std::max_align_t )` reserves anyway on Cortex-M
 and x86-64; on a 64-bit host whose `max_align_t` is 8-byte aligned it grows from 8 to 16 bytes.
 
+### Take a payload by reference where it travels through a sender
+
+`seq_source::schedule( K key, T val )` and `_sh_sender`'s constructor took the payload by value,
+and at each inlined `co_await src.schedule( key, payload{} )` GCC built the payload, copied it
+into the parameter and moved it into the sender through stack slots it never read again. By
+`&&`, with a `const&` overload that copies an lvalue, it is built once: −8 bytes per
+`seq_source` await with a payload, −38048 / −45944 (LTO off / on, −2.5% / −3.1%) on the
+1000-coroutine program. Keep the payload-less call an overload of its own, `schedule( K )`, that
+constructs `T{}` inside: a default argument `T&& val = T{}` makes every call site materialise
+an empty temporary and pass its address, +24 bytes on a coroutine of 32 such awaits. The same
+change for `ll_source` is mixed: +23 bytes per await with a 5-byte payload and up to +4608 on
+the `task` probes, against −13120 / −7912 on the 1000-coroutine program; it stays out until
+that is understood.
+
 ### Erase an operation state over its receiver, not only over its element type
 
 `_queue_call_op` keyed on the receiver type was compiled once per producer task type, ~376 bytes

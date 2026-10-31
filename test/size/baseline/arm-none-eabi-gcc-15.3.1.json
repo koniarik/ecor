@@ -220,19 +220,19 @@
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=16": [
-   2410,
+   2280,
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=16,cfg=owning": [
-   2264,
+   2134,
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=8": [
-   1642,
+   1576,
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=8,cfg=owning": [
-   1610,
+   1544,
    0
   ],
   "co_await/kind=suspend,awaits=16": [
@@ -764,51 +764,51 @@
    0
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0": [
-   136012,
+   134108,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0,cfg=owning": [
-   119660,
+   117768,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1": [
-   129832,
+   127940,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1,cfg=owning": [
-   111824,
+   109772,
    49292
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0": [
-   1525456,
+   1487408,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0,cfg=owning": [
-   1385056,
+   1338796,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1": [
-   1469852,
+   1423908,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1,cfg=owning": [
-   1277636,
+   1232224,
    49828
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0": [
-   438604,
+   428620,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0,cfg=owning": [
-   379596,
+   368368,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1": [
-   423472,
+   412328,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1,cfg=owning": [
-   360036,
+   348356,
    49420
   ],
   "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=call": [
@@ -2152,7 +2152,7 @@
    0
   ],
   "source/kind=seq,n=12,stopcheck=0,drain=next,await=1": [
-   3934,
+   3822,
    0
   ],
   "source/kind=seq,n=12,stopcheck=1,drain=next,await=0": [
@@ -2160,7 +2160,7 @@
    0
   ],
   "source/kind=seq,n=12,stopcheck=1,drain=next,await=1": [
-   4738,
+   4626,
    0
   ],
   "source/kind=seq,n=2,stopcheck=0,drain=next,await=0": [
@@ -2168,7 +2168,7 @@
    0
   ],
   "source/kind=seq,n=2,stopcheck=0,drain=next,await=1": [
-   1360,
+   1364,
    0
   ],
   "source/kind=seq,n=2,stopcheck=1,drain=next,await=0": [
@@ -2176,7 +2176,7 @@
    0
   ],
   "source/kind=seq,n=2,stopcheck=1,drain=next,await=1": [
-   1544,
+   1548,
    0
   ],
   "source/kind=seq,n=4,stopcheck=0,drain=next,await=0": [
@@ -2184,7 +2184,7 @@
    0
   ],
   "source/kind=seq,n=4,stopcheck=0,drain=next,await=1": [
-   2040,
+   2028,
    0
   ],
   "source/kind=seq,n=4,stopcheck=1,drain=next,await=0": [
@@ -2192,7 +2192,7 @@
    0
   ],
   "source/kind=seq,n=4,stopcheck=1,drain=next,await=1": [
-   2352,
+   2340,
    0
   ],
   "source/kind=seq,n=50,stopcheck=0,drain=next,await=0": [
@@ -2200,7 +2200,7 @@
    0
   ],
   "source/kind=seq,n=50,stopcheck=0,drain=next,await=1": [
-   12724,
+   12184,
    0
   ],
   "source/kind=seq,n=50,stopcheck=1,drain=next,await=0": [
@@ -2208,7 +2208,7 @@
    0
   ],
   "source/kind=seq,n=50,stopcheck=1,drain=next,await=1": [
-   14674,
+   14134,
    0
   ],
   "source/kind=seq,n=8,stopcheck=0,drain=next,await=0": [
@@ -2216,7 +2216,7 @@
    0
   ],
   "source/kind=seq,n=8,stopcheck=0,drain=next,await=1": [
-   3088,
+   3004,
    0
   ],
   "source/kind=seq,n=8,stopcheck=1,drain=next,await=0": [
@@ -2224,7 +2224,7 @@
    0
   ],
   "source/kind=seq,n=8,stopcheck=1,drain=next,await=1": [
-   3656,
+   3572,
    0
   ],
   "task/cfg=convert,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [

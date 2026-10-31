@@ -2100,7 +2100,7 @@ struct _sh_sender
         using entry_type            = seq_entry< K, T, S... >;
         using completion_signatures = typename entry_type::completion_signatures;
 
-        _sh_sender( K key, T val, zll::sh_heap< _sh_link< K > >& sh ) noexcept(
+        _sh_sender( K&& key, T&& val, zll::sh_heap< _sh_link< K > >& sh ) noexcept(
             std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< T > )
           : _key( std::move( key ) )
           , _val( std::move( val ) )
@@ -2260,11 +2260,23 @@ struct seq_source
         static constexpr bool has_get_stopped = entry_type::has_get_stopped;
 
         /// Schedule a new entry with this source, using `key` for heap ordering and `val` as the
-        /// payload stored in the entry. For `T = unit`, `val` defaults to `unit{}`.
-        _sh_sender< K, T, S... > schedule( K key, T val = T{} ) noexcept(
+        /// payload stored in the entry, `T{}` when omitted.
+        _sh_sender< K, T, S... > schedule( K key ) noexcept(
+            noexcept( _sh_sender< K, T, S... >{ std::move( key ), T{}, _sh } ) )
+        {
+                return { std::move( key ), T{}, _sh };
+        }
+
+        _sh_sender< K, T, S... > schedule( K key, T&& val ) noexcept(
             noexcept( _sh_sender< K, T, S... >{ std::move( key ), std::move( val ), _sh } ) )
         {
                 return { std::move( key ), std::move( val ), _sh };
+        }
+
+        _sh_sender< K, T, S... > schedule( K key, T const& val ) noexcept(
+            noexcept( _sh_sender< K, T, S... >{ std::move( key ), T( val ), _sh } ) )
+        {
+                return { std::move( key ), T( val ), _sh };
         }
 
         /// Returns `true` if no receivers are currently pending.
