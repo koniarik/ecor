@@ -3618,7 +3618,7 @@ struct task
 
         ~task()
         {
-                if ( _h && !_h.done() )
+                if ( _h )
                         _h.destroy();
         }
 
