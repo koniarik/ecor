@@ -9,10 +9,13 @@ one coroutine is the slope between 1 and 16 coroutines.
 Dimensions:
   value     the task's value type: void | int
   awaiting  none (the body is only the co_return) | ll_source (one await of a nullary
-            `ll_source`) | child_task (one await of an external `task< uint8_t >`)
+            `ll_source`) | child_task (one await of an external `task< uint8_t >`) |
+            user_awaiter, user_source (one await of the awaitable or the source the program
+            defines, as in `common.USER_AWAITABLES`) | mixed (one await of each: `ll_source`,
+            `seq_source`, child task, user awaiter, user source)
   coros     1 | 16 coroutine functions
 """
-from .common import Probe, cell, flash_of, key_of
+from .common import USER_AWAITABLES, Probe, cell, flash_of, key_of
 
 NAME = 'coroutine'
 
@@ -24,6 +27,13 @@ BODIES = {
     'none': None,
     'll_source': 'co_await the_ll_source().schedule();',
     'child_task': '{ auto v = co_await child_task( ctx ); sink( &v ); }',
+    'user_awaiter': 'co_await user_awaiter{};',
+    'user_source': 'co_await user_source_sender{};',
+    'mixed': ('co_await the_ll_source().schedule(); '
+              'co_await the_seq_source().schedule( now() ); '
+              '{ auto v = co_await child_task( ctx ); sink( &v ); } '
+              'co_await user_awaiter{}; '
+              'co_await user_source_sender{};'),
 }
 
 
@@ -48,7 +58,11 @@ def source(value, awaiting, coros):
     w('using ll_source_t = ll_source< unit, set_value_t() >;')
     w('extern ll_source_t&     the_ll_source();')
     w('extern task< uint8_t > child_task( task_ctx& );')
+    w('using seq_source_t = seq_source< uint32_t, unit, set_value_t() >;')
+    w('extern seq_source_t&    the_seq_source();')
+    w('extern uint32_t         now();')
     w('')
+    w(USER_AWAITABLES)
     w('struct dr')
     w('{')
     w('        using receiver_concept = receiver_t;')

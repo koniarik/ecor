@@ -211,6 +211,22 @@
    1364,
    0
   ],
+  "co_await/kind=user_awaiter,awaits=16": [
+   914,
+   0
+  ],
+  "co_await/kind=user_awaiter,awaits=8": [
+   754,
+   0
+  ],
+  "co_await/kind=user_source,awaits=16": [
+   1266,
+   0
+  ],
+  "co_await/kind=user_source,awaits=8": [
+   886,
+   0
+  ],
   "coroutine/value=int,awaiting=child_task,coros=1": [
    812,
    0
@@ -227,12 +243,36 @@
    5164,
    0
   ],
+  "coroutine/value=int,awaiting=mixed,coros=1": [
+   1394,
+   0
+  ],
+  "coroutine/value=int,awaiting=mixed,coros=16": [
+   9144,
+   0
+  ],
   "coroutine/value=int,awaiting=none,coros=1": [
    560,
    0
   ],
   "coroutine/value=int,awaiting=none,coros=16": [
    4146,
+   0
+  ],
+  "coroutine/value=int,awaiting=user_awaiter,coros=1": [
+   598,
+   0
+  ],
+  "coroutine/value=int,awaiting=user_awaiter,coros=16": [
+   4722,
+   0
+  ],
+  "coroutine/value=int,awaiting=user_source,coros=1": [
+   630,
+   0
+  ],
+  "coroutine/value=int,awaiting=user_source,coros=16": [
+   4914,
    0
   ],
   "coroutine/value=void,awaiting=child_task,coros=1": [
@@ -251,12 +291,36 @@
    5132,
    0
   ],
+  "coroutine/value=void,awaiting=mixed,coros=1": [
+   1390,
+   0
+  ],
+  "coroutine/value=void,awaiting=mixed,coros=16": [
+   9112,
+   0
+  ],
   "coroutine/value=void,awaiting=none,coros=1": [
    558,
    0
   ],
   "coroutine/value=void,awaiting=none,coros=16": [
    4114,
+   0
+  ],
+  "coroutine/value=void,awaiting=user_awaiter,coros=1": [
+   594,
+   0
+  ],
+  "coroutine/value=void,awaiting=user_awaiter,coros=16": [
+   4722,
+   0
+  ],
+  "coroutine/value=void,awaiting=user_source,coros=1": [
+   630,
+   0
+  ],
+  "coroutine/value=void,awaiting=user_source,coros=16": [
+   4882,
    0
   ],
   "holder/holders=1,factory=capture,bodies=1,stop=0": [

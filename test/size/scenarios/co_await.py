@@ -16,10 +16,13 @@ Kinds:
   task_int                  a child `task< int >`
   suspend                   `ecor::suspend`
   push_and_wait             `push_and_wait()` on an `async_queue`
+  user_awaiter              an awaitable the program defines, which is no sender
+  user_source               the sender of a waiter list the program defines, through ecor's
+                            awaitable; its operation state unlinks itself when destroyed
 
 Dimensions: kind as above; awaits 8 | 16.
 """
-from .common import TASK_RECV, Probe, cell, flash_of, key_of
+from .common import TASK_RECV, USER_AWAITABLES, Probe, cell, flash_of, key_of
 
 NAME = 'co_await'
 
@@ -75,6 +78,8 @@ STMTS = {
     'task_int': 'sink_i( co_await child_int( ctx ) );',
     'suspend': 'co_await suspend;',
     'push_and_wait': '{ event e{}; co_await the_queue().push_and_wait( e ); sink( &e ); }',
+    'user_awaiter': 'co_await user_awaiter{};',
+    'user_source': 'co_await user_source_sender{};',
 }
 
 
@@ -100,6 +105,7 @@ def source(kind, awaits):
     w('')
     w(TASK_RECV)
     w(DECLS)
+    w(USER_AWAITABLES)
     w('namespace')
     w('{')
     w('task< void > run( task_ctx& ctx )')

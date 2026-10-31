@@ -156,3 +156,63 @@ struct imm
         }
 };
 '''
+
+# An awaitable and a source that the program defines, not ecor. `user_awaiter` is no sender, so a
+# task awaits it as it is. `user_source_sender` is the sender of a waiter list that opaque
+# functions keep, awaited through ecor's awaitable; its operation state takes itself off the list
+# when destroyed.
+USER_AWAITABLES = '''struct user_waiter
+{
+        user_waiter* next                   = nullptr;
+        void ( *complete )( user_waiter& ) = nullptr;
+};
+void user_link( user_waiter& );
+void user_unlink( user_waiter& );
+template < typename R >
+struct user_source_op : user_waiter
+{
+        using operation_state_concept = operation_state_t;
+        explicit user_source_op( R r ) noexcept
+          : _r( std::move( r ) )
+        {
+        }
+        user_source_op( user_source_op&& ) = delete;
+        ~user_source_op()
+        {
+                user_unlink( *this );
+        }
+        void start() noexcept
+        {
+                complete = []( user_waiter& w ) {
+                        static_cast< user_source_op& >( w )._r.set_value();
+                };
+                user_link( *this );
+        }
+        R _r;
+};
+struct user_source_sender
+{
+        using sender_concept        = sender_t;
+        using completion_signatures = ecor::completion_signatures< set_value_t() >;
+        template < typename R >
+        user_source_op< R > connect( R r ) &&
+        {
+                return user_source_op< R >{ std::move( r ) };
+        }
+};
+void user_park( std::coroutine_handle<> );
+struct user_awaiter
+{
+        [[nodiscard]] bool await_ready() const noexcept
+        {
+                return false;
+        }
+        void await_suspend( std::coroutine_handle<> h ) const noexcept
+        {
+                user_park( h );
+        }
+        void await_resume() const noexcept
+        {
+        }
+};
+'''
