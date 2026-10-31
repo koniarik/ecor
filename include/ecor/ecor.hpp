@@ -2703,6 +2703,10 @@ struct _task_awaitable_base
                     std::is_nothrow_constructible_v< value_type, Ts... > ||
                     std::same_as< value_type, void > )
                 {
+#ifdef ECOR_DEBUG_PARENT
+                        // An operation state that the promise owns goes before `await_resume()`.
+                        _self->_clear_debug_parent();
+#endif
                         _self->_promise->trace.on_await_set_value( *_self, vals... );
                         _self->_exp.set_value( (Ts&&) vals... );
                         _self->_promise->_reschedule();
@@ -2805,6 +2809,56 @@ struct _task_awaitable : _task_awaitable_base< PromiseBase, ValueType >
         }
 
         Op _op;
+};
+
+/// Awaitable of a task whose configuration sets `promise_owns_operations`. It keeps the operation
+/// state in raw storage, so that it is trivially destructible; `await_suspend` starts the
+/// operation state and leaves it to the promise, which destroys it when the coroutine resumes.
+template < typename PromiseBase, typename ValueType, typename Op >
+        requires( PromiseBase::_owns_operations )
+struct _task_awaitable< PromiseBase, ValueType, Op >
+  : _task_awaitable_base< PromiseBase, ValueType >
+{
+        using value_type = ValueType;
+        using _base      = _task_awaitable_base< PromiseBase, ValueType >;
+
+        template < typename S >
+        _task_awaitable( S&& sender )
+        {
+                static_assert(
+                    std::same_as< connect_type< S, typename _base::_receiver >, Op >,
+                    "Awaitable op type must match the connected sender op" );
+                ::new ( (void*) _buf )
+                    Op( ( (S&&) sender ).connect( typename _base::_receiver{ ._self = this } ) );
+        }
+
+        // The operation state holds this object's address.
+        _task_awaitable( _task_awaitable const& ) = delete;
+
+        using _base::await_ready;
+        using _base::await_resume;
+
+        /// Starts the operation state on awaiter suspension.
+        template < typename P >
+        void await_suspend( std::coroutine_handle< P > ch ) noexcept
+        {
+                _base::_bind( ch );
+                Op* op = std::launder( reinterpret_cast< Op* >( _buf ) );
+#ifdef ECOR_DEBUG_PARENT
+                this->_bind_debug_parent( *op );
+#endif
+                this->_promise->_await_cleanup = &_destroy;
+                this->_promise->_await_op      = op;
+                op->start();
+        }
+
+private:
+        static void _destroy( void* op ) noexcept
+        {
+                static_cast< Op* >( op )->~Op();
+        }
+
+        alignas( Op ) unsigned char _buf[sizeof( Op )];
 };
 
 template < class Alloc >
@@ -3076,6 +3130,8 @@ struct task_default_cfg
         using error_signatures = completion_signatures< set_error_t( task_error ) >;
         using trace_type       = task_default_trace;
 
+        static constexpr bool promise_owns_operations = false;
+
         ECOR_FORCE_INLINE static task_error convert_error( task_error err ) noexcept
         {
                 return err;
@@ -3085,6 +3141,13 @@ struct task_default_cfg
 template < typename CFG >
 using _task_cfg_convert_error_t = decltype( CFG::convert_error( task_error{} ) );
 
+template < typename CFG >
+inline constexpr bool _task_cfg_promise_owns_operations = false;
+
+template < typename CFG >
+        requires( requires { CFG::promise_owns_operations; } )
+inline constexpr bool _task_cfg_promise_owns_operations< CFG > = CFG::promise_owns_operations;
+
 /// Concept for the task configuration. A type is task configuration if:
 /// - It has a nested type `error_signatures` that is a `completion_signatures` type specifying the
 ///   full set of error signatures the task can complete with.
@@ -3093,6 +3156,9 @@ using _task_cfg_convert_error_t = decltype( CFG::convert_error( task_error{} ) )
 ///   custom configuration can translate internal task errors before dispatch.
 /// - It has a nested type `trace_type` (EXPERIMENTAL — see `task_default_trace`) used by the
 ///   promise to dispatch trace events. Use `task_default_trace` if you do not need tracing.
+/// - It may have a `static constexpr bool promise_owns_operations`, false when absent. When true,
+///   the promise owns the operation state of each `co_await`: less code at every `co_await`, for
+///   two more pointers of RAM per coroutine frame.
 template < typename T >
 concept task_config =
     requires() {
@@ -3189,8 +3255,59 @@ struct _task_cont_vtable : _task_cont_vtable_base< ErrSigs >, _sig_vtable_row< V
         using _sig_vtable_row< ValueSig >::invoke;
 };
 
-template < typename Trace, typename ErrSigs >
-struct _promise_cfg_base : _promise_base
+/// The operation state that a task's current `co_await` leaves to the promise, in tasks whose
+/// configuration sets `promise_owns_operations`. With `OwnsOps` false it holds nothing, and
+/// destroying the coroutine only destroys its frame.
+template < bool OwnsOps >
+struct _promise_op_slot
+{
+        static constexpr bool _owns_operations = true;
+
+        /// Destroys `_await_op`, the operation state of the `co_await` the coroutine is suspended
+        /// on; null when there is none.
+        void ( *_await_cleanup )( void* ) = nullptr;
+        void* _await_op                   = nullptr;
+
+        void _destroy_await_op() noexcept
+        {
+                if ( _await_cleanup )
+                        std::exchange( _await_cleanup, nullptr )( _await_op );
+        }
+
+        /// Destroys the coroutine `h` whose promise holds this slot. The operation state of the
+        /// `co_await` it is suspended on goes first, before the coroutine's locals.
+        ECOR_NOINLINE void _destroy_coroutine( std::coroutine_handle<> h ) noexcept
+        {
+                _destroy_await_op();
+                h.destroy();
+        }
+
+        // Every started frame is destroyed through `_destroy_coroutine()`.
+        ~_promise_op_slot() noexcept
+        {
+                ECOR_ASSERT( !_await_cleanup );
+        }
+};
+
+template <>
+struct _promise_op_slot< false >
+{
+        static constexpr bool _owns_operations = false;
+
+        ECOR_FORCE_INLINE void _destroy_await_op() noexcept
+        {
+        }
+
+        template < typename P >
+        ECOR_FORCE_INLINE static void
+        _destroy_coroutine( std::coroutine_handle< P > const& h ) noexcept
+        {
+                h.destroy();
+        }
+};
+
+template < typename Trace, typename ErrSigs, bool OwnsOps >
+struct _promise_cfg_base : _promise_base, _promise_op_slot< OwnsOps >
 {
         using trace_type     = Trace;
         using _cont_vtable_t = _task_cont_vtable_base< ErrSigs >;
@@ -3304,14 +3421,19 @@ struct _promise_return_mixin< Task, void >
 ///   co_awaiting on senders from the task coroutine.
 ///
 template < typename Task >
-struct _promise_type
-  : _promise_cfg_base< typename Task::config_type::trace_type, typename Task::_error_completions >,
-    _promise_return_mixin< Task, typename Task::value_type >
+struct _promise_type : _promise_cfg_base<
+                           typename Task::config_type::trace_type,
+                           typename Task::_error_completions,
+                           _task_cfg_promise_owns_operations< typename Task::config_type > >,
+                       _promise_return_mixin< Task, typename Task::value_type >
 {
         using value_type = typename Task::value_type;
         using cfg_type   = typename Task::config_type;
         using trace_type = typename cfg_type::trace_type;
-        using _base      = _promise_cfg_base< trace_type, typename Task::_error_completions >;
+        using _base      = _promise_cfg_base<
+            trace_type,
+            typename Task::_error_completions,
+            _task_cfg_promise_owns_operations< cfg_type > >;
         using vtable =
             _task_cont_vtable< typename Task::_error_completions, _value_setter_t< value_type > >;
 
@@ -3401,6 +3523,7 @@ struct _promise_type
 
         void _resume()
         {
+                this->_destroy_await_op();
                 this->trace.on_resume( *this );
                 auto h = std::coroutine_handle< _promise_type >::from_promise( *this );
                 h.resume();
@@ -3510,7 +3633,7 @@ struct _task_op
         void clear()
         {
                 if ( _h )
-                        _h.destroy();
+                        _h.promise()._destroy_coroutine( _h );
                 _h     = {};
                 _recv  = {};
                 _error = task_error::none;
@@ -3529,7 +3652,7 @@ struct _task_op
         ~_task_op()
         {
                 if ( this->_h )
-                        this->_h.destroy();
+                        this->_h.promise()._destroy_coroutine( this->_h );
         }
 
         std::coroutine_handle< promise_type > _h;

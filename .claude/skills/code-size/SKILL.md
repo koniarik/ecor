@@ -261,6 +261,36 @@ larger from a few sites on: a stop callback as a direct member instead of in an 
 one site, +36 at eight, +76 at sixteen), and the receiver's address and vtable stored by the
 constructor instead of by `start()` (−48, +60, +116) (`doc/plans/push-and-wait.md`).
 
+### A non-trivial awaitable destructor costs code at every `co_await`
+
+GCC destroys an awaitable on the resume path of its suspension point and again from a destroy
+stub, so an awaitable with a non-trivial destructor costs a call, a stub and dispatch-table
+entries at every `co_await`. With `promise_owns_operations` the awaitable keeps the operation
+state in raw storage and leaves it to the promise, which destroys it when the coroutine resumes;
+`_task_op` destroys a pending one before the frame. That saves 14 to 17 bytes per source
+`co_await`, 15.7 / 26.2 per child `task< void >` / `task< int >`, 14.5 per `push_and_wait()`
+and 17.4 per source a program defines, and 12% / 14% (LTO off / on) of the generated
+100-coroutine program, 9% / 13% of the 1000-coroutine one, for two pointers of RAM per frame and
+a fixed cost of the resume check, `_destroy_await_op()` and `_destroy_coroutine()`: median +24 /
++68 / +124 on the queue, pump and holder probes.
+
+Measured and declined (`doc/plans/zoo/co_await/`): starting the operation state in the
+awaitable's constructor, which takes the promise, with an empty `await_suspend`, about doubles
+the program saving, because each site then makes one call instead of two (8 bytes per coroutine;
+only a coroutine that repeats one kind of await lets GCC merge the second call into one shared
+tail). Connecting in `await_suspend` too, with the constructor recording the sender's address,
+was 2 to 22 KB larger on the programs; forcing the constructor out of line changed nothing.
+Limiting the scheme to source entries left short coroutines with mixed awaits 17 bytes larger
+than with a destructor. Destroying a pending operation state from the promise destructor saves
+44 to 136 bytes on the programs, but runs after the coroutine's locals.
+
+The option off had to compile byte-identical to before, and a forwarding layer broke that
+although it reduces to the same instructions: `~_task_op` calling a member that called a static
+`h.destroy()` wrapper taking the handle by value made GCC outline `~_task_op` in holders (+36)
+and drop its shared `destroy()` clone. The wrapper called directly, force-inlined, with the
+handle by `const&`, restored every probe. Check an option's off state against HEAD on the whole
+suite, not on the probes it is about.
+
 ### Erase an operation state over its receiver, not only over its element type
 
 `_queue_call_op` keyed on the receiver type was compiled once per producer task type, ~376 bytes

@@ -137,6 +137,19 @@ struct test_cfg2 : ecor::task_default_cfg
 using test_task  = ecor::task< void, test_cfg >;
 using test_task2 = ecor::task< void, test_cfg2 >;
 
+struct test_owning_cfg : test_cfg
+{
+        static constexpr bool promise_owns_operations = true;
+};
+
+struct test_owning_cfg2 : test_cfg2
+{
+        static constexpr bool promise_owns_operations = true;
+};
+
+using test_owning_task  = ecor::task< void, test_owning_cfg >;
+using test_owning_task2 = ecor::task< void, test_owning_cfg2 >;
+
 // S1/S2: coroutine suspends once via co_await ecor::suspend then returns.
 static constexpr int SIMPLE_CORO_LINE = __LINE__ + 1;
 static test_task     gdb_coro_simple( ecor::task_ctx& )
@@ -160,6 +173,21 @@ static constexpr int OUTER_CORO_LINE = __LINE__ + 1;
 static test_task2    gdb_coro_outer( ecor::task_ctx& ctx )
 {
         co_await gdb_coro_inner( ctx );
+        co_return;
+}
+
+// S4: as S3, with promises that own the operation states of their co_awaits.
+static constexpr int    OWNING_INNER_CORO_LINE = __LINE__ + 1;
+static test_owning_task gdb_coro_owning_inner( ecor::task_ctx& )
+{
+        co_await g_inner_src->schedule();
+        co_return;
+}
+
+static constexpr int     OWNING_OUTER_CORO_LINE = __LINE__ + 1;
+static test_owning_task2 gdb_coro_owning_outer( ecor::task_ctx& ctx )
+{
+        co_await gdb_coro_owning_inner( ctx );
         co_return;
 }
 
@@ -235,6 +263,40 @@ void run_tests( mode m, auto& st )
                 } );                  // unblock inner
                 ctx.core.run_once();  // inner completes, outer resumes
                 ctx.core.run_once();  // outer completes
+                g_inner_src = nullptr;
+        }
+
+        // S4: as S3, with promises that own the operation states of their co_awaits
+        {
+                ecor::ll_source< ecor::unit, ecor::set_value_t() > src;
+                g_inner_src = &src;
+
+                ecor::nd_mem   mem;
+                ecor::task_ctx ctx{ mem };
+                g_captured  = nullptr;
+                g_captured2 = nullptr;
+
+                auto op = gdb_coro_owning_outer( ctx ).connect( ecor::_dummy_receiver{} );
+                op.start();
+                ctx.core.run_once();
+                ctx.core.run_once();
+
+                assert( g_captured != nullptr && g_captured2 != nullptr );
+                [[maybe_unused]] auto* inner_p =
+                    static_cast< ecor::_promise_type< test_owning_task >* >( g_captured );
+
+                std::string inner_expected =
+                    std::string( "ecor::_promise_type [gdb_coro_owning_inner()] @ " ) + __FILE__ +
+                    ":" + std::to_string( OWNING_INNER_CORO_LINE ) +
+                    "\n    <- awaited by [gdb_coro_owning_outer()] @ " + __FILE__ + ":" +
+                    std::to_string( OWNING_OUTER_CORO_LINE );
+                CHECK( m, *inner_p, inner_expected, st );
+
+                ecor::broadcast( src, []( auto& e ) {
+                        e.set_value();
+                } );
+                ctx.core.run_once();
+                ctx.core.run_once();
                 g_inner_src = nullptr;
         }
 #endif

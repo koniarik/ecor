@@ -1121,6 +1121,33 @@ void run_with_custom_cfg(my_ctx_type& ctx) {
 }
 ```
 
+### Smaller `co_await` code — `promise_owns_operations`
+
+A configuration that sets `promise_owns_operations` lets the task's promise own the operation
+state of each `co_await`. The awaitable then has no destructor, so each `co_await` compiles to
+less code, for two more pointers of RAM per coroutine frame.
+
+```cpp
+struct small_cfg : ecor::task_default_cfg {
+    static constexpr bool promise_owns_operations = true;
+};
+
+ecor::ll_source<ecor::unit, ecor::set_value_t()> tick;
+
+ecor::task<void, small_cfg> blink(ecor::task_ctx& ctx)
+{
+    while (true)
+        co_await tick.schedule();
+}
+```
+
+The promise destroys the operation state when the coroutine resumes, just before the `co_await`
+returns. A task destroyed while suspended destroys the pending operation state first, before the
+coroutine's locals, as it does without the option.
+
+> `task_holder`'s deduction guide assumes `task_default_cfg`: spell out a holder of such tasks,
+> as in `ecor::task_holder<small_cfg, ecor::task_ctx, factory_t>`.
+
 ## Async Arena - Managed Async Lifetimes
 
 `async_arena` provides reference-counted smart pointers (`async_ptr`) with

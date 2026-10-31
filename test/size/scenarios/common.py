@@ -157,6 +157,25 @@ struct imm
 };
 '''
 
+# Task configurations of the probes: a probe keyed `cfg=owning` runs its tasks with
+# `promise_owns_operations`, a probe without `cfg` with the default configuration.
+CFGS = ('default', 'owning')
+
+
+def cfg_dims(cfg):
+    """The key dimensions of task configuration `cfg`: none for the default."""
+    return {} if cfg == 'default' else {'cfg': cfg}
+
+
+def ptask_alias(cfg):
+    """Declares `ptask< T >`, the task type of a probe whose task configuration is `cfg`."""
+    if cfg == 'default':
+        return 'template < typename T >\nusing ptask = task< T >;\n'
+    return ('struct owning_cfg : task_default_cfg\n{\n'
+            '        static constexpr bool promise_owns_operations = true;\n};\n'
+            'template < typename T >\nusing ptask = task< T, owning_cfg >;\n')
+
+
 # An awaitable and a source that the program defines, not ecor. `user_awaiter` is no sender, so a
 # task awaits it as it is. `user_source_sender` is the sender of a waiter list that opaque
 # functions keep, awaited through ecor's awaitable; its operation state takes itself off the list

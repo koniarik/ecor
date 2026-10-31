@@ -3225,6 +3225,574 @@ TEST_CASE( "seq_source - sources with one key type keep their entries apart" )
         CHECK( log_b == std::vector< int >{ 20, 40 } );
 }
 
+struct _completion_counter
+{
+        using receiver_concept = ecor::receiver_t;
+
+        int* values;
+        int* stopped;
+        int* errors = nullptr;
+
+        void set_value() noexcept
+        {
+                ++*values;
+        }
+        void set_error( task_error ) noexcept
+        {
+                if ( errors )
+                        ++*errors;
+        }
+        void set_stopped() noexcept
+        {
+                ++*stopped;
+        }
+};
+
+using _plain_seq_source = seq_source< uint32_t, unit, set_value_t() >;
+using _plain_ll_source  = ll_source< unit, set_value_t() >;
+
+template < typename CFG >
+static task< void, CFG > wait_on_seq_entry( task_ctx&, _plain_seq_source& src, uint32_t key )
+{
+        co_await src.schedule( key );
+}
+
+template < typename CFG >
+static task< void, CFG > wait_on_ll_entry( task_ctx&, _plain_ll_source& src )
+{
+        co_await src.schedule();
+}
+
+template < typename CFG >
+static task< void, CFG > wait_on_ll_entry_in_child( task_ctx& ctx, _plain_ll_source& src )
+{
+        co_await wait_on_ll_entry< CFG >( ctx, src );
+}
+
+template < typename P >
+struct _awaiting_promise
+{
+        P* _p = nullptr;
+
+        [[nodiscard]] bool await_ready() const noexcept
+        {
+                return false;
+        }
+        bool await_suspend( std::coroutine_handle< P > h ) noexcept
+        {
+                _p = &h.promise();
+                return false;
+        }
+        P& await_resume() const noexcept
+        {
+                return *_p;
+        }
+};
+
+struct _start_recording_sender
+{
+        using sender_concept        = sender_t;
+        using completion_signatures = ecor::completion_signatures< set_value_t() >;
+
+        bool* started;
+
+        template < typename R >
+        struct _op
+        {
+                using operation_state_concept = operation_state_t;
+
+                bool* started;
+                R     receiver;
+
+                void start() noexcept
+                {
+                        *started = true;
+                        receiver.set_value();
+                }
+        };
+
+        template < typename R >
+        _op< R > connect( R receiver ) &&
+        {
+                return { started, std::move( receiver ) };
+        }
+};
+
+template < typename CFG >
+static task< void, CFG > build_then_await_sender( task_ctx&, bool& started, bool& started_early )
+{
+        auto&  p      = co_await _awaiting_promise< typename task< void, CFG >::promise_type >{};
+        auto&& aw     = p.await_transform( _start_recording_sender{ &started } );
+        started_early = started;
+        co_await aw;
+}
+
+template < typename CFG >
+static task< void, CFG >
+build_then_await_ll_entry( task_ctx&, _plain_ll_source& src, bool& linked_early )
+{
+        auto&  p     = co_await _awaiting_promise< typename task< void, CFG >::promise_type >{};
+        auto&& aw    = p.await_transform( src.schedule() );
+        linked_early = !src.empty();
+        co_await aw;
+}
+
+template < typename CFG >
+static task< void, CFG >
+build_then_await_seq_entry( task_ctx&, _plain_seq_source& src, bool& linked_early )
+{
+        auto&  p     = co_await _awaiting_promise< typename task< void, CFG >::promise_type >{};
+        auto&& aw    = p.await_transform( src.schedule( 1 ) );
+        linked_early = !src.empty();
+        co_await aw;
+}
+
+TEST_CASE_TEMPLATE(
+    "task - co_await starts the operation once the coroutine is suspended",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        bool     started = false, started_early = true;
+        int      values = 0, stopped = 0;
+
+        auto op = build_then_await_sender< CFG >( ctx, started, started_early )
+                      .connect( _completion_counter{ &values, &stopped } );
+        op.start();
+        ctx.core.run_once();
+        CHECK( !started_early );
+        CHECK( started );
+        ctx.core.run_once();
+        CHECK( values == 1 );
+}
+
+TEST_CASE_TEMPLATE(
+    "ll_source - co_await links the entry once the coroutine is suspended",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem           mem;
+        task_ctx         ctx{ mem };
+        _plain_ll_source src;
+        bool             linked_early = true;
+        int              values = 0, stopped = 0;
+
+        auto op = build_then_await_ll_entry< CFG >( ctx, src, linked_early )
+                      .connect( _completion_counter{ &values, &stopped } );
+        op.start();
+        ctx.core.run_once();
+        CHECK( !linked_early );
+        CHECK( broadcast( src, []( auto& e ) {
+                       e.set_value();
+               } ) == 1 );
+        ctx.core.run_once();
+        CHECK( values == 1 );
+}
+
+TEST_CASE_TEMPLATE(
+    "seq_source - co_await links the entry once the coroutine is suspended",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem            mem;
+        task_ctx          ctx{ mem };
+        _plain_seq_source src;
+        bool              linked_early = true;
+        int               values = 0, stopped = 0;
+
+        auto op = build_then_await_seq_entry< CFG >( ctx, src, linked_early )
+                      .connect( _completion_counter{ &values, &stopped } );
+        op.start();
+        ctx.core.run_once();
+        CHECK( !linked_early );
+        auto* e = src.query_next();
+        REQUIRE( e != nullptr );
+        e->set_value();
+        ctx.core.run_once();
+        CHECK( values == 1 );
+}
+
+TEST_CASE_TEMPLATE(
+    "seq_source - destroying a task suspended on an entry takes the entry out",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem            mem;
+        task_ctx          ctx{ mem };
+        _plain_seq_source src;
+        int               values = 0, stopped = 0;
+
+        auto kept = wait_on_seq_entry< CFG >( ctx, src, 2 )
+                        .connect( _completion_counter{ &values, &stopped } );
+        kept.start();
+        {
+                auto gone = wait_on_seq_entry< CFG >( ctx, src, 1 )
+                                .connect( _completion_counter{ &values, &stopped } );
+                gone.start();
+                ctx.core.run_once();
+                ctx.core.run_once();
+                REQUIRE( !src.empty() );
+                CHECK( src.front().key == 1 );
+        }
+        CHECK( stopped == 1 );
+        REQUIRE( !src.empty() );
+        CHECK( src.front().key == 2 );
+
+        auto* e = src.query_next();
+        REQUIRE( e != nullptr );
+        e->set_value();
+        ctx.core.run_once();
+        CHECK( values == 1 );
+        CHECK( src.empty() );
+}
+
+TEST_CASE_TEMPLATE(
+    "ll_source - destroying a task suspended on an entry takes the entry out",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem           mem;
+        task_ctx         ctx{ mem };
+        _plain_ll_source src;
+        int              values = 0, stopped = 0;
+
+        auto kept =
+            wait_on_ll_entry< CFG >( ctx, src ).connect( _completion_counter{ &values, &stopped } );
+        kept.start();
+        {
+                auto gone = wait_on_ll_entry< CFG >( ctx, src )
+                                .connect( _completion_counter{ &values, &stopped } );
+                gone.start();
+                ctx.core.run_once();
+                ctx.core.run_once();
+        }
+        CHECK( stopped == 1 );
+        CHECK( broadcast( src, []( auto& e ) {
+                       e.set_value();
+               } ) == 1 );
+        ctx.core.run_once();
+        CHECK( values == 1 );
+        CHECK( src.empty() );
+}
+
+TEST_CASE_TEMPLATE(
+    "task - destroying a parent suspended on a child destroys the child",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem           mem;
+        task_ctx         ctx{ mem };
+        _plain_ll_source src;
+        int              values = 0, stopped = 0;
+        {
+                auto op = wait_on_ll_entry_in_child< CFG >( ctx, src )
+                              .connect( _completion_counter{ &values, &stopped } );
+                op.start();
+                ctx.core.run_once();
+                ctx.core.run_once();
+                CHECK( !src.empty() );
+        }
+        CHECK( src.empty() );
+        CHECK( stopped == 1 );
+        CHECK( values == 0 );
+}
+
+TEST_CASE_TEMPLATE(
+    "ll_source - an entry completed through front() leaves the list once its task resumes",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem           mem;
+        task_ctx         ctx{ mem };
+        _plain_ll_source src;
+        int              values = 0, stopped = 0;
+
+        auto op =
+            wait_on_ll_entry< CFG >( ctx, src ).connect( _completion_counter{ &values, &stopped } );
+        op.start();
+        ctx.core.run_once();
+        REQUIRE( !src.empty() );
+        src.front().set_value();
+        CHECK( !src.empty() );
+        ctx.core.run_once();
+        CHECK( values == 1 );
+        CHECK( src.empty() );
+}
+
+TEST_CASE_TEMPLATE(
+    "ll_source - an entry completed through front() leaves the list when its task is destroyed",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem           mem;
+        task_ctx         ctx{ mem };
+        _plain_ll_source src;
+        int              values = 0, stopped = 0;
+        {
+                auto op = wait_on_ll_entry< CFG >( ctx, src )
+                              .connect( _completion_counter{ &values, &stopped } );
+                op.start();
+                ctx.core.run_once();
+                REQUIRE( !src.empty() );
+                src.front().set_value();
+        }
+        CHECK( src.empty() );
+        CHECK( stopped == 1 );
+        CHECK( values == 0 );
+        CHECK( !ctx.core.run_once() );
+}
+
+struct _ll_source_watcher
+{
+        _plain_ll_source* src;
+        bool*             linked_at_destruction;
+
+        ~_ll_source_watcher()
+        {
+                *linked_at_destruction = !src->empty();
+        }
+};
+
+template < typename CFG >
+static task< void, CFG >
+wait_on_ll_entry_beside_watcher( task_ctx&, _plain_ll_source& src, bool& linked_at_destruction )
+{
+        _ll_source_watcher watcher{ &src, &linked_at_destruction };
+        co_await src.schedule();
+}
+
+TEST_CASE_TEMPLATE(
+    "ll_source - a destroyed task takes its entry out before destroying its locals",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem           mem;
+        task_ctx         ctx{ mem };
+        _plain_ll_source src;
+        bool             linked_at_destruction = true;
+        int              values = 0, stopped = 0;
+        {
+                auto op = wait_on_ll_entry_beside_watcher< CFG >( ctx, src, linked_at_destruction )
+                              .connect( _completion_counter{ &values, &stopped } );
+                op.start();
+                ctx.core.run_once();
+        }
+        CHECK( !linked_at_destruction );
+        CHECK( src.empty() );
+        CHECK( stopped == 1 );
+}
+
+struct _destruction_log_entry
+{
+        std::string* log;
+        char         tag;
+
+        ~_destruction_log_entry()
+        {
+                log->push_back( tag );
+        }
+};
+
+template < typename CFG >
+static task< void, CFG >
+child_logging_destruction( task_ctx&, _plain_ll_source& src, std::string& log )
+{
+        _destruction_log_entry entry{ &log, 'c' };
+        co_await src.schedule();
+}
+
+template < typename CFG >
+static task< void, CFG >
+parent_logging_destruction( task_ctx& ctx, _plain_ll_source& src, std::string& log )
+{
+        _destruction_log_entry entry{ &log, 'p' };
+        co_await child_logging_destruction< CFG >( ctx, src, log );
+}
+
+TEST_CASE_TEMPLATE(
+    "task - a destroyed parent destroys its child before its own locals",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem           mem;
+        task_ctx         ctx{ mem };
+        _plain_ll_source src;
+        std::string      log;
+        int              values = 0, stopped = 0;
+        {
+                auto op = parent_logging_destruction< CFG >( ctx, src, log )
+                              .connect( _completion_counter{ &values, &stopped } );
+                op.start();
+                ctx.core.run_once();
+                ctx.core.run_once();
+                CHECK( log.empty() );
+        }
+        CHECK( log == "cp" );
+        CHECK( src.empty() );
+        CHECK( stopped == 1 );
+}
+
+enum class _op_end
+{
+        value,
+        park,
+        error
+};
+
+struct _counting_sender
+{
+        using sender_concept = sender_t;
+        using completion_signatures =
+            ecor::completion_signatures< set_value_t(), set_error_t( task_error ) >;
+
+        _op_end end;
+        int*    destroyed;
+
+        template < typename R >
+        struct _op
+        {
+                using operation_state_concept = operation_state_t;
+
+                _op( _op_end end, int* destroyed, R receiver ) noexcept
+                  : _end( end )
+                  , _destroyed( destroyed )
+                  , _receiver( std::move( receiver ) )
+                {
+                }
+                _op( _op&& ) = delete;
+                ~_op()
+                {
+                        ++*_destroyed;
+                }
+
+                void start() noexcept
+                {
+                        if ( _end == _op_end::value )
+                                _receiver.set_value();
+                        else if ( _end == _op_end::error )
+                                _receiver.set_error( task_error::task_missing );
+                }
+
+                _op_end _end;
+                int*    _destroyed;
+                R       _receiver;
+        };
+
+        template < typename R >
+        _op< R > connect( R receiver ) &&
+        {
+                return { end, destroyed, std::move( receiver ) };
+        }
+};
+
+template < typename CFG >
+static task< void, CFG > await_counted( task_ctx&, _op_end end, int& destroyed )
+{
+        co_await _counting_sender{ end, &destroyed };
+}
+
+template < typename CFG >
+static task< void, CFG > read_count_within_co_await( task_ctx&, int& destroyed, int& seen )
+{
+        seen = ( co_await _counting_sender{ _op_end::value, &destroyed }, destroyed );
+}
+
+TEST_CASE_TEMPLATE(
+    "task - an awaited operation state is destroyed exactly once",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        int      values = 0, stopped = 0, errors = 0, destroyed = 0;
+
+        SUBCASE( "after it completes" )
+        {
+                {
+                        auto op = await_counted< CFG >( ctx, _op_end::value, destroyed )
+                                      .connect( _completion_counter{ &values, &stopped, &errors } );
+                        op.start();
+                        ctx.core.run_once();
+                        ctx.core.run_once();
+                        CHECK( values == 1 );
+                        CHECK( destroyed == 1 );
+                }
+                CHECK( destroyed == 1 );
+        }
+        SUBCASE( "when its task is destroyed while it is pending" )
+        {
+                {
+                        auto op = await_counted< CFG >( ctx, _op_end::park, destroyed )
+                                      .connect( _completion_counter{ &values, &stopped, &errors } );
+                        op.start();
+                        ctx.core.run_once();
+                        CHECK( destroyed == 0 );
+                }
+                CHECK( stopped == 1 );
+                CHECK( destroyed == 1 );
+        }
+        SUBCASE( "when it fails in start() and its task is destroyed" )
+        {
+                {
+                        auto op = await_counted< CFG >( ctx, _op_end::error, destroyed )
+                                      .connect( _completion_counter{ &values, &stopped, &errors } );
+                        op.start();
+                        ctx.core.run_once();
+                        CHECK( errors == 1 );
+                        CHECK( destroyed == 0 );
+                }
+                CHECK( stopped == 0 );
+                CHECK( destroyed == 1 );
+        }
+}
+
+TEST_CASE_TEMPLATE(
+    "task - with promise_owns_operations an operation state ends before its co_await returns",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        int      values = 0, stopped = 0, destroyed = 0, seen = -1;
+
+        auto op = read_count_within_co_await< CFG >( ctx, destroyed, seen )
+                      .connect( _completion_counter{ &values, &stopped } );
+        op.start();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        CHECK( values == 1 );
+        CHECK( seen == ( CFG::promise_owns_operations ? 1 : 0 ) );
+        CHECK( destroyed == 1 );
+}
+
+TEST_CASE( "task - promise_owns_operations adds two pointers to the promise and no destructor" )
+{
+        using default_promise = task< void >::promise_type;
+        using owning_promise  = task< void, _owning_cfg >::promise_type;
+        static_assert(
+            sizeof( owning_promise ) == sizeof( default_promise ) + 2 * sizeof( void* ) );
+
+        using default_awaitable = decltype( std::declval< default_promise& >().await_transform(
+            std::declval< _plain_ll_source& >().schedule() ) );
+        using owning_awaitable  = decltype( std::declval< owning_promise& >().await_transform(
+            std::declval< _plain_ll_source& >().schedule() ) );
+        static_assert( !std::is_trivially_destructible_v< default_awaitable > );
+        static_assert( std::is_trivially_destructible_v< owning_awaitable > );
+}
+
 struct test_exception : std::exception
 {
         char const* what() const noexcept override

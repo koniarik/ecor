@@ -20,9 +20,11 @@ Kinds:
   user_source               the sender of a waiter list the program defines, through ecor's
                             awaitable; its operation state unlinks itself when destroyed
 
-Dimensions: kind as above; awaits 8 | 16.
+Dimensions: kind as above; awaits 8 | 16; cfg owning for tasks with `promise_owns_operations`,
+absent for the default task configuration.
 """
-from .common import TASK_RECV, USER_AWAITABLES, Probe, cell, flash_of, key_of
+from .common import (CFGS, TASK_RECV, USER_AWAITABLES, Probe, cell, cfg_dims, flash_of, key_of,
+                     ptask_alias)
 
 NAME = 'co_await'
 
@@ -61,8 +63,8 @@ ll_source_payload_value_t&  the_ll_source_payload_value();
 seq_source_t&               the_seq_source();
 seq_source_payload_value_t& the_seq_source_payload_value();
 queue_t&                    the_queue();
-task< void >                child_void( task_ctx& );
-task< int >                 child_int( task_ctx& );
+ptask< void >               child_void( task_ctx& );
+ptask< int >                child_int( task_ctx& );
 '''
 
 # The statement each kind repeats, in report order.
@@ -84,14 +86,15 @@ STMTS = {
 
 
 def probes(tier):
-    return [Probe(NAME, key_of(kind=kind, awaits=n), lambda kind=kind, n=n: source(kind, n))
-            for kind in STMTS for n in AWAITS]
+    return [Probe(NAME, key_of(kind=kind, awaits=n, **cfg_dims(cfg)),
+                  lambda kind=kind, n=n, cfg=cfg: source(kind, n, cfg))
+            for cfg in CFGS for kind in STMTS for n in AWAITS]
 
 
-def source(kind, awaits):
+def source(kind, awaits, cfg):
     L = []
     w = L.append
-    w(f'// co_await probe: {key_of(kind=kind, awaits=awaits)}')
+    w(f'// co_await probe: {key_of(kind=kind, awaits=awaits, **cfg_dims(cfg))}')
     w('#include <ecor/ecor.hpp>')
     w('')
     w('#include <cstdint>')
@@ -104,11 +107,12 @@ def source(kind, awaits):
     w('extern uint32_t  now();')
     w('')
     w(TASK_RECV)
+    w(ptask_alias(cfg))
     w(DECLS)
     w(USER_AWAITABLES)
     w('namespace')
     w('{')
-    w('task< void > run( task_ctx& ctx )')
+    w('ptask< void > run( task_ctx& ctx )')
     w('{')
     w('        (void) ctx;')
     for _ in range(awaits):
@@ -134,16 +138,33 @@ def report(results, headers, w):
 
     w('### one `co_await` of each kind: the slope between 8 and 16 awaits')
     w('')
-    w('A bracket is the per-await delta of `cur` against another header variant.')
+    def per_await(h, kind, cfg):
+        a = get(h, kind=kind, awaits=8, **cfg_dims(cfg))
+        b = get(h, kind=kind, awaits=16, **cfg_dims(cfg))
+        return None if a is None or b is None else (b - a) / 8
+
+    w('The owning column is the slope with `promise_owns_operations`, its delta against the default'
+      ' configuration in parentheses. A bracket is the per-await delta of `cur` against another'
+      ' header variant.')
     w('')
-    w('| kind | 8 awaits | 16 awaits | per await |')
-    w('|---|---:|---:|---:|')
+    w('| kind | 8 awaits | 16 awaits | per await | per await, owning |')
+    w('|---|---:|---:|---:|---:|')
     for kind in STMTS:
         a, b = get(kind=kind, awaits=8), get(kind=kind, awaits=16)
-        per = '-' if a is None or b is None else f'{(b - a) / 8:.1f}'
-        for h in headers[1:]:
-            oa, ob = get(h, kind=kind, awaits=8), get(h, kind=kind, awaits=16)
-            if None not in (a, b, oa, ob):
-                per += f' [{h}: {((b - a) - (ob - oa)) / 8:+.1f}]'
-        w(f'| {kind} | {cell(a)} | {cell(b)} | {per} |')
+        cells = []
+        for cfg in CFGS:
+            p = per_await('cur', kind, cfg)
+            if p is None:
+                cells.append('-')
+                continue
+            c = f'{p:.1f}'
+            d = per_await('cur', kind, 'default')
+            if cfg != 'default' and d is not None:
+                c += f' ({p - d:+.1f})'
+            for h in headers[1:]:
+                o = per_await(h, kind, cfg)
+                if o is not None:
+                    c += f' [{h}: {p - o:+.1f}]'
+            cells.append(c)
+        w(f'| {kind} | {cell(a)} | {cell(b)} | {cells[0]} | {cells[1]} |')
     w('')

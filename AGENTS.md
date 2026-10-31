@@ -171,6 +171,38 @@ pitfalls from the work; the size lessons are in the code-size skill:
   only from `_service()`, so a node that unlinks itself, such as a cancelled or destroyed call,
   services the core afterwards.
 
+### Feature Implementation Reference: `promise_owns_operations`
+
+`promise_owns_operations` is a task-config flag with which the promise owns the operation state of
+each `co_await`, so that the awaitable has no destructor. Patterns and pitfalls from the work; the
+size figures and the measured alternatives are in the code-size skill:
+
+- **An operation starts in `await_suspend`, never earlier.** Starting it in the awaitable's
+  constructor measured twice the saving and was declined: `start()` would run while the
+  coroutine still runs. The tests "co_await starts the operation once the coroutine is
+  suspended" build the awaitable through `await_transform` themselves and check that nothing
+  started before the suspension; keep them passing through every awaitable change.
+- **The promise destructor is the wrong place to destroy an operation state.** It runs after the
+  coroutine's locals, and an operation state such as a `push_and_wait` call or a child task
+  touches what it is connected to when destroyed. `_task_op` destroys a pending one before the
+  frame, through `_promise_op_slot::_destroy_coroutine()`, and the slot's destructor only asserts
+  that nothing is pending.
+- **A convention replaces the destructor's guarantee.** Every resumption goes through
+  `_promise_type::_resume()` and every destruction of a started frame through `_task_op`; a new
+  `h.resume()` or `h.destroy()` anywhere else breaks the option, silently in release builds. The
+  "exactly once" test covers the paths that exist.
+- **Pin a destruction order with a local that records what it sees when destroyed.** A watcher
+  whose destructor records whether the source or queue still holds the entry fails the moment
+  the order changes, where a sanitizer cannot help: the frame's memory is still allocated.
+- **Select by the promise base and specialize a bool mixin.** The raw-storage awaitable is a
+  partial specialization of `_task_awaitable` chosen by `PromiseBase::_owns_operations`, and
+  `_promise_op_slot< false >` supplies no-op functions, so callers need no `if constexpr` and the
+  default configuration compiles byte-identical to before.
+- **The debug parent link is cleared in `_receiver::set_value`**, before an owned child's frame
+  goes at the parent's resumption, where `await_resume` would read it after it was freed.
+- **`task_holder`'s deduction guide assumes `task_default_cfg`**, so a holder of tasks with
+  another configuration is spelt out.
+
 ## Source comments
 
 Write each comment for a future reader of the file as it exists now, who has never seen

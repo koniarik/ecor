@@ -15,13 +15,15 @@ The probe's key is its population:
   queues    queues of `qtypes` element types each, drained by a pump with task handlers
   ll, seq   `ll_source` and `seq_source` instances of distinct payload types
   lto       linked with link-time optimisation (1) or without (0)
+  cfg       owning for tasks with `promise_owns_operations`, absent for the default configuration
 
-Populations: 100, 300 and 1000 coroutines, each linked with and without LTO.
+Populations: 100, 300 and 1000 coroutines, each linked with and without LTO; the quick tier holds
+the 100-coroutine program without LTO in the default configuration only.
 """
 import re
 import subprocess
 
-from .common import Probe, cell, flash_of, key_of
+from .common import CFGS, Probe, cell, cfg_dims, flash_of, key_of, ptask_alias
 
 NAME = 'program'
 
@@ -55,12 +57,14 @@ BUCKETS = [
 
 def probes(tier):
     out = []
-    for pop in POPULATIONS:
-        for lto in (0, 1):
-            if tier == 'quick' and (pop is not POPULATIONS[0] or lto):
-                continue
-            out.append(Probe(NAME, key_of(**pop, lto=lto), sources=lambda pop=pop: sources(pop),
-                             lto=bool(lto)))
+    for cfg in CFGS:
+        for pop in POPULATIONS:
+            for lto in (0, 1):
+                if tier == 'quick' and (cfg != 'default' or pop is not POPULATIONS[0] or lto):
+                    continue
+                out.append(Probe(NAME, key_of(**pop, lto=lto, **cfg_dims(cfg)),
+                                 sources=lambda pop=pop, cfg=cfg: sources(pop, cfg),
+                                 lto=bool(lto)))
     return out
 
 
@@ -90,7 +94,7 @@ def await_child(j, t):
     return f'co_await c{j}( ctx );' if t == 'void' else f'{{ auto v = co_await c{j}( ctx ); sink( &v ); }}'
 
 
-def sources(pop):
+def sources(pop, cfg):
     S = pop
     coros, types, holders = S['coros'], S['types'], S['holders']
     queues, qtypes, nll, nseq = S['queues'], S['qtypes'], S['ll'], S['seq']
@@ -113,7 +117,7 @@ uint32_t now();
 bool     failed();
 }
 task_ctx& the_ctx();
-'''))
+''' + ptask_alias(cfg)))
 
     L = ['#include "sys.hpp"', '', '#include <span>', '',
          'extern "C" {',
@@ -184,11 +188,11 @@ task_ctx& the_ctx();
 
     L = ['#pragma once', '#include "types.hpp"', '']
     for k in range(others):
-        L.append(f'task< {vtype(k)} > c{k}( task_ctx& ctx );')
+        L.append(f'ptask< {vtype(k)} > c{k}( task_ctx& ctx );')
         if k % 20 == 18:
-            L.append(f'task< int > rec{k}( task_ctx& ctx, int d );')
+            L.append(f'ptask< int > rec{k}( task_ctx& ctx, int d );')
     for h in range(holders):
-        L.append(f'task< void > root{h}( task_ctx& ctx );')
+        L.append(f'ptask< void > root{h}( task_ctx& ctx );')
     files.append(('coros.hpp', '\n'.join(L) + '\n'))
 
     def await_source(idx):
@@ -238,12 +242,12 @@ task_ctx& the_ctx();
     for tu, start in enumerate(range(0, others, PER_TU)):
         L = ['#include "coros.hpp"', '']
         for k in range(start, min(others, start + PER_TU)):
-            L.append(f'task< {vtype(k)} > c{k}( task_ctx& ctx )')
+            L.append(f'ptask< {vtype(k)} > c{k}( task_ctx& ctx )')
             L.append('{')
             L += body(k)
             L.append('}')
             if k % 20 == 18:
-                L.append(f'task< int > rec{k}( task_ctx& ctx, int d )')
+                L.append(f'ptask< int > rec{k}( task_ctx& ctx, int d )')
                 L.append('{')
                 L.append('        if ( d > 0 )')
                 L.append(f'                sink_i( co_await rec{k}( ctx, d - 1 ) );')
@@ -254,7 +258,7 @@ task_ctx& the_ctx();
 
     L = ['#include "coros.hpp"', '']
     for h in range(holders):
-        L.append(f'task< void > root{h}( task_ctx& ctx )')
+        L.append(f'ptask< void > root{h}( task_ctx& ctx )')
         L.append('{')
         for k in range(h, others, holders):
             L.append('        ' + await_child(k, vtype(k)))
@@ -266,19 +270,19 @@ task_ctx& the_ctx();
     L = ['#include "coros.hpp"', '', 'extern "C" void __libc_init_array();', '', 'namespace', '{']
     for q in range(queues):
         for i in range(qtypes):
-            L.append(f'task< void > on{q}_{i}( task_ctx&, e{q}_{i}& ev )')
+            L.append(f'ptask< void > on{q}_{i}( task_ctx&, e{q}_{i}& ev )')
             L.append('{')
             L.append('        sink( &ev );')
             L.append('        co_return;')
             L.append('}')
-    L.append('struct pcfg : pump_default_cfg< task_ctx, task< void > >')
+    L.append('struct pcfg : pump_default_cfg< task_ctx, ptask< void > >')
     L.append('{')
     L.append('};')
     for q in range(queues):
         L.append(f'struct h{q}')
         L.append('{')
         for i in range(qtypes):
-            L.append(f'        task< void > handle( task_ctx& ctx, e{q}_{i}& ev )')
+            L.append(f'        ptask< void > handle( task_ctx& ctx, e{q}_{i}& ev )')
             L.append('        {')
             L.append(f'                return on{q}_{i}( ctx, ev );')
             L.append('        }')
@@ -290,7 +294,11 @@ task_ctx& the_ctx();
         L.append(f'        event_pump< pcfg, q{q}_t, h{q} > p{q}{{ ctx, q{q}(), hh{q} }};')
         L.append(f'        p{q}.start();')
     for h in range(holders):
-        L.append(f'        task_holder th{h}{{ ctx, []( task_ctx& c ) {{ return root{h}( c ); }} }};')
+        if cfg == 'default':
+            L.append(f'        task_holder th{h}{{ ctx, []( task_ctx& c ) {{ return root{h}( c ); }} }};')
+        else:
+            L.append(f'        auto f{h} = []( task_ctx& c ) {{ return root{h}( c ); }};')
+            L.append(f'        task_holder< owning_cfg, task_ctx, decltype( f{h} ) > th{h}{{ ctx, f{h} }};')
         L.append(f'        th{h}.start();')
     L += ['        for ( ;; ) {', '                uint32_t const i = now();']
     for q in range(queues):
@@ -332,22 +340,26 @@ def report(results, headers, w):
     w('### complete programs: `.text + .rodata`, `.data + .bss`, and the flash by symbol family')
     w('')
     w('Buckets come from the demangled names of sized symbols, so code inlined elsewhere counts'
-      ' where it landed; `.data + .bss` is dominated by the 32 KiB frame and 16 KiB node buffers.')
+      ' where it landed; `.data + .bss` is dominated by the 32 KiB frame and 16 KiB node buffers.'
+      ' The owning rows run their tasks with `promise_owns_operations`, their delta against the'
+      ' default configuration in parentheses.')
     w('')
-    w('| program | lto | flash | ram | ' + ' | '.join(names) + ' |')
-    w('|---|---:|---:|---:|' + '---:|' * len(names))
+    w('| program | cfg | lto | flash | ram | ' + ' | '.join(names) + ' |')
+    w('|---|---|---:|---:|---:|' + '---:|' * len(names))
     for pop in POPULATIONS:
-        for lto in (0, 1):
-            k = key_of(**pop, lto=lto)
-            m = results.get(('cur', k))
-            if m is None:
-                continue
-            c = cell(m.flash)
-            for h in headers[1:]:
-                o = flash_of(results, k, h)
-                if o is not None:
-                    c += f' [{h}: {m.flash - o:+d}]'
-            b = buckets(m.path)
-            w(f'| {describe(pop)} | {lto} | {c} | {m.ram} | ' + ' | '.join(str(b[n]) for n in names)
-              + ' |')
+        for cfg in CFGS:
+            for lto in (0, 1):
+                k = key_of(**pop, lto=lto, **cfg_dims(cfg))
+                m = results.get(('cur', k))
+                if m is None:
+                    continue
+                base = None if cfg == 'default' else flash_of(results, key_of(**pop, lto=lto))
+                c = cell(m.flash, base)
+                for h in headers[1:]:
+                    o = flash_of(results, k, h)
+                    if o is not None:
+                        c += f' [{h}: {m.flash - o:+d}]'
+                b = buckets(m.path)
+                w(f'| {describe(pop)} | {cfg} | {lto} | {c} | {m.ram} | '
+                  + ' | '.join(str(b[n]) for n in names) + ' |')
     w('')

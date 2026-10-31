@@ -162,4 +162,9 @@ struct self_destroying_recv
         }
 };
 
+struct _owning_cfg : task_default_cfg
+{
+        static constexpr bool promise_owns_operations = true;
+};
+
 }  // namespace ecor

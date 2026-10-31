@@ -116,6 +116,11 @@ struct obj
         }
 };
 using promise_v = task< void >::promise_type;
+struct owning_cfg : task_default_cfg
+{
+        static constexpr bool promise_owns_operations = true;
+};
+using promise_o = task< void, owning_cfg >::promise_type;
 '''
 
 TYPES = [
@@ -135,6 +140,11 @@ TYPES = [
                   ' std::declval< seq_t& >().schedule( 0u ) ) )'),
     ('await_task', 'decltype( std::declval< promise_v& >().await_transform('
                    ' std::declval< task< uint8_t > >() ) )'),
+    ('promise_void_owning', 'promise_o'),
+    ('await_ll_owning', 'decltype( std::declval< promise_o& >().await_transform('
+                        ' std::declval< src_t& >().schedule() ) )'),
+    ('await_task_owning', 'decltype( std::declval< promise_o& >().await_transform('
+                          ' std::declval< task< uint8_t, owning_cfg > >() ) )'),
     ('ll_source', 'src_t'),
     ('ll_op', 'connect_type< decltype( std::declval< src_t& >().schedule() ), sig_recv >'),
     ('seq_source', 'seq_t'),

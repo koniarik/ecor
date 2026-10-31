@@ -2189,6 +2189,45 @@ static task< void > pw_done_task( task_ctx&, call_q& q, req& r, int& done )
         ++done;
 }
 
+struct _call_queue_watcher
+{
+        call_q q;
+        bool*  queued_at_destruction;
+
+        ~_call_queue_watcher()
+        {
+                *queued_at_destruction = !q.empty();
+        }
+};
+
+template < typename CFG >
+static task< void, CFG > push_into_own_queue( task_ctx&, nd_mem& mem, bool& queued_at_destruction )
+{
+        _call_queue_watcher watcher{ call_q{ mem }, &queued_at_destruction };
+        req                 r{ .id = 1 };
+        co_await watcher.q.push_and_wait( r );
+}
+
+TEST_CASE_TEMPLATE(
+    "push_and_wait - a destroyed task withdraws its call before destroying its locals",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem                     mem;
+        task_ctx                   ctx{ mem };
+        bool                       queued_at_destruction = true;
+        std::vector< std::string > log;
+        {
+                auto t = push_into_own_queue< CFG >( ctx, mem, queued_at_destruction )
+                             .connect( call_recv{ &log, "t" } );
+                t.start();
+                ctx.core.run_once();
+        }
+        CHECK( !queued_at_destruction );
+        CHECK( log == std::vector< std::string >{ "t:stopped" } );
+}
+
 TEST_CASE( "_sigs_front - moves a signature to the front and keeps the others in order" )
 {
         using stop = set_stopped_t();

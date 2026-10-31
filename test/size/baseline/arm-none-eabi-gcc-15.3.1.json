@@ -143,184 +143,368 @@
    1540,
    0
   ],
+  "co_await/kind=ll_source,awaits=16,cfg=owning": [
+   1426,
+   0
+  ],
   "co_await/kind=ll_source,awaits=8": [
    1096,
+   0
+  ],
+  "co_await/kind=ll_source,awaits=8,cfg=owning": [
+   1118,
    0
   ],
   "co_await/kind=ll_source_payload,awaits=16": [
    1972,
    0
   ],
+  "co_await/kind=ll_source_payload,awaits=16,cfg=owning": [
+   1844,
+   0
+  ],
   "co_await/kind=ll_source_payload,awaits=8": [
    1518,
+   0
+  ],
+  "co_await/kind=ll_source_payload,awaits=8,cfg=owning": [
+   1502,
    0
   ],
   "co_await/kind=ll_source_payload_value,awaits=16": [
    1932,
    0
   ],
+  "co_await/kind=ll_source_payload_value,awaits=16,cfg=owning": [
+   1784,
+   0
+  ],
   "co_await/kind=ll_source_payload_value,awaits=8": [
    1324,
+   0
+  ],
+  "co_await/kind=ll_source_payload_value,awaits=8,cfg=owning": [
+   1288,
    0
   ],
   "co_await/kind=push_and_wait,awaits=16": [
    2264,
    0
   ],
+  "co_await/kind=push_and_wait,awaits=16,cfg=owning": [
+   2124,
+   0
+  ],
   "co_await/kind=push_and_wait,awaits=8": [
    1648,
+   0
+  ],
+  "co_await/kind=push_and_wait,awaits=8,cfg=owning": [
+   1624,
    0
   ],
   "co_await/kind=seq_source,awaits=16": [
    1810,
    0
   ],
+  "co_await/kind=seq_source,awaits=16,cfg=owning": [
+   1686,
+   0
+  ],
   "co_await/kind=seq_source,awaits=8": [
    1310,
+   0
+  ],
+  "co_await/kind=seq_source,awaits=8,cfg=owning": [
+   1322,
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=16": [
    2408,
    0
   ],
+  "co_await/kind=seq_source_payload_value,awaits=16,cfg=owning": [
+   2262,
+   0
+  ],
   "co_await/kind=seq_source_payload_value,awaits=8": [
    1640,
+   0
+  ],
+  "co_await/kind=seq_source_payload_value,awaits=8,cfg=owning": [
+   1608,
    0
   ],
   "co_await/kind=suspend,awaits=16": [
    911,
    0
   ],
+  "co_await/kind=suspend,awaits=16,cfg=owning": [
+   967,
+   0
+  ],
   "co_await/kind=suspend,awaits=8": [
    779,
+   0
+  ],
+  "co_await/kind=suspend,awaits=8,cfg=owning": [
+   835,
    0
   ],
   "co_await/kind=task_int,awaits=16": [
    2048,
    0
   ],
+  "co_await/kind=task_int,awaits=16,cfg=owning": [
+   1858,
+   0
+  ],
   "co_await/kind=task_int,awaits=8": [
    1408,
+   0
+  ],
+  "co_await/kind=task_int,awaits=8,cfg=owning": [
+   1428,
    0
   ],
   "co_await/kind=task_void,awaits=16": [
    1896,
    0
   ],
+  "co_await/kind=task_void,awaits=16,cfg=owning": [
+   1708,
+   0
+  ],
   "co_await/kind=task_void,awaits=8": [
    1364,
+   0
+  ],
+  "co_await/kind=task_void,awaits=8,cfg=owning": [
+   1302,
    0
   ],
   "co_await/kind=user_awaiter,awaits=16": [
    914,
    0
   ],
+  "co_await/kind=user_awaiter,awaits=16,cfg=owning": [
+   970,
+   0
+  ],
   "co_await/kind=user_awaiter,awaits=8": [
    754,
+   0
+  ],
+  "co_await/kind=user_awaiter,awaits=8,cfg=owning": [
+   810,
    0
   ],
   "co_await/kind=user_source,awaits=16": [
    1266,
    0
   ],
+  "co_await/kind=user_source,awaits=16,cfg=owning": [
+   1158,
+   0
+  ],
   "co_await/kind=user_source,awaits=8": [
    886,
+   0
+  ],
+  "co_await/kind=user_source,awaits=8,cfg=owning": [
+   918,
    0
   ],
   "coroutine/value=int,awaiting=child_task,coros=1": [
    812,
    0
   ],
+  "coroutine/value=int,awaiting=child_task,coros=1,cfg=owning": [
+   872,
+   0
+  ],
   "coroutine/value=int,awaiting=child_task,coros=16": [
    5778,
+   0
+  ],
+  "coroutine/value=int,awaiting=child_task,coros=16,cfg=owning": [
+   5588,
    0
   ],
   "coroutine/value=int,awaiting=ll_source,coros=1": [
    706,
    0
   ],
+  "coroutine/value=int,awaiting=ll_source,coros=1,cfg=owning": [
+   778,
+   0
+  ],
   "coroutine/value=int,awaiting=ll_source,coros=16": [
    5164,
+   0
+  ],
+  "coroutine/value=int,awaiting=ll_source,coros=16,cfg=owning": [
+   5166,
    0
   ],
   "coroutine/value=int,awaiting=mixed,coros=1": [
    1394,
    0
   ],
+  "coroutine/value=int,awaiting=mixed,coros=1,cfg=owning": [
+   1464,
+   0
+  ],
   "coroutine/value=int,awaiting=mixed,coros=16": [
    9144,
+   0
+  ],
+  "coroutine/value=int,awaiting=mixed,coros=16,cfg=owning": [
+   8896,
    0
   ],
   "coroutine/value=int,awaiting=none,coros=1": [
    560,
    0
   ],
+  "coroutine/value=int,awaiting=none,coros=1,cfg=owning": [
+   616,
+   0
+  ],
   "coroutine/value=int,awaiting=none,coros=16": [
    4146,
+   0
+  ],
+  "coroutine/value=int,awaiting=none,coros=16,cfg=owning": [
+   4202,
    0
   ],
   "coroutine/value=int,awaiting=user_awaiter,coros=1": [
    598,
    0
   ],
+  "coroutine/value=int,awaiting=user_awaiter,coros=1,cfg=owning": [
+   654,
+   0
+  ],
   "coroutine/value=int,awaiting=user_awaiter,coros=16": [
    4722,
+   0
+  ],
+  "coroutine/value=int,awaiting=user_awaiter,coros=16,cfg=owning": [
+   4778,
    0
   ],
   "coroutine/value=int,awaiting=user_source,coros=1": [
    630,
    0
   ],
+  "coroutine/value=int,awaiting=user_source,coros=1,cfg=owning": [
+   698,
+   0
+  ],
   "coroutine/value=int,awaiting=user_source,coros=16": [
    4914,
+   0
+  ],
+  "coroutine/value=int,awaiting=user_source,coros=16,cfg=owning": [
+   4954,
    0
   ],
   "coroutine/value=void,awaiting=child_task,coros=1": [
    812,
    0
   ],
+  "coroutine/value=void,awaiting=child_task,coros=1,cfg=owning": [
+   868,
+   0
+  ],
   "coroutine/value=void,awaiting=child_task,coros=16": [
    5746,
+   0
+  ],
+  "coroutine/value=void,awaiting=child_task,coros=16,cfg=owning": [
+   5556,
    0
   ],
   "coroutine/value=void,awaiting=ll_source,coros=1": [
    706,
    0
   ],
+  "coroutine/value=void,awaiting=ll_source,coros=1,cfg=owning": [
+   778,
+   0
+  ],
   "coroutine/value=void,awaiting=ll_source,coros=16": [
    5132,
+   0
+  ],
+  "coroutine/value=void,awaiting=ll_source,coros=16,cfg=owning": [
+   5166,
    0
   ],
   "coroutine/value=void,awaiting=mixed,coros=1": [
    1390,
    0
   ],
+  "coroutine/value=void,awaiting=mixed,coros=1,cfg=owning": [
+   1464,
+   0
+  ],
   "coroutine/value=void,awaiting=mixed,coros=16": [
    9112,
+   0
+  ],
+  "coroutine/value=void,awaiting=mixed,coros=16,cfg=owning": [
+   8896,
    0
   ],
   "coroutine/value=void,awaiting=none,coros=1": [
    558,
    0
   ],
+  "coroutine/value=void,awaiting=none,coros=1,cfg=owning": [
+   614,
+   0
+  ],
   "coroutine/value=void,awaiting=none,coros=16": [
    4114,
+   0
+  ],
+  "coroutine/value=void,awaiting=none,coros=16,cfg=owning": [
+   4170,
    0
   ],
   "coroutine/value=void,awaiting=user_awaiter,coros=1": [
    594,
    0
   ],
+  "coroutine/value=void,awaiting=user_awaiter,coros=1,cfg=owning": [
+   650,
+   0
+  ],
   "coroutine/value=void,awaiting=user_awaiter,coros=16": [
    4722,
+   0
+  ],
+  "coroutine/value=void,awaiting=user_awaiter,coros=16,cfg=owning": [
+   4778,
    0
   ],
   "coroutine/value=void,awaiting=user_source,coros=1": [
    630,
    0
   ],
+  "coroutine/value=void,awaiting=user_source,coros=1,cfg=owning": [
+   698,
+   0
+  ],
   "coroutine/value=void,awaiting=user_source,coros=16": [
    4882,
+   0
+  ],
+  "coroutine/value=void,awaiting=user_source,coros=16,cfg=owning": [
+   4890,
    0
   ],
   "holder/holders=1,factory=capture,bodies=1,stop=0": [
@@ -583,24 +767,48 @@
    136368,
    49292
   ],
+  "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0,cfg=owning": [
+   119944,
+   49292
+  ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1": [
    130384,
+   49292
+  ],
+  "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1,cfg=owning": [
+   112328,
    49292
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0": [
    1529104,
    49828
   ],
+  "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0,cfg=owning": [
+   1389324,
+   49828
+  ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1": [
    1475380,
+   49828
+  ],
+  "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1,cfg=owning": [
+   1283096,
    49828
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0": [
    439964,
    49420
   ],
+  "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0,cfg=owning": [
+   380704,
+   49420
+  ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1": [
    425068,
+   49420
+  ],
+  "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1,cfg=owning": [
+   361644,
    49420
   ],
   "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=call": [
@@ -1631,11 +1839,19 @@
    24,
    0
   ],
+  "ram/type=await_ll_owning": [
+   24,
+   0
+  ],
   "ram/type=await_seq": [
    32,
    0
   ],
   "ram/type=await_task": [
+   20,
+   0
+  ],
+  "ram/type=await_task_owning": [
    20,
    0
   ],
@@ -1685,6 +1901,10 @@
   ],
   "ram/type=promise_void": [
    28,
+   0
+  ],
+  "ram/type=promise_void_owning": [
+   36,
    0
   ],
   "ram/type=pump": [
