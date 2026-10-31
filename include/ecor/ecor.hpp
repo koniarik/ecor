@@ -91,6 +91,15 @@
 #endif
 #endif
 
+/// No-clone hint. Expands to GCC's `noclone` attribute, and to nothing on other compilers.
+#ifndef ECOR_NOCLONE
+#if defined( __GNUC__ ) && !defined( __clang__ )
+#define ECOR_NOCLONE __attribute__( ( noclone ) )
+#else
+#define ECOR_NOCLONE
+#endif
+#endif
+
 /// Define ECOR_DEBUG_PARENT to enable the _debug_parent pointer in task promises.
 /// When set, each suspended promise records a pointer to its parent promise (the
 /// task that is co_awaiting it), enabling GDB pretty-printers to walk the full
@@ -1178,7 +1187,7 @@ struct _sig_vtable : _sig_vtable_row< S >...
 /// Helper to construct a vtable for a given derived type D, with base type B, and signature list
 /// VTable.
 template < typename D, typename B, typename VTable >
-static constexpr VTable _vtable_of = { _tag< D >{}, _tag< B >{} };
+inline constexpr VTable _vtable_of = { _tag< D >{}, _tag< B >{} };
 
 /// Concept to check if a vtable can invoke set_value with given arguments.
 template < typename VTable, typename... Args >
@@ -3191,6 +3200,33 @@ struct _promise_cfg_base : _promise_base
         {
         }
 
+        /// Starts the task whose coroutine is `h` and whose promise is `promise`, null when `h`
+        /// is. When the task cannot start, it completes `cont` through `rows` with the error
+        /// `CFG` converts; otherwise it attaches that continuation and schedules the coroutine.
+        /// Returns whether it scheduled it. `rows` must be the full continuation vtable of the
+        /// promise's value type.
+        template < typename CFG >
+        ECOR_NOCLONE static bool _start_op(
+            task_error              setup_error,
+            std::coroutine_handle<> h,
+            _promise_cfg_base*      promise,
+            _cont_vtable_t const&   rows,
+            void*                   cont )
+        {
+                if ( setup_error == task_error::none && !h )
+                        setup_error = task_error::task_missing;
+                else if ( setup_error == task_error::none && h.done() )
+                        setup_error = task_error::task_already_started;
+                if ( setup_error != task_error::none ) {
+                        rows.invoke( set_error_t{}, cont, CFG::convert_error( setup_error ) );
+                        return false;
+                }
+                promise->_cont_vtable = &rows;
+                promise->_cont_obj    = cont;
+                promise->_reschedule();
+                return true;
+        }
+
         template < typename U >
         void invoke_set_error( U&& err )
         {
@@ -3394,13 +3430,6 @@ struct _promise_type
                 }
                 return {};
         }
-
-        template < typename U >
-        void setup_continuable( U& p )
-        {
-                this->_cont_vtable = &_vtable_of< U, U, vtable >;
-                this->_cont_obj    = static_cast< void* >( &p );
-        }
 };
 
 /// Operation state for the task sender. This is the type returned by the connect() function of the
@@ -3457,25 +3486,18 @@ struct _task_op
         ///
         void start()
         {
-                if ( _error != task_error::none ) {
-                        _recv.set_error( CFG::convert_error( _error ) );
-                        return;
-                }
-                if ( !_h ) {
-                        _recv.set_error( CFG::convert_error( task_error::task_missing ) );
-                        return;
-                }
-                if ( _h.done() ) {
-                        _recv.set_error( CFG::convert_error( task_error::task_already_started ) );
-                        return;
-                }
                 if constexpr ( !std::same_as<
                                    decltype( ecor::get_stop_token( ecor::get_env( _recv ) ) ),
                                    never_stop_token > )
-                        _h.promise().token = ecor::get_stop_token( ecor::get_env( _recv ) );
-                _h.promise().setup_continuable( _recv );
-                _h.promise().trace.on_op_start( *this );
-                _h.promise()._reschedule();
+                        if ( _h )
+                                _h.promise().token = ecor::get_stop_token( ecor::get_env( _recv ) );
+                if ( promise_type::_base::template _start_op< CFG >(
+                         _error,
+                         _h,
+                         _h ? &_h.promise() : nullptr,
+                         _vtable_of< R, R, typename promise_type::vtable >,
+                         &_recv ) )
+                        _h.promise().trace.on_op_start( *this );
         }
 
 #ifdef ECOR_DEBUG_PARENT
