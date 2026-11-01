@@ -10,7 +10,9 @@ The probe's key is its population:
             await the others, so every function is reachable; the rest cycle through shapes:
             60% leaves awaiting one to three sources, 20% nesting two to five other coroutines
             with a fifth of the picks going to ten popular ones, 10% with 60 to 140 awaits,
-            5% recursive, 5% producers calling `push_and_wait()` on a queue
+            5% recursive, 5% producers calling `push_and_wait()` on a queue. No two functions
+            have the same statements, except one coroutine in twenty, a leaf, that repeats the
+            one before it
   types     distinct `task< T >` value types the functions cycle through
   queues    queues of `qtypes` element types each, drained by a pump with task handlers
   ll, seq   `ll_source` and `seq_source` instances of distinct payload types
@@ -20,6 +22,7 @@ The probe's key is its population:
 Populations: 100, 300 and 1000 coroutines, each linked with and without LTO; the quick tier holds
 the 100-coroutine program without LTO in the default configuration only.
 """
+import hashlib
 import re
 import subprocess
 
@@ -94,6 +97,16 @@ def await_child(j, t):
     return f'co_await c{j}( ctx );' if t == 'void' else f'{{ auto v = co_await c{j}( ctx ); sink( &v ); }}'
 
 
+def pick(n, *key):
+    """A number below n that depends only on `key`, the same on every machine."""
+    digest = hashlib.blake2b(repr(key).encode(), digest_size=8).digest()
+    return int.from_bytes(digest, 'little') % n
+
+
+def element_size(i):
+    return 1 + 4 * (i % 4)
+
+
 def sources(pop, cfg):
     S = pop
     coros, types, holders = S['coros'], S['types'], S['holders']
@@ -145,7 +158,7 @@ task_ctx& the_ctx();
     L.append('')
     for q in range(queues):
         for i in range(qtypes):
-            L.append(f'struct e{q}_{i} {{ uint8_t d[{1 + 4 * (i % 4)}]; }};')
+            L.append(f'struct e{q}_{i} {{ uint8_t d[{element_size(i)}]; }};')
     L += ['', 'struct qcfg : queue_default_cfg< circular_buffer_memory< uint16_t > >', '{',
           '        using push_and_wait_signatures =',
           '            completion_signatures< set_value_t(), set_error_t( task_error ), set_stopped_t() >;',
@@ -183,8 +196,13 @@ task_ctx& the_ctx();
     files.append(('types.cpp', '\n'.join(L) + '\n'))
 
     # ---- coroutine declarations ----
+    copied = {k: k - 1 for k in range(11, others, 20)}
+    vts = [vt[k % types] for k in range(others)]
+    for k, original in copied.items():
+        vts[k] = vts[original]
+
     def vtype(k):
-        return vt[k % types]
+        return vts[k]
 
     L = ['#pragma once', '#include "types.hpp"', '']
     for k in range(others):
@@ -195,62 +213,91 @@ task_ctx& the_ctx();
         L.append(f'ptask< void > root{h}( task_ctx& ctx );')
     files.append(('coros.hpp', '\n'.join(L) + '\n'))
 
-    def await_source(idx):
-        """One await of source number idx over both kinds."""
-        if idx % 2 == 0 and nll:
-            k = (idx // 2) % nll
+    def await_source(*key):
+        """One await of a source that `key` picks."""
+        if nll and pick(2, 'kind', *key) == 0:
+            k = pick(nll, 'll', *key)
             pay = '' if k == 0 else f'lp{k}{{}}'
             call = f'll{k}().schedule( {pay} )' if pay else f'll{k}().schedule()'
         else:
-            k = (idx // 2) % nseq
+            k = pick(nseq, 'seq', *key)
             pay = '' if k == 0 else f', sp{k}{{}}'
             call = f'seq{k}().schedule( {KEYS[k % 3]}( now() ){pay} )'
         if SIGS[k % 4][1]:
             return f'sink_i( int( co_await {call} ) );'
         return f'co_await {call};'
 
-    def body(k):
-        t = vtype(k)
+    seen = set()
+
+    def distinct(draw, name):
+        """The first statements `draw( attempt )` returns that no function has had."""
+        for attempt in range(1000):
+            B = draw(attempt)
+            if tuple(B) not in seen:
+                seen.add(tuple(B))
+                return B
+        raise RuntimeError(f'{name}: no distinct body left')
+
+    def statements(k, a):
+        """A leaf's await count and a producer's extra await change only after 16 attempts."""
         shape = k % 20
-        B = ['        (void) ctx;']
         if shape < 12:
-            for i in range(1 + k % 3):
-                B.append('        ' + await_source(k + i))
+            B = [await_source('leaf', k, a, i) for i in range(1 + (k + a // 16) % 3)]
             if k % 4 == 0:
-                B.append('        co_await suspend;')
+                B.append('co_await suspend;')
         elif shape < 16:
+            B = []
             for i in range(2 + k % 4):
-                j = k % 10 if (k + i) % 5 == 0 else (k * 7 + i * 13 + 1) % others
-                B.append('        ' + await_child(j, vtype(j)))
+                j = pick(10, 'child', k, a, i) if pick(5, 'popular', k, a, i) == 0 else \
+                    pick(others, 'child', k, a, i)
+                if j == k:
+                    j = (k + 1) % others
+                B.append(await_child(j, vtype(j)))
         elif shape < 18:
-            n = 60 + (k % 3) * 40
-            for i in range(n):
+            B = []
+            for i in range(60 + (k % 3) * 40):
                 if i and i % 10 == 0:
-                    B.append(f'        sink_i( {i} );')
-                B.append('        ' + await_source(k * 3 + i))
+                    B.append(f'sink_i( {i} );')
+                B.append(await_source('long', k, a, i))
         elif shape == 18:
-            B.append(f'        sink_i( co_await rec{k}( ctx, 3 ) );')
+            B = [f'sink_i( co_await rec{k}( ctx, 3 ) );']
         else:
-            q, i = k % queues, k % qtypes
-            B.append(f'        e{q}_{i} ev{{}};')
-            B.append(f'        sink_b( q{q}().try_push( e{q}_{i}{{}} ) );')
-            B.append(f'        co_await q{q}().push_and_wait( ev );')
-            B.append('        sink( &ev );')
-        B.append('        ' + ret(t))
+            q, i = pick(queues, 'queue', k, a), pick(qtypes, 'element', k, a)
+            B = [f'e{q}_{i} ev{{}};']
+            if a >= 16:
+                B.append(await_source('producer', k, a))
+            B += [f'sink_b( q{q}().try_push( e{q}_{i}{{}} ) );',
+                  f'co_await q{q}().push_and_wait( ev );',
+                  'sink( &ev );']
         return B
+
+    def recursion(k, a):
+        """A recursive helper's statements, `SELF` standing for its name."""
+        wait = await_source('rec', k, a)
+        recurse = ['if ( d > 0 )', '        sink_i( co_await SELF( ctx, d - 1 ) );']
+        return [wait] + recurse if pick(2, 'order', k, a) else recurse + [wait]
+
+    bodies = {}
+    for k in range(others):
+        if k in copied:
+            bodies[k] = bodies[copied[k]]
+        else:
+            bodies[k] = distinct(lambda a, k=k: statements(k, a), f'c{k}')
 
     for tu, start in enumerate(range(0, others, PER_TU)):
         L = ['#include "coros.hpp"', '']
         for k in range(start, min(others, start + PER_TU)):
             L.append(f'ptask< {vtype(k)} > c{k}( task_ctx& ctx )')
             L.append('{')
-            L += body(k)
+            L.append('        (void) ctx;')
+            L += ['        ' + s for s in bodies[k]]
+            L.append('        ' + ret(vtype(k)))
             L.append('}')
             if k % 20 == 18:
                 L.append(f'ptask< int > rec{k}( task_ctx& ctx, int d )')
                 L.append('{')
-                L.append('        if ( d > 0 )')
-                L.append(f'                sink_i( co_await rec{k}( ctx, d - 1 ) );')
+                rec = distinct(lambda a, k=k: recursion(k, a), f'rec{k}')
+                L += ['        ' + s.replace('SELF', f'rec{k}') for s in rec]
                 L.append('        co_return d;')
                 L.append('}')
             L.append('')
@@ -270,9 +317,12 @@ task_ctx& the_ctx();
     L = ['#include "coros.hpp"', '', 'extern "C" void __libc_init_array();', '', 'namespace', '{']
     for q in range(queues):
         for i in range(qtypes):
+            handler = distinct(lambda a, q=q, i=i: [
+                f'sink_i( ev.d[{pick(element_size(i), "field", q, i, a)}] );',
+                await_source('handler', q, i, a)], f'on{q}_{i}')
             L.append(f'ptask< void > on{q}_{i}( task_ctx&, e{q}_{i}& ev )')
             L.append('{')
-            L.append('        sink( &ev );')
+            L += ['        ' + s for s in handler]
             L.append('        co_return;')
             L.append('}')
     L.append('struct pcfg : pump_default_cfg< task_ctx, ptask< void > >')
