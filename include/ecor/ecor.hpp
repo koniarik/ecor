@@ -5610,7 +5610,7 @@ struct queue_default_cfg
         /// Memory resource that queue nodes are allocated from.
         using mem_type = Mem;
 
-        /// How much of `pop()` exists.
+        /// How much of `pop()` and `pop_value()` exists.
         static constexpr async_queue_api pop_api = async_queue_api::try_only;
 
         /// How much of `push()` exists.
@@ -6275,11 +6275,11 @@ template < typename Q, typename R >
 inline constexpr bool _queue_producer_stoppable =
     Q::config_type::push_api == async_queue_api::cancellable && _queue_stoppable< R >;
 
-/// Operation state of `async_queue::pop()`.
-template < typename Q, typename R >
+/// Operation state of `async_queue::pop()`, and of `pop_value()` with `Owned`.
+template < typename Q, typename R, bool Owned >
 struct _queue_pop_op final
   : Q::_consumer_node_t,
-    _queue_cancel_base< _queue_pop_op< Q, R >, _queue_consumer_stoppable< Q, R > >
+    _queue_cancel_base< _queue_pop_op< Q, R, Owned >, _queue_consumer_stoppable< Q, R > >
 {
         using operation_state_concept = operation_state_t;
 
@@ -6345,7 +6345,10 @@ struct _queue_pop_op final
         void set_value( T& val )
         {
                 _unregister();
-                _r.set_value( val );
+                if constexpr ( Owned )
+                        _r.set_value( std::move( val ) );
+                else
+                        _r.set_value( val );
         }
 
         /// A consumer is only nudged while the queue is closing.
@@ -6369,22 +6372,26 @@ private:
         ECOR_NO_UNIQUE_ADDRESS R _r;
 };
 
-/// Sender returned by `async_queue::pop()`.
-template < typename Q >
+/// Sender returned by `async_queue::pop()`, and by `pop_value()` with `Owned`.
+template < typename Q, bool Owned >
 struct _queue_pop_sender
 {
         using sender_concept        = sender_t;
-        using completion_signatures = typename Q::_pop_completions_t;
+        using completion_signatures = std::conditional_t<
+            Owned,
+            typename Q::_pop_value_completions_t,
+            typename Q::_pop_completions_t >;
 
         Q* _q;
 
         template < receiver R >
-        _queue_pop_op< Q, R >
+        _queue_pop_op< Q, R, Owned >
         connect( R receiver ) noexcept( std::is_nothrow_move_constructible_v< R > )
         {
                 static_assert(
                     _receiver_for_impl< R, completion_signatures >::value,
-                    "Receiver does not satisfy the requirements for pop()'s completion signatures" );
+                    "Receiver does not satisfy the requirements for the completion signatures of "
+                    "pop() or pop_value()" );
                 return { *_q, std::move( receiver ) };
         }
 };
@@ -6780,10 +6787,11 @@ struct _queue_close_sender
 /// Both steps have a synchronous and an asynchronous form:
 ///  - `try_push(v)` / `push(v)` — the sender parks the producer when the resource is full and
 ///    completes once the value has been accepted.
-///  - `try_pop()` / `pop()` — the sender parks the consumer while the queue is empty.
+///  - `try_pop()` / `pop()` and `pop_value()` — the senders park the consumer while the queue is
+///    empty. `pop()` lends the item to its receiver, `pop_value()` moves it into its receiver.
 ///
-/// `pop()` completes with one `set_value_t(T)` per element type, so a receiver dispatches by
-/// overload without materialising a variant.
+/// `pop()` and `pop_value()` complete with one `set_value` row per element type, so a receiver
+/// dispatches by overload without materialising a variant.
 ///
 /// Several consumers may be parked at once; each item goes to the longest-waiting one.
 ///
@@ -6929,6 +6937,9 @@ struct async_queue
         using _pop_completions_t = _sigs_concat_t<
             ecor::completion_signatures< set_value_t( Ts& )... >,
             _stopped_sigs_t< CFG::pop_api == async_queue_api::cancellable > >;
+        using _pop_value_completions_t = _sigs_concat_t<
+            ecor::completion_signatures< set_value_t( Ts )... >,
+            _stopped_sigs_t< CFG::pop_api == async_queue_api::cancellable > >;
         using _push_completions_t = _sigs_concat_t<
             ecor::completion_signatures< set_value_t() >,
             _stopped_sigs_t< CFG::push_api == async_queue_api::cancellable > >;
@@ -7073,7 +7084,16 @@ struct async_queue
         /// Completes with `set_value(T&)`, a reference valid only during that call, or with
         /// `set_stopped()`. A `push_and_wait()` call taken this way completes with `set_value()`
         /// once the receiver returns.
-        [[nodiscard]] _queue_pop_sender< async_queue > pop() noexcept
+        [[nodiscard]] _queue_pop_sender< async_queue, false > pop() noexcept
+                requires(
+                    CFG::pop_api != async_queue_api::try_only &&
+                    ( !_call || _queue_call_sigs< _call_sigs_t >::nullary ) )
+        {
+                return { this };
+        }
+
+        /// As `pop()`, but the receiver takes ownership of the item: `set_value(T)`.
+        [[nodiscard]] _queue_pop_sender< async_queue, true > pop_value() noexcept
                 requires(
                     CFG::pop_api != async_queue_api::try_only &&
                     ( !_call || _queue_call_sigs< _call_sigs_t >::nullary ) )
@@ -7107,7 +7127,7 @@ struct async_queue
         }
 
 private:
-        template < typename, typename >
+        template < typename, typename, bool >
         friend struct _queue_pop_op;
         template < typename, typename, typename >
         friend struct _queue_push_op;

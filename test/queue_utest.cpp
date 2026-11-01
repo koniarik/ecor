@@ -1466,6 +1466,261 @@ TEST_CASE( "async_queue - a task awaits pop through as_variant" )
         ctx.core.run_n( 8 );
 }
 
+namespace
+{
+        /// Counts live instances and move-constructions.
+        struct life_counted
+        {
+                static inline int alive = 0;
+                static inline int moves = 0;
+
+                int id = 0;
+
+                explicit life_counted( int i )
+                  : id( i )
+                {
+                        ++alive;
+                }
+                life_counted( life_counted&& o ) noexcept
+                  : id( o.id )
+                {
+                        ++alive;
+                        ++moves;
+                }
+                life_counted& operator=( life_counted&& ) = delete;
+                life_counted( life_counted const& )       = delete;
+                ~life_counted()
+                {
+                        --alive;
+                }
+        };
+
+        template < typename T >
+        struct keep_recv
+        {
+                using receiver_concept = receiver_t;
+
+                std::optional< T >* got;
+
+                void set_value( T&& v )
+                {
+                        got->emplace( std::move( v ) );
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        using int_pop_q    = async_queue< pop_only_cfg, int >;
+        using unique_pop_q = async_queue< pop_only_cfg, std::unique_ptr< int > >;
+        using life_pop_q   = async_queue< pop_only_cfg, life_counted >;
+}  // namespace
+
+static task< void > qu_pop_value_int( task_ctx&, int_pop_q& q, std::vector< int >& got )
+{
+        int v = co_await q.pop_value();
+        got.push_back( v );
+}
+
+static task< void > qu_pop_value_unique( task_ctx&, unique_pop_q& q, std::vector< int >& got )
+{
+        auto p = co_await q.pop_value();
+        got.push_back( *p );
+}
+
+static task< void > qu_pop_value_variant( task_ctx&, q_t& q, std::vector< std::string >& log )
+{
+        for ( int i = 0; i < 2; ++i ) {
+                auto v = co_await ( q.pop_value() | as_variant );
+                std::visit(
+                    [&]( auto const& x ) {
+                            if constexpr (
+                                std::same_as< std::remove_cvref_t< decltype( x ) >, int > )
+                                    log.push_back( "int:" + std::to_string( x ) );
+                            else
+                                    log.push_back( "str:" + x );
+                    },
+                    v );
+        }
+}
+
+TEST_CASE( "async_queue - a task awaits pop_value() of a single-type queue" )
+{
+        nd_mem             mem;
+        task_ctx           ctx{ mem };
+        int_pop_q          q{ mem };
+        std::vector< int > got;
+
+        auto op = qu_pop_value_int( ctx, q, got ).connect( _dummy_receiver{} );
+        op.start();
+        ctx.core.run_once();
+        CHECK( got.empty() );
+
+        CHECK( q.try_push( 5 ) );
+        CHECK( got.empty() );
+
+        ctx.core.run_once();
+        CHECK( got == std::vector< int >{ 5 } );
+        CHECK( q.empty() );
+}
+
+TEST_CASE( "async_queue - pop_value() hands a move-only element to a task" )
+{
+        nd_mem             mem;
+        task_ctx           ctx{ mem };
+        unique_pop_q       q{ mem };
+        std::vector< int > got;
+
+        CHECK( q.try_push( std::make_unique< int >( 7 ) ) );
+
+        auto op = qu_pop_value_unique( ctx, q, got ).connect( _dummy_receiver{} );
+        op.start();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        CHECK( got == std::vector< int >{ 7 } );
+        CHECK( q.empty() );
+}
+
+TEST_CASE( "async_queue - pop_value() moves the element into its receiver once" )
+{
+        life_counted::alive = 0;
+        life_counted::moves = 0;
+        {
+                nd_mem                        mem;
+                life_pop_q                    q{ mem };
+                std::optional< life_counted > got;
+
+                CHECK( q.try_push( life_counted{ 1 } ) );
+                CHECK( life_counted::alive == 1 );
+                CHECK( life_counted::moves == 1 );
+
+                auto op = q.pop_value().connect( keep_recv< life_counted >{ &got } );
+                op.start();
+                REQUIRE( got.has_value() );
+                CHECK( got->id == 1 );
+                CHECK( life_counted::moves == 2 );
+                CHECK( life_counted::alive == 1 );
+                CHECK( q.empty() );
+
+                got.reset();
+                CHECK( life_counted::alive == 0 );
+        }
+        CHECK( life_counted::alive == 0 );
+}
+
+TEST_CASE( "async_queue - a task awaits pop_value() of a multi-type queue through as_variant" )
+{
+        nd_mem                     mem;
+        task_ctx                   ctx{ mem };
+        q_t                        q{ mem };
+        std::vector< std::string > log;
+
+        auto op = qu_pop_value_variant( ctx, q, log ).connect( _dummy_receiver{} );
+        op.start();
+        ctx.core.run_once();
+        CHECK( log.empty() );
+
+        CHECK( q.try_push( 3 ) );
+        ctx.core.run_once();
+        CHECK( log == std::vector< std::string >{ "int:3" } );
+
+        CHECK( q.try_push( std::string{ "x" } ) );
+        ctx.core.run_once();
+        CHECK( log == std::vector< std::string >{ "int:3", "str:x" } );
+}
+
+TEST_CASE( "async_queue - pop_value() and pop() consumers are served in one FIFO" )
+{
+        nd_mem                     mem;
+        q_t                        q{ mem };
+        std::vector< std::string > a_log, b_log, c_log;
+
+        auto op_a = q.pop_value().connect( pop_recv{ &a_log } );
+        auto op_b = q.pop().connect( pop_recv{ &b_log } );
+        auto op_c = q.pop_value().connect( pop_recv{ &c_log } );
+        op_a.start();
+        op_b.start();
+        op_c.start();
+
+        CHECK( q.try_push( 1 ) );
+        CHECK( a_log == std::vector< std::string >{ "int:1" } );
+        CHECK( b_log.empty() );
+        CHECK( c_log.empty() );
+
+        CHECK( q.try_push( std::string{ "s" } ) );
+        CHECK( b_log == std::vector< std::string >{ "str:s" } );
+        CHECK( c_log.empty() );
+
+        CHECK( q.try_push( 3 ) );
+        CHECK( c_log == std::vector< std::string >{ "int:3" } );
+}
+
+TEST_CASE( "async_queue - pop_value() takes the items queued before close(), then stops" )
+{
+        nd_mem                     mem;
+        q_t                        q{ mem };
+        std::vector< std::string > cons_log, close_log;
+
+        CHECK( q.try_push( 1 ) );
+        CHECK( q.try_push( std::string{ "two" } ) );
+
+        auto close_op = q.close().connect( sig_recv{ &close_log, "c" } );
+        close_op.start();
+        CHECK( close_log.empty() );
+
+        auto first = q.pop_value().connect( pop_recv{ &cons_log } );
+        first.start();
+        CHECK( cons_log == std::vector< std::string >{ "int:1" } );
+        CHECK( close_log.empty() );
+
+        auto second = q.pop_value().connect( pop_recv{ &cons_log } );
+        second.start();
+        CHECK( cons_log == std::vector< std::string >{ "int:1", "str:two" } );
+        CHECK( close_log == std::vector< std::string >{ "c:value" } );
+
+        auto late = q.pop_value().connect( pop_recv{ &cons_log } );
+        late.start();
+        CHECK( cons_log == std::vector< std::string >{ "int:1", "str:two", "stopped" } );
+}
+
+TEST_CASE( "async_queue - close() stops a parked pop_value()" )
+{
+        nd_mem                     mem;
+        q_t                        q{ mem };
+        std::vector< std::string > cons_log, close_log;
+
+        auto op = q.pop_value().connect( pop_recv{ &cons_log } );
+        op.start();
+        CHECK( cons_log.empty() );
+
+        auto close_op = q.close().connect( sig_recv{ &close_log, "c" } );
+        CHECK( cons_log == std::vector< std::string >{ "stopped" } );
+
+        close_op.start();
+        CHECK( close_log == std::vector< std::string >{ "c:value" } );
+}
+
+TEST_CASE( "async_queue - cancelling a parked pop_value() completes it stopped" )
+{
+        nd_mem                     mem;
+        q_t                        q{ mem };
+        std::vector< std::string > log;
+        inplace_stop_source        src;
+
+        auto op = q.pop_value().connect( pop_recv{ &log, src.get_token() } );
+        op.start();
+        CHECK( log.empty() );
+
+        src.request_stop();
+        CHECK( log == std::vector< std::string >{ "stopped" } );
+
+        CHECK( q.try_push( 1 ) );
+        CHECK( q.size() == 1 );
+        CHECK( log == std::vector< std::string >{ "stopped" } );
+}
+
 TEST_CASE( "async_queue - a task awaits push" )
 {
         nd_mem   mem;
@@ -3483,6 +3738,98 @@ TEST_CASE( "push_and_wait - pop() borrows a move-only element in place" )
         CHECK( seen == &c );
         CHECK( counted::moves == 0 );
         CHECK( clog == std::vector< std::string >{ "c:value" } );
+}
+
+namespace
+{
+        struct call_pop_value_recv
+        {
+                using receiver_concept = receiver_t;
+
+                std::vector< std::string >* log;
+
+                void set_value( int v )
+                {
+                        log->push_back( "int:" + std::to_string( v ) );
+                }
+
+                void set_value( req r )
+                {
+                        log->push_back( "req:" + std::to_string( r.id ) );
+                }
+
+                void set_stopped()
+                {
+                        log->push_back( "stopped" );
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        template < typename Q >
+        concept _has_pop_value = requires( Q& q ) { q.pop_value(); };
+}  // namespace
+
+TEST_CASE( "push_and_wait - a call taken by pop_value() completes once the receiver returns" )
+{
+        nd_mem                     mem;
+        call_q                     q{ mem };
+        std::vector< std::string > log;
+
+        auto pop = q.pop_value().connect( call_pop_value_recv{ &log } );
+        pop.start();
+
+        int  seven = 7;
+        auto op    = q.push_and_wait( seven ).connect( call_recv{ &log, "c" } );
+        op.start();
+
+        CHECK( log == std::vector< std::string >{ "int:7", "c:value" } );
+        CHECK( q.empty() );
+}
+
+TEST_CASE( "push_and_wait - pop_value() moves the caller's element into its receiver once" )
+{
+        nd_mem                     mem;
+        typed_pop_call_q           q{ mem };
+        std::vector< std::string > clog;
+        std::optional< counted >   got;
+
+        auto pop = q.pop_value().connect( keep_recv< counted >{ &got } );
+        pop.start();
+
+        counted c{ 9 };
+        counted::moves = 0;
+        auto op        = q.push_and_wait( c ).connect( call_recv{ &clog, "c" } );
+        op.start();
+        REQUIRE( got.has_value() );
+        CHECK( got->id == 9 );
+        CHECK( counted::moves == 1 );
+        CHECK( clog == std::vector< std::string >{ "c:value" } );
+}
+
+TEST_CASE( "async_queue - pop_value() completes by value and exists exactly where pop() does" )
+{
+        using q_sigs = decltype( std::declval< q_t& >().pop_value() )::completion_signatures;
+        static_assert( std::same_as<
+                       q_sigs,
+                       completion_signatures<
+                           set_value_t( int ),
+                           set_value_t( std::string ),
+                           set_stopped_t() > > );
+
+        using parking_sigs =
+            decltype( std::declval< int_pop_q& >().pop_value() )::completion_signatures;
+        static_assert( std::same_as< parking_sigs, completion_signatures< set_value_t( int ) > > );
+
+        static_assert( !_has_pop_value< async_queue< minimal_cfg, int > > );
+        static_assert( _has_pop_value< int_pop_q > );
+        static_assert( !_has_pop_value< reply_q > );
+        static_assert( !_has_pop< async_queue< minimal_cfg, int > > );
+        static_assert( _has_pop< int_pop_q > );
+        static_assert( !_has_pop< reply_q > );
 }
 
 }  // namespace ecor

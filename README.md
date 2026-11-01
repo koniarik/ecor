@@ -1315,7 +1315,7 @@ The first template parameter is a compile-time configuration satisfying `ecor::q
 | member | meaning | default |
 |---|---|---|
 | `mem_type` | memory resource nodes are allocated from | — |
-| `pop_api` | how much of `pop()` exists | `async_queue_api::try_only` |
+| `pop_api` | how much of `pop()` and `pop_value()` exists | `async_queue_api::try_only` |
 | `push_api` | how much of `push()` exists | `async_queue_api::try_only` |
 | `is_closeable` | the queue supports `close()` and `closed()` | `false` |
 | `trivially_copyable_only` | element types must be trivially copyable, checked at compile time | `true` |
@@ -1371,17 +1371,13 @@ directly rather than through `pop()`.
 
 ### Awaiting items
 
-`pop()` is opt-in through `pop_api`. It returns a sender that parks the consumer while the
-queue is empty, completing with one `set_value_t(T&)` per element type, so a receiver dispatches
-by overload without materialising a variant.
+`pop()` and `pop_value()` are opt-in through `pop_api`. Each returns a sender that parks the
+consumer while the queue is empty, completing with one `set_value` per element type, so a
+receiver dispatches by overload without materialising a variant.
 
-The reference is **borrowed**: it refers to the event where it sits in the queue node, and that
-node is released the moment `set_value` returns. A receiver that wants to keep the event must
-take it during the call — move out of the reference, or copy it — and one that only inspects it
-need do nothing.
-
-A task cannot `co_await` such a sender directly, since it has several `set_value` signatures.
-Pipe it through `ecor::as_variant`, which decays the alternatives.
+`pop_value()` completes with `set_value_t(T)`: the receiver owns the event, moved out of the
+queue, which is what a coroutine needs. A task awaits it directly on a single-type queue, and
+through `ecor::as_variant` on a multi-type one, since a task awaits one `set_value` signature.
 
 ```cpp
 struct qmem {
@@ -1400,11 +1396,22 @@ struct qcfg : ecor::queue_default_cfg<qmem> {
 ecor::task<void> consume(ecor::task_ctx& ctx, ecor::async_queue<qcfg, int, char>& q)
 {
     for (;;) {
-        auto ev = co_await (q.pop() | ecor::as_variant);   // std::variant<int, char>
+        auto ev = co_await (q.pop_value() | ecor::as_variant);   // std::variant<int, char>
         std::visit([](auto v) { process_message(v); }, ev);
     }
 }
+
+ecor::task<void> consume_ints(ecor::task_ctx& ctx, ecor::async_queue<qcfg, int>& q)
+{
+    for (;;)
+        process_message(co_await q.pop_value());
+}
 ```
+
+`pop()` completes with `set_value_t(T&)` instead, and the reference is **borrowed**: it refers to
+the event where it sits in the queue node, and that node is released the moment `set_value`
+returns. A receiver that handles the event in place never moves it; one that wants to keep it
+must take it during the call.
 
 Several consumers may be parked at once; each item goes to the longest-waiting one, so a set
 of identical consumers shares the work.
@@ -1508,14 +1515,14 @@ The consumer that takes a call completes it:
   completion of the handler's sender must have a signature in the set, so a handler returning
   `ecor::task<void>` needs `set_error_t(ecor::task_error)` and `set_stopped_t()` next to
   `set_value_t()`. A completion without one is a compile error.
-- A `pop()` receiver completes it when its `set_value` returns; the borrowed reference points at
-  the caller's object. A task awaiting `q.pop() | ecor::as_variant` gets a copy, so the call
-  completes before that task looks at it.
+- A `pop()` or `pop_value()` receiver completes it when its `set_value` returns. `pop()` lends it
+  the caller's object, and `pop_value()` moves out of that object into the receiver, so a task
+  awaiting `pop_value()` holds its own event and the call completes before the task looks at it.
 - `try_pop()` completes it as soon as it takes the element, moving from the caller's object when
   the type is not trivially copyable.
 
-`pop()` and `try_pop()` can only complete a call with `set_value()`, so a queue whose set replies
-with a value has neither: its calls are answered by pump handlers.
+`pop()`, `pop_value()` and `try_pop()` can only complete a call with `set_value()`, so a queue
+whose set replies with a value has none of them: its calls are answered by pump handlers.
 
 > **Lifetime:** `push_and_wait()` takes a reference to an object of one of the queue's element
 > types; a temporary is rejected at compile time. The object must outlive the operation, which a
