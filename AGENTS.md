@@ -225,12 +225,18 @@ measured alternatives are in the code-size skill:
 `pop_value()` is `pop()` with the element moved into the receiver, `set_value_t( T )` instead of
 `set_value_t( T& )`, so that a task can `co_await` it. Patterns and pitfalls from the work:
 
-- **A second delivery mode is one `if constexpr` on the shared operation.** Both senders build
-  `_queue_pop_op< Q, R, Owned >`; the consumer node's rows stay `set_value_t( Ts& )...`, and only
-  the operation's `set_value( T& )` passes `std::move( val )` when `Owned`. Parking, FIFO order,
-  cancellation, `close()` and the release of the node after `set_value` returns are shared, so
-  the moved-from element dies with its node, and a `push_and_wait()` caller's object is left
-  moved-from.
+- **A second delivery mode is one `if constexpr` in the receiver's rows.** Both senders build
+  `_queue_pop_op< Q, R, Owned >`, whose `_value_row< T >` passes the item on as an lvalue or,
+  with `Owned`, an rvalue. Everything else is `_queue_pop_op_base< Core, CallSigs, Stoppable >`,
+  shared by both senders and by every queue over one core with the same
+  `push_and_wait_signatures`: parking, FIFO order, cancellation, `close()` and the release of the
+  node after the row returns, so the moved-from element dies with its node, and a
+  `push_and_wait()` caller's object is left moved-from.
+- **The shared part reaches the receiver through a row table the queue builds.**
+  `async_queue::_pop_rows< Op >` holds the receiver's `set_stopped()` first, null where stopping
+  is unreachable, then one `set_value()` per element type, indexed by the node's descriptor. A
+  stop known in `start()` is handed back to the per-receiver `start()`, which calls the receiver
+  directly; only the stop callback and the `close()` nudge use the stopped row.
 - **A receiver written for `pop()` may not fit `pop_value()`.** One that takes `T&` cannot bind
   the rvalue; a receiver taking `T` or `T&&` serves both senders.
 

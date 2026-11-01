@@ -3832,4 +3832,15 @@ TEST_CASE( "async_queue - pop_value() completes by value and exists exactly wher
         static_assert( !_has_pop< reply_q > );
 }
 
+TEST_CASE( "async_queue - pop operations of queues over one core share their base" )
+{
+        using one_type_pop =
+            decltype( std::declval< int_pop_q& >().pop().connect( std::declval< pop_recv >() ) );
+        using two_types_pop_value =
+            decltype( std::declval< async_queue< pop_only_cfg, int, std::string >& >()
+                          .pop_value()
+                          .connect( std::declval< pop_recv >() ) );
+        static_assert( std::same_as< one_type_pop::_base, two_types_pop_value::_base > );
+}
+
 }  // namespace ecor

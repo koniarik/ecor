@@ -5872,40 +5872,6 @@ private:
         _queue_waiter_ops const* _ops;
 };
 
-/// Adds typed value delivery to `_queue_waiter`. The vtable carries one row per element type;
-/// `_deliver()` picks the row of a node's element type by its descriptor's `index`.
-template < typename... Ts >
-struct _queue_consumer_node : _queue_waiter, _vtable_mixin< set_value_t( Ts& )... >
-{
-        template < typename D >
-        _queue_consumer_node( _tag< D > d, _queue_waiter_ops const& ops ) noexcept
-          : _queue_waiter( ops )
-          , _vtable_mixin< set_value_t( Ts& )... >( d )
-        {
-        }
-
-        /// Complete with the payload at `src`, an element of the type at `index` among `Ts...`.
-        ///
-        /// The payload is passed by reference and stays where it is: the caller releases the
-        /// node as soon as this returns, so a receiver that wants to keep the value must take
-        /// it during the call.
-        void _deliver( void* src, std::size_t index )
-        {
-                _deliver( src, index, std::index_sequence_for< Ts... >{} );
-        }
-
-private:
-        template < std::size_t... I >
-        void _deliver( void* src, std::size_t i, std::index_sequence< I... > /*indices*/ )
-        {
-                static_cast< void >( (
-                    ( i == I ?
-                          ( this->template _set_value< Ts& >( *static_cast< Ts* >( src ) ), true ) :
-                          false ) ||
-                    ... ) );
-        }
-};
-
 inline void _queue_node_no_destroy( _queue_node& /*n*/ ) noexcept
 {
 }
@@ -6274,127 +6240,6 @@ inline constexpr bool _queue_consumer_stoppable =
 template < typename Q, typename R >
 inline constexpr bool _queue_producer_stoppable =
     Q::config_type::push_api == async_queue_api::cancellable && _queue_stoppable< R >;
-
-/// Operation state of `async_queue::pop()`, and of `pop_value()` with `Owned`.
-template < typename Q, typename R, bool Owned >
-struct _queue_pop_op final
-  : Q::_consumer_node_t,
-    _queue_cancel_base< _queue_pop_op< Q, R, Owned >, _queue_consumer_stoppable< Q, R > >
-{
-        using operation_state_concept = operation_state_t;
-
-        /// Mirrors the configuration; the close-related paths vanish when it is false.
-        static constexpr bool _closeable = Q::config_type::is_closeable;
-
-        _queue_pop_op( Q& q, R r ) noexcept( std::is_nothrow_move_constructible_v< R > )
-          : Q::_consumer_node_t( _tag< _queue_pop_op >{}, _waiter_ops )
-          , _q( q )
-          , _r( std::move( r ) )
-        {
-        }
-
-        _queue_pop_op( _queue_pop_op const& )            = delete;
-        _queue_pop_op& operator=( _queue_pop_op const& ) = delete;
-
-        void start()
-        {
-                if ( _q._core._take_into( *this ) )
-                        return;
-                if constexpr ( _closeable )
-                        if ( _q._core._is_closed() ) {
-                                _r.set_stopped();
-                                return;
-                        }
-                if constexpr ( _queue_consumer_stoppable< Q, R > )
-                        if ( !this->_arm( get_stop_token( get_env( _r ) ) ) ) {
-                                _r.set_stopped();
-                                return;
-                        }
-                _q._core._consumers.link_back( *this );
-        }
-
-        /// Invoked from the stop callback.
-        void _cancel() noexcept
-        {
-                zll::detach( static_cast< _queue_link& >( *this ) );
-                _r.set_stopped();
-        }
-
-        void _on_receive( _queue_node& n )
-        {
-                // The receiver may destroy this object inside `_deliver()`.
-                Q& q = _q;
-                this->_deliver( Q::_payload( n ), n._desc->index );
-                q._release( n );
-        }
-
-        static bool _advance_fn( _queue_waiter& w )
-        {
-                return static_cast< _queue_pop_op& >( w )._on_advance();
-        }
-
-        static void _receive_fn( _queue_waiter& w, _queue_node& n )
-        {
-                static_cast< _queue_pop_op& >( w )._on_receive( n );
-        }
-
-        static constexpr _queue_waiter_ops _waiter_ops{ &_advance_fn, &_receive_fn };
-
-        /// Invoked through the consumer node's row for `T`. `val` is valid only until this returns.
-        template < typename T >
-        void set_value( T& val )
-        {
-                _unregister();
-                if constexpr ( Owned )
-                        _r.set_value( std::move( val ) );
-                else
-                        _r.set_value( val );
-        }
-
-        /// A consumer is only nudged while the queue is closing.
-        bool _on_advance()
-        {
-                if constexpr ( _closeable ) {
-                        _unregister();
-                        _r.set_stopped();
-                }
-                return true;
-        }
-
-private:
-        void _unregister() noexcept
-        {
-                zll::detach( static_cast< _queue_link& >( *this ) );
-                this->_disarm();
-        }
-
-        Q&                       _q;
-        ECOR_NO_UNIQUE_ADDRESS R _r;
-};
-
-/// Sender returned by `async_queue::pop()`, and by `pop_value()` with `Owned`.
-template < typename Q, bool Owned >
-struct _queue_pop_sender
-{
-        using sender_concept        = sender_t;
-        using completion_signatures = std::conditional_t<
-            Owned,
-            typename Q::_pop_value_completions_t,
-            typename Q::_pop_completions_t >;
-
-        Q* _q;
-
-        template < receiver R >
-        _queue_pop_op< Q, R, Owned >
-        connect( R receiver ) noexcept( std::is_nothrow_move_constructible_v< R > )
-        {
-                static_assert(
-                    _receiver_for_impl< R, completion_signatures >::value,
-                    "Receiver does not satisfy the requirements for the completion signatures of "
-                    "pop() or pop_value()" );
-                return { *_q, std::move( receiver ) };
-        }
-};
 
 /// Everything of `async_queue::push()`'s operation state but the element: parking, retrying
 /// and cancellation, for every element type pushed with the same receiver type into any queue
@@ -6774,6 +6619,204 @@ struct _queue_close_sender
         }
 };
 
+/// The payload of the detached node `n`: in the node, or the caller's element of a call. `Call` is
+/// false for a queue without calls.
+template < bool Call >
+[[nodiscard]] ECOR_FORCE_INLINE void* _queue_payload( _queue_node& n ) noexcept
+{
+        if constexpr ( Call )
+                if ( n._desc->kind == _queue_node_kind::call )
+                        return static_cast< _queue_call_node& >( n )._src;
+        return reinterpret_cast< unsigned char* >( &n ) +
+               static_cast< _queue_node_desc const& >( *n._desc ).offset;
+}
+
+/// A queue over `core` whose calls have the signatures `CallSigs` is done with the detached node
+/// `n`. An allocated node is destroyed and its memory returned; a call is complete, since taking
+/// its element is the completion that a pop or `try_pop()` delivers, the receiver's nullary value
+/// row.
+template < typename CallSigs, typename Core >
+void _queue_release( Core& core, _queue_node& n )
+{
+        if constexpr ( _queue_call_sigs< CallSigs >::nullary )
+                if ( n._desc->kind == _queue_node_kind::call ) {
+                        auto& c = static_cast< _queue_call_node& >( n );
+                        static_cast< _queue_call_vtable_t< CallSigs > const* >( c._vt )->invoke(
+                            set_value_t{}, c._recv );
+                        return;
+                }
+        ECOR_ASSERT( n._desc->kind == _queue_node_kind::item );
+        core._release_node( n );
+}
+
+/// Everything of a pop operation but its receiver, shared by `pop()` and `pop_value()` and by
+/// every queue over `Core` whose calls have the signatures `CallSigs`. `_rows` reaches the
+/// receiver: its `set_stopped()` first, null when unreachable, then its `set_value()` for each
+/// element type, by the descriptor's index.
+template < typename Core, typename CallSigs, bool Stoppable >
+struct _queue_pop_op_base
+  : _queue_waiter,
+    _queue_cancel_base< _queue_pop_op_base< Core, CallSigs, Stoppable >, Stoppable >
+{
+        using _row_t = void ( * )( _queue_pop_op_base&, void* );
+
+        static constexpr bool _closeable = Core::_closeable;
+        static constexpr bool _call      = !std::same_as< CallSigs, ecor::completion_signatures<> >;
+        static constexpr bool _stops     = Stoppable || _closeable;
+
+        _queue_pop_op_base( Core& core, _row_t const* rows ) noexcept
+          : _queue_waiter( _waiter_ops )
+          , _core( core )
+          , _rows( rows )
+        {
+        }
+
+        _queue_pop_op_base( _queue_pop_op_base const& )            = delete;
+        _queue_pop_op_base& operator=( _queue_pop_op_base const& ) = delete;
+
+        /// Takes an item or parks; false when the receiver is to be completed stopped at once.
+        /// When true, the receiver may already have completed and destroyed this object.
+        [[nodiscard]] bool _start( auto&& token )
+        {
+                if ( _core._take_into( *this ) )
+                        return true;
+                if constexpr ( _closeable )
+                        if ( _core._is_closed() )
+                                return false;
+                if constexpr ( Stoppable )
+                        if ( !this->_arm( token ) )
+                                return false;
+                _core._consumers.link_back( *this );
+                return true;
+        }
+
+        void _cancel() noexcept
+        {
+                zll::detach( static_cast< _queue_link& >( *this ) );
+                _rows[0]( *this, nullptr );
+        }
+
+private:
+        void _on_receive( _queue_node& n )
+        {
+                // The receiver may destroy this object inside its row.
+                Core&        core = _core;
+                _row_t const row  = _rows[1 + n._desc->index];
+                _unregister();
+                row( *this, _queue_payload< _call >( n ) );
+                _queue_release< CallSigs >( core, n );
+        }
+
+        /// A consumer is only nudged while the queue is closing.
+        bool _on_advance()
+        {
+                if constexpr ( _closeable ) {
+                        _unregister();
+                        _rows[0]( *this, nullptr );
+                }
+                return true;
+        }
+
+        static bool _advance_fn( _queue_waiter& w )
+        {
+                return static_cast< _queue_pop_op_base& >( w )._on_advance();
+        }
+
+        static void _receive_fn( _queue_waiter& w, _queue_node& n )
+        {
+                static_cast< _queue_pop_op_base& >( w )._on_receive( n );
+        }
+
+        static constexpr _queue_waiter_ops _waiter_ops{ &_advance_fn, &_receive_fn };
+
+        void _unregister() noexcept
+        {
+                zll::detach( static_cast< _queue_link& >( *this ) );
+                this->_disarm();
+        }
+
+        Core&         _core;
+        _row_t const* _rows;
+};
+
+template < typename Q, typename R >
+using _queue_pop_op_base_of = _queue_pop_op_base<
+    typename Q::_core_t,
+    typename Q::_call_sigs_t,
+    _queue_consumer_stoppable< Q, R > >;
+
+/// Operation state of `async_queue::pop()`, and of `pop_value()` with `Owned`.
+template < typename Q, typename R, bool Owned >
+struct _queue_pop_op final : _queue_pop_op_base_of< Q, R >
+{
+        using operation_state_concept = operation_state_t;
+        using _base                   = _queue_pop_op_base_of< Q, R >;
+
+        _queue_pop_op( Q& q, R r ) noexcept( std::is_nothrow_move_constructible_v< R > )
+          : _base( q._core, Q::template _pop_rows< _queue_pop_op > )
+          , _r( std::move( r ) )
+        {
+        }
+
+        void start()
+        {
+                if ( !this->_start( get_stop_token( get_env( _r ) ) ) )
+                        if constexpr ( _base::_stops )
+                                _r.set_stopped();
+        }
+
+        static constexpr typename _base::_row_t _stopped_row() noexcept
+        {
+                if constexpr ( _base::_stops )
+                        return &_stopped_fn;
+                else
+                        return nullptr;
+        }
+
+        /// `payload` is valid only until this returns.
+        template < typename T >
+        static void _value_row( _base& b, void* payload )
+        {
+                auto& self = static_cast< _queue_pop_op& >( b );
+                if constexpr ( Owned )
+                        self._r.set_value( std::move( *static_cast< T* >( payload ) ) );
+                else
+                        self._r.set_value( *static_cast< T* >( payload ) );
+        }
+
+private:
+        static void _stopped_fn( _base& b, void* /*payload*/ )
+        {
+                static_cast< _queue_pop_op& >( b )._r.set_stopped();
+        }
+
+        ECOR_NO_UNIQUE_ADDRESS R _r;
+};
+
+/// Sender returned by `async_queue::pop()`, and by `pop_value()` with `Owned`.
+template < typename Q, bool Owned >
+struct _queue_pop_sender
+{
+        using sender_concept        = sender_t;
+        using completion_signatures = std::conditional_t<
+            Owned,
+            typename Q::_pop_value_completions_t,
+            typename Q::_pop_completions_t >;
+
+        Q* _q;
+
+        template < receiver R >
+        _queue_pop_op< Q, R, Owned >
+        connect( R receiver ) noexcept( std::is_nothrow_move_constructible_v< R > )
+        {
+                static_assert(
+                    _receiver_for_impl< R, completion_signatures >::value,
+                    "Receiver does not satisfy the requirements for the completion signatures of "
+                    "pop() or pop_value()" );
+                return { *_q, std::move( receiver ) };
+        }
+};
+
 /// Asynchronous queue holding values of any of the types `Ts...` in a single FIFO order.
 /// `CFG` is a compile-time configuration satisfying `queue_config`; see `queue_default_cfg`.
 ///
@@ -6861,8 +6904,6 @@ struct async_queue
 
         using _core_t = _queue_core< mem_type, CFG::is_closeable >;
 
-        using _consumer_node_t = _queue_consumer_node< Ts... >;
-
         /// True when no element type has a vtable: all are trivially copyable.
         static constexpr bool _plain = ( !_queue_needs_vtable< Ts > && ... );
 
@@ -6879,15 +6920,17 @@ struct async_queue
         static constexpr _queue_desc_head const& _call_desc_of =
             _queue_call_desc_of< T, _type_index< T, Ts... >::value >;
 
-        /// In the node, or the caller's element of a call.
         [[nodiscard]] ECOR_FORCE_INLINE static void* _payload( _queue_node& n ) noexcept
         {
-                if constexpr ( _call )
-                        if ( n._desc->kind == _queue_node_kind::call )
-                                return static_cast< _queue_call_node& >( n )._src;
-                return reinterpret_cast< unsigned char* >( &n ) +
-                       static_cast< _queue_node_desc const& >( *n._desc ).offset;
+                return _queue_payload< _call >( n );
         }
+
+        /// The rows of the pop operation `Op`: its `set_stopped()`, then its `set_value()` for each
+        /// element type.
+        template < typename Op >
+        static constexpr typename Op::_base::_row_t _pop_rows[] = {
+            Op::_stopped_row(),
+            &Op::template _value_row< Ts >... };
 
         /// Move the payload of the detached node `n` into `dst`, which must be empty:
         /// through its vtable's `take` when it has one, byte-wise otherwise. Decided at compile
@@ -6909,20 +6952,9 @@ struct async_queue
                         dst._emplace_bytes( d.index, src, d.payload );
         }
 
-        /// The queue is done with the detached node `n`. An allocated node is destroyed and its
-        /// memory returned; a call is complete, since taking its element is the completion that
-        /// `pop()` and `try_pop()` deliver, the receiver's nullary value row.
         void _release( _queue_node& n )
         {
-                if constexpr ( _call && _queue_call_sigs< _call_sigs_t >::nullary )
-                        if ( n._desc->kind == _queue_node_kind::call ) {
-                                auto& c = static_cast< _queue_call_node& >( n );
-                                static_cast< _call_vtable_t const* >( c._vt )->invoke(
-                                    set_value_t{}, c._recv );
-                                return;
-                        }
-                ECOR_ASSERT( n._desc->kind == _queue_node_kind::item );
-                _core._release_node( n );
+                _queue_release< _call_sigs_t >( _core, n );
         }
 
         /// `set_stopped()` is reachable when the waiter kind can be cancelled, or when

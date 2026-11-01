@@ -60,15 +60,16 @@ target_compile_options(${TGT} PRIVATE
   -ffunction-sections -fdata-sections -fno-threadsafe-statics)
 ```
 
-Measurement (BSD awk has no `strtonum`, so use Python):
+Measurement, from `size -A`, which prints one section per line in decimal (see "Use `size -A`"
+below for why not `objdump -h`):
 
 ```python
-out = subprocess.run(["arm-none-eabi-objdump","-h",obj],capture_output=True,text=True).stdout
+out = subprocess.run(["arm-none-eabi-size","-A",obj],capture_output=True,text=True).stdout
 text = rodata = 0
-for m in re.finditer(r'^\s+\d+\s+(\S+)\s+([0-9a-f]+)', out, re.M):
-    name, size = m.group(1), int(m.group(2), 16)
-    if   name.startswith('.text'):   text   += size
-    elif name.startswith('.rodata'): rodata += size
+for line in out.splitlines():
+    f = line.split()
+    if len(f) >= 2 and f[0].startswith('.text'):     text   += int(f[1])
+    elif len(f) >= 2 and f[0].startswith('.rodata'): rodata += int(f[1])
 ```
 
 `zll` comes from a local zll checkout (a `FETCHCONTENT_SOURCE_DIR_ZLL`
@@ -130,8 +131,8 @@ inlining shifted around it elsewhere, +10 on one README row and +6 to +14 on som
 probes (`doc/plans/push-and-wait.md`, "Size round after the commits").
 
 Corollary: when a type-erased thunk needs to downcast, it must be able to *name* the layer it
-downcasts to. Keep a parameter-free intermediate for that (`_queue_consumer_node`), and add
-CRTP-flavoured layers only *above* it.
+downcasts to. Keep a parameter-free intermediate for that (`_queue_pop_op_base`, which the rows
+of `async_queue::_pop_rows` take), and add CRTP-flavoured layers only *above* it.
 
 ### Hoisting non-template code out of templates
 
@@ -174,7 +175,9 @@ a `deliver` thunk in the node's vtable, which forced a vtable on every element t
 with `pop()`; one `||` fold per queue over the descriptor's `index` replaced them and saved 94
 to 112 bytes on a four-type queue, since trivially copyable types then need no vtable at all.
 Keep the fold short-circuiting: a comma fold over `void` conditionals measured +18 on
-cortex-m0plus.
+cortex-m0plus. The exception is a dispatch whose caller is then shared: the pop operation now
+indexes a row table, since a fold over the element types would key the shared part on them
+again (see "Key the erased part on the core, not on the queue").
 
 Keep work that does not depend on the type out of the per-type body: starting the pump's handler
 inside its `_visit_at` fold made GCC outline the lambda for one type as an `.isra` clone, +20 per
@@ -336,6 +339,31 @@ Two details of the shape cost 4 bytes each per instance and were taken out. `_la
 its two arguments out of the storage as a struct made GCC round-trip them through the stack;
 reading the two fields as scalars keeps them in registers. And emptying `_task_op`'s handle
 before `_destroy_frame()` is a store per destroy site; only a debug build needs it.
+
+### Key the erased part on the core, not on the queue
+
+`_queue_pop_op` was compiled whole per queue, receiver type and sender: 125 bytes per extra
+receiver type on a parking queue and 249 on a cancellable one, and `pop()` and `pop_value()` on
+one receiver kept two byte-identical copies that GCC did not fold. Erasing it in steps showed
+where the bytes are:
+
+- A base keyed on the queue type, reaching the receiver through the operation's own row vtable
+  with a new `set_stopped` row: 48 / 71 bytes per extra receiver type, but +6 to +24 per closeable
+  or stoppable queue with one receiver type (+96 for four), since every stop then went through
+  the vtable and nothing was shared across queues; +422 over the suite.
+- The same base reaching the receiver through a function-pointer table the queue builds, with
+  stops known in `start()` handed back to the per-receiver `start()`: no single queue grows,
+  −3146 on the queue probes.
+- Keying the base on the core and the call signatures, `_queue_pop_op_base< Core, CallSigs,
+  Stoppable >`, so queues over one memory resource share it: −6392 over the suite, −688 on four
+  cancellable queues, 8 probes larger by up to 10 bytes (single-element-type cancellable queues,
+  and the 100-coroutine program, where the shared `_queue_release()` goes out of line). RAM is
+  unchanged: the table pointer replaces the vtable pointer.
+
+A separate member for the stopped row instead of table entry 0 saved 152 more for a pointer of
+RAM per pending pop; not taken. Completing an immediate stop through the row instead of the
+`bool` from `_start()` lost about 400 on the suite and saved 12 per extra cancellable receiver
+type. Each variant script and probe is in `doc/plans/pop-erase/`.
 
 ### Take a payload by reference where it travels through a sender
 
