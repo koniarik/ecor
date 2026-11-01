@@ -316,6 +316,27 @@ the memory resource, saves 1.9 bytes per coroutine: −3648 / −5528 (LTO off /
 grows from one word to two, room that `alignof( std::max_align_t )` reserves anyway on Cortex-M
 and x86-64; on a 64-bit host whose `max_align_t` is 8-byte aligned it grows from 8 to 16 bytes.
 
+### A non-trivial promise destructor costs code in every coroutine
+
+GCC calls the promise destructor from each coroutine's ramp, for a frame whose setup fails, and
+from its destroy path, so a promise with a non-trivial destructor costs every coroutine function
+the same amount whatever its body awaits. The default promise has two reasons for one: its
+ready-list node unlinks itself, and an attached continuation is completed stopped. With
+`promise_owns_operations` neither is in the destructor: the node lives in raw storage that
+`_launch()` builds when the task starts, and `_destroy_frame()` destroys it and completes the
+continuation. That saves 28 bytes per coroutine whatever it awaits (20 in the ramp, 8 in the
+actor): −20980 / −22612 (LTO off / on, −1.6% / −1.9%) on the 1000-coroutine owning program,
+−2244 / −2124 (−1.9% / −2.0%) on the 100-coroutine one. The node keeps the coroutine handle,
+since the ready list can no longer cast it to the promise: one pointer of RAM per frame. The
+constructor writes only the core and the resume function into the node's storage, so the stores
+per ramp stay two, and the fixed cost is a larger shared destroy function and the node built in
+`_start_op`: +4 to +6 on six probes with a single coroutine.
+
+Two details of the shape cost 4 bytes each per instance and were taken out. `_launch()` copying
+its two arguments out of the storage as a struct made GCC round-trip them through the stack;
+reading the two fields as scalars keeps them in registers. And emptying `_task_op`'s handle
+before `_destroy_frame()` is a store per destroy site; only a debug build needs it.
+
 ### Take a payload by reference where it travels through a sender
 
 `seq_source::schedule( K key, T val )` and `_sh_sender`'s constructor took the payload by value,

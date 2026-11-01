@@ -3658,6 +3658,87 @@ TEST_CASE_TEMPLATE(
         CHECK( stopped == 1 );
 }
 
+struct _log_copy_on_stopped
+{
+        using receiver_concept = ecor::receiver_t;
+
+        std::string const* log;
+        std::string*       at_stopped;
+
+        void set_value() noexcept
+        {
+        }
+        void set_error( task_error ) noexcept
+        {
+        }
+        void set_stopped() noexcept
+        {
+                *at_stopped = *log;
+        }
+};
+
+TEST_CASE_TEMPLATE(
+    "task - with promise_owns_operations a destroyed chain completes stopped after all its frames",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem           mem;
+        task_ctx         ctx{ mem };
+        _plain_ll_source src;
+        std::string      log, at_stopped = "none";
+        {
+                auto op = parent_logging_destruction< CFG >( ctx, src, log )
+                              .connect( _log_copy_on_stopped{ &log, &at_stopped } );
+                op.start();
+                ctx.core.run_once();
+                ctx.core.run_once();
+        }
+        CHECK( at_stopped == ( CFG::promise_owns_operations ? "cp" : "c" ) );
+}
+
+struct _reschedule_then_stop
+{
+        [[nodiscard]] bool await_ready() const noexcept
+        {
+                return false;
+        }
+        template < typename P >
+        void await_suspend( std::coroutine_handle< P > h ) noexcept
+        {
+                h.promise()._reschedule();
+                h.promise().invoke_set_stopped();
+        }
+        void await_resume() const noexcept
+        {
+        }
+};
+
+template < typename CFG >
+static task< void, CFG > stop_while_queued( task_ctx& )
+{
+        co_await _reschedule_then_stop{};
+}
+
+TEST_CASE_TEMPLATE(
+    "task - destroying a task that completed while queued takes it off the ready list",
+    CFG,
+    task_default_cfg,
+    _owning_cfg )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+        int      values = 0, stopped = 0;
+        {
+                auto op = stop_while_queued< CFG >( ctx ).connect(
+                    _completion_counter{ &values, &stopped } );
+                op.start();
+                ctx.core.run_once();
+                CHECK( stopped == 1 );
+        }
+        CHECK( !ctx.core.run_once() );
+}
+
 enum class _op_end
 {
         value,
@@ -3793,12 +3874,13 @@ TEST_CASE_TEMPLATE(
         CHECK( destroyed == 1 );
 }
 
-TEST_CASE( "task - promise_owns_operations adds two pointers to the promise and no destructor" )
+TEST_CASE(
+    "task - promise_owns_operations adds three pointers to the promise and no awaitable destructor" )
 {
         using default_promise = task< void >::promise_type;
         using owning_promise  = task< void, _owning_cfg >::promise_type;
         static_assert(
-            sizeof( owning_promise ) == sizeof( default_promise ) + 2 * sizeof( void* ) );
+            sizeof( owning_promise ) == sizeof( default_promise ) + 3 * sizeof( void* ) );
 
         using default_awaitable = decltype( std::declval< default_promise& >().await_transform(
             std::declval< _plain_ll_source& >().schedule() ) );

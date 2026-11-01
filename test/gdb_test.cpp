@@ -191,6 +191,14 @@ static test_owning_task2 gdb_coro_owning_outer( ecor::task_ctx& ctx )
         co_return;
 }
 
+// S5: an outer without the option awaiting an owning inner.
+static constexpr int MIXED_OUTER_CORO_LINE = __LINE__ + 1;
+static test_task2    gdb_coro_mixed_outer( ecor::task_ctx& ctx )
+{
+        co_await gdb_coro_owning_inner( ctx );
+        co_return;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -295,6 +303,49 @@ void run_tests( mode m, auto& st )
                 ecor::broadcast( src, []( auto& e ) {
                         e.set_value();
                 } );
+                ctx.core.run_once();
+                ctx.core.run_once();
+                g_inner_src = nullptr;
+        }
+
+        // S5: a mixed chain, destroyed while suspended
+        {
+                ecor::ll_source< ecor::unit, ecor::set_value_t() > src;
+                g_inner_src = &src;
+
+                ecor::nd_mem   mem;
+                ecor::task_ctx ctx{ mem };
+                g_captured  = nullptr;
+                g_captured2 = nullptr;
+
+                auto op = gdb_coro_mixed_outer( ctx ).connect( ecor::_dummy_receiver{} );
+                op.start();
+                ctx.core.run_once();
+                ctx.core.run_once();
+
+                assert( g_captured != nullptr && g_captured2 != nullptr );
+                [[maybe_unused]] auto* inner_p =
+                    static_cast< ecor::_promise_type< test_owning_task >* >( g_captured );
+
+                std::string inner_expected =
+                    std::string( "ecor::_promise_type [gdb_coro_owning_inner()] @ " ) + __FILE__ +
+                    ":" + std::to_string( OWNING_INNER_CORO_LINE ) +
+                    "\n    <- awaited by [gdb_coro_mixed_outer()] @ " + __FILE__ + ":" +
+                    std::to_string( MIXED_OUTER_CORO_LINE );
+                CHECK( m, *inner_p, inner_expected, st );
+                g_inner_src = nullptr;
+        }
+
+        // S6: S4's chain, destroyed while suspended
+        {
+                ecor::ll_source< ecor::unit, ecor::set_value_t() > src;
+                g_inner_src = &src;
+
+                ecor::nd_mem   mem;
+                ecor::task_ctx ctx{ mem };
+
+                auto op = gdb_coro_owning_outer( ctx ).connect( ecor::_dummy_receiver{} );
+                op.start();
                 ctx.core.run_once();
                 ctx.core.run_once();
                 g_inner_src = nullptr;

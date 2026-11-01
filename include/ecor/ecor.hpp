@@ -2768,11 +2768,12 @@ protected:
         void _bind_debug_parent( Op& op ) noexcept
         {
                 if constexpr ( requires { op._debug_promise(); } ) {
-                        op._debug_promise()._debug_parent = _promise;
-                        _debug_child                      = static_cast< void* >( &op );
-                        _clear_debug_parent_fn            = +[]( void* child ) {
-                                static_cast< Op* >( child )->_debug_promise()._debug_parent =
-                                    nullptr;
+                        if ( auto* const p = op._debug_promise() )
+                                p->_debug_parent = _promise;
+                        _debug_child           = static_cast< void* >( &op );
+                        _clear_debug_parent_fn = +[]( void* child ) {
+                                if ( auto* const p = static_cast< Op* >( child )->_debug_promise() )
+                                        p->_debug_parent = nullptr;
                         };
                 } else {
                         _debug_child           = nullptr;
@@ -3077,11 +3078,11 @@ struct task_default_trace
         {
         }
 
-        /// Called from the promise destructor when the coroutine frame is being torn down while
-        /// a continuation was still attached — meaning the task never delivered a completion
-        /// to it. The promise will synthesize `set_stopped` for the continuation right after
-        /// this hook returns. Useful for spotting tasks abandoned by their op_state. `promise`
-        /// is the promise's `_promise_cfg_base`.
+        /// Called when the coroutine frame is being torn down while a continuation was still
+        /// attached — meaning the task never delivered a completion to it. The promise will
+        /// synthesize `set_stopped` for the continuation after this hook returns. Useful for
+        /// spotting tasks abandoned by their op_state. `promise` is the promise's
+        /// `_promise_cfg_base`.
         ECOR_FORCE_INLINE void on_destroy_with_continuation( auto& /*promise*/ ) noexcept
         {
         }
@@ -3179,8 +3180,8 @@ inline constexpr bool _task_cfg_promise_owns_operations< CFG > = CFG::promise_ow
 /// - It has a nested type `trace_type` (EXPERIMENTAL — see `task_default_trace`) used by the
 ///   promise to dispatch trace events. Use `task_default_trace` if you do not need tracing.
 /// - It may have a `static constexpr bool promise_owns_operations`, false when absent. When true,
-///   the promise owns the operation state of each `co_await`: less code at every `co_await`, for
-///   two more pointers of RAM per coroutine frame.
+///   the promise owns the operation state of each `co_await`: less code at every `co_await` and in
+///   every coroutine, for three more pointers of RAM per coroutine frame.
 template < typename T >
 concept task_config =
     requires() {
@@ -3196,9 +3197,9 @@ template < typename T, task_config CFG = task_default_cfg >
 struct task;
 
 /// Base class for task promises. This implements the common functionality for all task promises,
-/// such as memory allocation and deallocation, and provides the interface for rescheduling the task
-/// when it is resumed by the task scheduler.
-struct _promise_base : _reschedulable
+/// such as memory allocation and deallocation. Must stay the first base of every promise:
+/// `pprinter.py` finds the frame of a `_debug_parent` from its address.
+struct _promise_base
 {
         static constexpr std::size_t align   = alignof( std::max_align_t );
         static constexpr std::size_t spacing = align > 2 * sizeof( void* ) ? align :
@@ -3243,30 +3244,18 @@ struct _promise_base : _reschedulable
                 deallocate( *mem, beg, sz, align );
         }
 
+        _promise_base() noexcept                         = default;
         _promise_base( _promise_base const& )            = delete;
         _promise_base& operator=( _promise_base const& ) = delete;
-
-        _promise_base( task_core& c, resume_fn resume )
-          : _reschedulable( c, resume )
-        {
-        }
 
         static std::suspend_always initial_suspend() noexcept
         {
                 return {};
         }
 
-        inplace_stop_token token;
 #ifdef ECOR_DEBUG_PARENT
         _promise_base* _debug_parent = nullptr;
 #endif
-
-        using _env = stop_token_env< inplace_stop_token >;
-
-        [[nodiscard]] _env get_env() const noexcept
-        {
-                return { token };
-        }
 };
 
 template < typename ErrSigs >
@@ -3287,9 +3276,88 @@ struct _task_cont_vtable : _task_cont_vtable_base< ErrSigs >, _sig_vtable_row< V
         using _sig_vtable_row< ValueSig >::invoke;
 };
 
+/// A ready-list node that knows its coroutine.
+struct _promise_sched_node : _reschedulable
+{
+        _promise_sched_node(
+            task_core&              core,
+            resume_fn               resume,
+            std::coroutine_handle<> coro ) noexcept
+          : _reschedulable( core, resume )
+          , _coro( coro )
+        {
+        }
+
+        std::coroutine_handle<> _coro;
+};
+
+/// A promise's node on its core's ready list. With `OwnsOps` it lives in raw storage built when
+/// the task starts, so that the promise is trivially destructible.
+template < bool OwnsOps >
+struct _promise_sched_slot : _reschedulable
+{
+        _promise_sched_slot( task_core& core, resume_fn resume ) noexcept
+          : _reschedulable( core, resume )
+        {
+        }
+
+        ECOR_FORCE_INLINE void _launch( std::coroutine_handle<> /*coro*/ ) noexcept
+        {
+                _reschedule();
+        }
+};
+
+template <>
+struct _promise_sched_slot< true >
+{
+        _promise_sched_slot( task_core& core, schedulable::resume_fn resume ) noexcept
+        {
+                ::new ( (void*) _node_buf ) _node_args{ &core, resume };
+        }
+
+        /// Called once, when the task starts.
+        void _launch( std::coroutine_handle<> coro ) noexcept
+        {
+                // Read as scalars: GCC copies the struct through the stack.
+                auto* const args = std::launder( reinterpret_cast< _node_args* >( _node_buf ) );
+                task_core&  core = *args->core;
+                schedulable::resume_fn const resume = args->resume;
+                ::new ( (void*) _node_buf ) _promise_sched_node( core, resume, coro );
+                _reschedule();
+        }
+
+        void _reschedule() noexcept
+        {
+                _node()._reschedule();
+        }
+
+        void _destroy_node() noexcept
+        {
+                _node().~_promise_sched_node();
+        }
+
+private:
+        _promise_sched_node& _node() noexcept
+        {
+                return *std::launder( reinterpret_cast< _promise_sched_node* >( _node_buf ) );
+        }
+
+        struct _node_args
+        {
+                task_core*             core;
+                schedulable::resume_fn resume;
+        };
+
+        static_assert(
+            std::is_trivially_destructible_v< _node_args >,
+            "_launch() reuses the storage of the arguments without destroying them" );
+
+        alignas( _promise_sched_node ) alignas( _node_args ) unsigned char _node_buf
+            [std::max( sizeof( _promise_sched_node ), sizeof( _node_args ) )];
+};
+
 /// The operation state that a task's current `co_await` leaves to the promise, in tasks whose
-/// configuration sets `promise_owns_operations`. With `OwnsOps` false it holds nothing, and
-/// destroying the coroutine only destroys its frame.
+/// configuration sets `promise_owns_operations`. With `OwnsOps` false it holds nothing.
 template < bool OwnsOps >
 struct _promise_op_slot
 {
@@ -3305,20 +3373,6 @@ struct _promise_op_slot
                 if ( _await_cleanup )
                         std::exchange( _await_cleanup, nullptr )( _await_op );
         }
-
-        /// Destroys the coroutine `h` whose promise holds this slot. The operation state of the
-        /// `co_await` it is suspended on goes first, before the coroutine's locals.
-        ECOR_NOINLINE void _destroy_coroutine( std::coroutine_handle<> h ) noexcept
-        {
-                _destroy_await_op();
-                h.destroy();
-        }
-
-        // Every started frame is destroyed through `_destroy_coroutine()`.
-        ~_promise_op_slot() noexcept
-        {
-                ECOR_ASSERT( !_await_cleanup );
-        }
 };
 
 template <>
@@ -3329,24 +3383,51 @@ struct _promise_op_slot< false >
         ECOR_FORCE_INLINE void _destroy_await_op() noexcept
         {
         }
-
-        template < typename P >
-        ECOR_FORCE_INLINE static void
-        _destroy_coroutine( std::coroutine_handle< P > const& h ) noexcept
-        {
-                h.destroy();
-        }
 };
 
 template < typename Trace, typename ErrSigs, bool OwnsOps >
-struct _promise_cfg_base : _promise_base, _promise_op_slot< OwnsOps >
+struct _promise_cfg_base : _promise_base,
+                           _promise_sched_slot< OwnsOps >,
+                           _promise_op_slot< OwnsOps >
 {
         using trace_type     = Trace;
         using _cont_vtable_t = _task_cont_vtable_base< ErrSigs >;
 
-        _promise_cfg_base( task_core& core, resume_fn resume ) noexcept
-          : _promise_base( core, resume )
+        _promise_cfg_base( task_core& core, schedulable::resume_fn resume ) noexcept
+          : _promise_sched_slot< OwnsOps >( core, resume )
         {
+        }
+
+        template < typename P >
+        ECOR_FORCE_INLINE void _destroy_coroutine( std::coroutine_handle< P >& h ) noexcept
+        {
+                if constexpr ( OwnsOps ) {
+#ifdef ECOR_DEBUG_PARENT
+                        // The awaiting task's debug link reads `h` after the frame is gone.
+                        _destroy_frame( std::exchange( h, nullptr ) );
+#else
+                        _destroy_frame( h );
+#endif
+                } else {
+                        h.destroy();
+                }
+        }
+
+        /// Destroys the pending operation state, the ready-list node and the frame, in this order,
+        /// then completes a continuation still attached with `set_stopped`.
+        ECOR_NOINLINE void _destroy_frame( std::coroutine_handle<> h ) noexcept
+                requires( OwnsOps )
+        {
+                auto* const vt  = std::exchange( _cont_vtable, nullptr );
+                void* const obj = _cont_obj;
+                this->_destroy_await_op();
+                if ( obj )
+                        this->_destroy_node();
+                if ( vt )
+                        trace.on_destroy_with_continuation( *this );
+                h.destroy();
+                if ( vt )
+                        vt->invoke( set_stopped_t{}, obj );
         }
 
         /// Starts the task whose coroutine is `h` and whose promise is `promise`, null when `h`
@@ -3372,7 +3453,7 @@ struct _promise_cfg_base : _promise_base, _promise_op_slot< OwnsOps >
                 }
                 promise->_cont_vtable = &rows;
                 promise->_cont_obj    = cont;
-                promise->_reschedule();
+                promise->_launch( h );
                 return true;
         }
 
@@ -3390,7 +3471,9 @@ struct _promise_cfg_base : _promise_base, _promise_op_slot< OwnsOps >
         void invoke_set_stopped()
         {
                 trace.on_set_stopped( *this );
-                ECOR_ASSERT( _cont_vtable );
+                // With `OwnsOps`, `_destroy_frame()` takes the continuation before a child's stop.
+                if constexpr ( !OwnsOps )
+                        ECOR_ASSERT( _cont_vtable );
                 if ( _cont_vtable ) {
                         auto* r = std::exchange( _cont_vtable, nullptr );
                         r->invoke( set_stopped_t{}, _cont_obj );
@@ -3399,11 +3482,34 @@ struct _promise_cfg_base : _promise_base, _promise_op_slot< OwnsOps >
 
         /// A promise destroyed with its continuation still attached completes it stopped.
         ~_promise_cfg_base() noexcept
+                requires( !OwnsOps )
         {
                 if ( _cont_vtable ) {
                         trace.on_destroy_with_continuation( *this );
                         _cont_vtable->invoke( set_stopped_t{}, _cont_obj );
                 }
+        }
+
+#ifdef ECOR_DEFAULT_ASSERT
+        // Every started frame is destroyed through `_destroy_frame()`.
+        ~_promise_cfg_base() noexcept
+                requires( OwnsOps )
+        {
+                ECOR_ASSERT( !_cont_vtable && !this->_await_cleanup );
+        }
+#else
+        ~_promise_cfg_base()
+                requires( OwnsOps )
+        = default;
+#endif
+
+        inplace_stop_token token;
+
+        using _env = stop_token_env< inplace_stop_token >;
+
+        [[nodiscard]] _env get_env() const noexcept
+        {
+                return { token };
         }
 
         ECOR_NO_UNIQUE_ADDRESS trace_type trace;
@@ -3492,9 +3598,25 @@ struct _promise_type : _promise_cfg_base<
         /// Construct the promise base by extracting the task core from the context argument and
         /// initializing the token.
         _promise_type( task_context auto&& ctx, auto&&... s )
-          : _base( get_task_core( ctx ), &schedulable::_resume_of< _promise_type > )
+          : _base( get_task_core( ctx ), _node_resume() )
         {
                 this->trace.on_promise_construct( *this, ctx, s... );
+        }
+
+        static constexpr schedulable::resume_fn _node_resume() noexcept
+        {
+                if constexpr ( _base::_owns_operations )
+                        return &_resume_from_node;
+                else
+                        return &schedulable::_resume_of< _promise_type >;
+        }
+
+        static void _resume_from_node( schedulable& node )
+        {
+                std::coroutine_handle< _promise_type >::from_address(
+                    static_cast< _promise_sched_node& >( node )._coro.address() )
+                    .promise()
+                    ._resume();
         }
 
         static Task get_return_object_on_allocation_failure()
@@ -3527,7 +3649,7 @@ struct _promise_type : _promise_cfg_base<
         {
                 using U = std::remove_cvref_t< T >;
                 if constexpr ( sender< U > ) {
-                        using compls = _sender_completions_t< U, typename _promise_base::_env >;
+                        using compls = _sender_completions_t< U, typename _base::_env >;
                         using errs   = _filter_errors_of_t< compls >;
                         static_assert(
                             _sig_is_underset_of< errs, typename Task::_error_completions >,
@@ -3656,9 +3778,10 @@ struct _task_op
         }
 
 #ifdef ECOR_DEBUG_PARENT
-        promise_type& _debug_promise() noexcept
+        /// Null while the operation holds no frame.
+        promise_type* _debug_promise() noexcept
         {
-                return _h.promise();
+                return _h ? &_h.promise() : nullptr;
         }
 #endif
 

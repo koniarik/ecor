@@ -223,6 +223,11 @@ struct rec_cfg
         }
 };
 
+struct _rec_owning_cfg : rec_cfg
+{
+        static constexpr bool promise_owns_operations = true;
+};
+
 // ─── Zero-overhead static assertion (C.4) ────────────────────────────────────
 
 struct _empty_trace_cfg
@@ -326,6 +331,18 @@ tr_await_stop( task_ctx& ctx, ll_source< unit, set_value_t(), set_stopped_t() >&
 {
         co_await src.schedule();
         co_return;
+}
+
+template < typename CFG >
+static task< void, CFG > tr_await_void( task_ctx&, ll_source< unit, set_value_t() >& src )
+{
+        co_await src.schedule();
+}
+
+template < typename CFG >
+static task< void, CFG > tr_await_void_child( task_ctx& ctx, ll_source< unit, set_value_t() >& src )
+{
+        co_await tr_await_void< CFG >( ctx, src );
 }
 
 static task< int, rec_cfg > tr_two_awaits(
@@ -909,6 +926,38 @@ TEST_CASE( "trace - C3 two tasks parallel events do not corrupt each other" )
                 CHECK( matching( p, ev::set_value ) );
                 CHECK( matching( p, ev::final_suspend ) );
         }
+}
+
+TEST_CASE_TEMPLATE(
+    "trace - C4 destroying a suspended chain reports the tasks whose continuation it completes",
+    CFG,
+    rec_cfg,
+    _rec_owning_cfg )
+{
+        nd_mem    mem;
+        task_ctx  ctx{ mem };
+        trace_log log;
+        g_log = &log;
+
+        ll_source< unit, set_value_t() > src;
+        {
+                auto op = tr_await_void_child< CFG >( ctx, src ).connect( _tr_recv_void{} );
+                op.start();
+                ctx.core.run_once();
+                ctx.core.run_once();
+        }
+
+        g_log = nullptr;
+
+        bool const owning = _task_cfg_promise_owns_operations< CFG >;
+        auto       pci    = idx_of( log, ev::promise_construct );
+        auto       dwci   = idx_of( log, ev::destroy_with_continuation );
+        REQUIRE( pci.size() == 2 );
+        REQUIRE( dwci.size() == ( owning ? 2 : 1 ) );
+        CHECK( log.evs[dwci[0]].who == log.evs[pci[1]].who );
+        if ( owning )
+                CHECK( log.evs[dwci[1]].who == log.evs[pci[0]].who );
+        CHECK( log.count( ev::dealloc ) == 2 );
 }
 
 }  // namespace ecor

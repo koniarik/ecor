@@ -24,6 +24,13 @@ target_link_libraries(ecor_tests PRIVATE ecor)
 target_compile_definitions(ecor_tests PRIVATE ECOR_DEFAULT_ASSERT)
 add_test(NAME ecor_tests COMMAND ecor_tests)
 
+# Compile-time checks of a build without ECOR_DEFAULT_ASSERT
+add_library(ecor_release_checks OBJECT
+            ${CMAKE_CURRENT_SOURCE_DIR}/release_checks.cpp)
+target_include_directories(ecor_release_checks
+                           PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ecor_release_checks PRIVATE ecor)
+
 # GDB pretty-printer tests (three-phase: gen → run → eval)
 add_executable(ecor_gdb_test ${CMAKE_CURRENT_SOURCE_DIR}/gdb_test.cpp)
 target_include_directories(ecor_gdb_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -1121,11 +1121,12 @@ void run_with_custom_cfg(my_ctx_type& ctx) {
 }
 ```
 
-### Smaller `co_await` code — `promise_owns_operations`
+### Smaller coroutine code — `promise_owns_operations`
 
 A configuration that sets `promise_owns_operations` lets the task's promise own the operation
-state of each `co_await`. The awaitable then has no destructor, so each `co_await` compiles to
-less code, for two more pointers of RAM per coroutine frame.
+state of each `co_await`, and build the task's entry on the scheduler's ready list only when the
+task starts. The awaitable and the promise then need no destructor, so every `co_await` and every
+coroutine compile to less code, for three more pointers of RAM per coroutine frame.
 
 ```cpp
 struct small_cfg : ecor::task_default_cfg {
@@ -1143,7 +1144,11 @@ ecor::task<void, small_cfg> blink(ecor::task_ctx& ctx)
 
 The promise destroys the operation state when the coroutine resumes, just before the `co_await`
 returns. A task destroyed while suspended destroys the pending operation state first, before the
-coroutine's locals, as it does without the option.
+coroutine's locals, as it does without the option, and completes its receiver stopped once its
+frame is gone. Destroying a chain of tasks that await each other therefore completes the outermost
+receiver after every frame of the chain is gone; without the option, the outer frames still exist
+at that point. The trace hook `on_destroy_with_continuation` fires for every task of the chain,
+not only for the innermost.
 
 > `task_holder`'s deduction guide assumes `task_default_cfg`: spell out a holder of such tasks,
 > as in `ecor::task_holder<small_cfg, ecor::task_ctx, factory_t>`.

@@ -174,8 +174,9 @@ pitfalls from the work; the size lessons are in the code-size skill:
 ### Feature Implementation Reference: `promise_owns_operations`
 
 `promise_owns_operations` is a task-config flag with which the promise owns the operation state of
-each `co_await`, so that the awaitable has no destructor. Patterns and pitfalls from the work; the
-size figures and the measured alternatives are in the code-size skill:
+each `co_await` and builds its ready-list node when the task starts, so that neither the awaitable
+nor the promise has a destructor. Patterns and pitfalls from the work; the size figures and the
+measured alternatives are in the code-size skill:
 
 - **An operation starts in `await_suspend`, never earlier.** Starting it in the awaitable's
   constructor measured twice the saving and was declined: `start()` would run while the
@@ -184,20 +185,36 @@ size figures and the measured alternatives are in the code-size skill:
   started before the suspension; keep them passing through every awaitable change.
 - **The promise destructor is the wrong place to destroy an operation state.** It runs after the
   coroutine's locals, and an operation state such as a `push_and_wait` call or a child task
-  touches what it is connected to when destroyed. `_task_op` destroys a pending one before the
-  frame, through `_promise_op_slot::_destroy_coroutine()`, and the slot's destructor only asserts
-  that nothing is pending.
+  touches what it is connected to when destroyed. `_task_op` destroys a started frame through
+  `_promise_cfg_base::_destroy_frame()`: the pending operation state, the ready-list node, the
+  frame, then the continuation is completed stopped. The promise has a destructor only in builds
+  with `ECOR_DEFAULT_ASSERT`, where it asserts that nothing is pending.
 - **A convention replaces the destructor's guarantee.** Every resumption goes through
   `_promise_type::_resume()` and every destruction of a started frame through `_task_op`; a new
-  `h.resume()` or `h.destroy()` anywhere else breaks the option, silently in release builds. The
-  "exactly once" test covers the paths that exist.
+  `h.resume()` or `h.destroy()` anywhere else breaks the option, silently in release builds, and
+  a frame destroyed elsewhere leaves its node on the ready list. The "exactly once" test covers
+  the paths that exist.
+- **A child's stop arrives after its frame is gone**, so the code it reaches must not look at the
+  child. Only the debug parent link does: with `ECOR_DEBUG_PARENT`, `_task_op` empties its handle
+  before `_destroy_frame()` and the link skips a `_task_op` without one; release builds keep the
+  store out, 4 bytes per destroy site. Scenarios S5 and S6 of `gdb_test.cpp` destroy suspended
+  chains in such a build; the unit tests do not define it, so run the gdb test binary's `gen`
+  mode from the asan preset after changing a destruction path.
+- **`_promise_base` must stay the first base of every promise.** `pprinter.py` finds the frame of
+  the task that `_debug_parent` points at from that address. The gdb tests run only on Linux
+  with GCC and gdb, so check a change of the promise's bases in a Linux container before it
+  lands; a run on macOS passes whatever the layout.
+- **Check properties of release builds in `test/release_checks.cpp`.** It compiles without
+  `ECOR_DEFAULT_ASSERT`, the only build in which the promise is trivially destructible.
 - **Pin a destruction order with a local that records what it sees when destroyed.** A watcher
   whose destructor records whether the source or queue still holds the entry fails the moment
   the order changes, where a sanitizer cannot help: the frame's memory is still allocated.
 - **Select by the promise base and specialize a bool mixin.** The raw-storage awaitable is a
   partial specialization of `_task_awaitable` chosen by `PromiseBase::_owns_operations`, and
-  `_promise_op_slot< false >` supplies no-op functions, so callers need no `if constexpr` and the
-  default configuration compiles byte-identical to before.
+  `_promise_op_slot< false >` and `_promise_sched_slot< false >` supply the functions the owning
+  versions have, so callers need no `if constexpr` and the default configuration compiles
+  byte-identical to before. The default layout must not move either: the stop token stays the
+  first member of `_promise_cfg_base`, right after the ready-list node.
 - **The debug parent link is cleared in `_receiver::set_value`**, before an owned child's frame
   goes at the parent's resumption, where `await_resume` would read it after it was freed.
 - **`task_holder`'s deduction guide assumes `task_default_cfg`**, so a holder of tasks with
