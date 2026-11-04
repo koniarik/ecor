@@ -165,6 +165,48 @@ struct _all_distinct< T, Ts... >
             !_contains_type< T, Ts... >::value && _all_distinct< Ts... >::value;
 };
 
+/// Typed view over a list of `Link` nodes that holds only `T`s, restoring `T` at the API
+/// boundary while every list over `Link` shares one instance of the list code. Each list is
+/// homogeneous by construction, so the downcasts are sound.
+///
+/// The `derived_from` constraint is load-bearing beyond documentation: it is defined in terms
+/// of the pointer conversion, which is ill-formed when `T` reaches `Link` by more than one
+/// path. A node inheriting the link twice would leave `ll_header` ambiguous and silently
+/// corrupt a list; this makes it a compile error instead.
+template < typename T, typename Link >
+        requires( std::derived_from< T, Link > )
+struct _typed_list
+{
+        [[nodiscard]] bool empty() const noexcept
+        {
+                return _l.empty();
+        }
+
+        void link_back( T& n ) noexcept
+        {
+                _l.link_back( n );
+        }
+
+        [[nodiscard]] T& front() noexcept
+        {
+                return static_cast< T& >( _l.front() );
+        }
+
+        [[nodiscard]] T& take_front() noexcept
+        {
+                return static_cast< T& >( _l.take_front() );
+        }
+
+        /// The untyped list, for a node that links itself.
+        [[nodiscard]] zll::ll_list< Link >& links() noexcept
+        {
+                return _l;
+        }
+
+private:
+        zll::ll_list< Link > _l;
+};
+
 /// Sender concept tag, used for marking types as senders.
 struct sender_t
 {
@@ -1801,16 +1843,41 @@ struct _stop_source_env< false >
 
 /// ------------------------------------------------------------------------------
 
+/// List node of every `ll_source` entry, whatever its payload and signatures, with the list
+/// that `_link()` links it into.
+struct _ll_link : zll::ll_base< _ll_link >
+{
+        explicit _ll_link( zll::ll_list< _ll_link >& list ) noexcept
+          : _list( list )
+        {
+        }
+
+        _ll_link( _ll_link&& ) noexcept = default;
+
+        ECOR_NOINLINE void _link() noexcept
+        {
+                _list.link_back( *this );
+        }
+
+protected:
+        ~_ll_link() = default;
+
+private:
+        zll::ll_list< _ll_link >& _list;
+};
+
+template < typename E >
+using _ll_entry_list = _typed_list< E, _ll_link >;
+
 /// Internal base for all linked-list entry types.
-/// `Node` is passed as the CRTP type to `zll::ll_base` — it must be the most-derived
-/// public entry type (`ll_entry<T,S...>` or `ll_entry<D>`).
 /// `D` is the payload data type; `Sigs` is `completion_signatures<...>`.
-template < typename Node, typename D, typename Sigs >
+/// `_ll_link` stays the first base, at the entry's own address, so that `start()` hands
+/// `_link()` the address its caller already holds.
+template < typename D, typename Sigs >
 struct _ll_entry;
 
-template < typename Node, typename D, _op_signature... S >
-struct _ll_entry< Node, D, completion_signatures< S... > > : _vtable_mixin< S... >,
-                                                             zll::ll_base< Node >
+template < typename D, _op_signature... S >
+struct _ll_entry< D, completion_signatures< S... > > : _ll_link, _vtable_mixin< S... >
 {
         static constexpr bool has_get_stopped = _contains_type< get_stopped_t(), S... >::value;
         using completion_signatures =
@@ -1819,9 +1886,10 @@ struct _ll_entry< Node, D, completion_signatures< S... > > : _vtable_mixin< S...
         ECOR_NO_UNIQUE_ADDRESS D data;
 
         template < typename Derived >
-        _ll_entry( _tag< Derived > /*derived*/, D d ) noexcept(
+        _ll_entry( _tag< Derived > /*derived*/, D d, zll::ll_list< _ll_link >& list ) noexcept(
             std::is_nothrow_move_constructible_v< D > )
-          : _vtable_mixin< S... >( _tag< Derived >{} )
+          : _ll_link( list )
+          , _vtable_mixin< S... >( _tag< Derived >{} )
           , data( std::move( d ) )
         {
         }
@@ -1848,18 +1916,18 @@ struct _ll_entry< Node, D, completion_signatures< S... > > : _vtable_mixin< S...
 /// `T` is the payload data type. Use `unit` when no payload is needed.
 /// `S...` are completion signatures. May include `get_stopped_t()` to enable stop-polling.
 template < typename T, _op_signature... S >
-struct ll_entry : _ll_entry< ll_entry< T, S... >, T, completion_signatures< S... > >
+struct ll_entry : _ll_entry< T, completion_signatures< S... > >
 {
-        using _base = _ll_entry< ll_entry< T, S... >, T, completion_signatures< S... > >;
+        using _base = _ll_entry< T, completion_signatures< S... > >;
         using _base::_base;
 };
 
 /// Descriptor specialisation: when `D` satisfies `event_descriptor`, signatures come from
 /// `D::completion_signatures`.  The single-argument form `ll_entry<D>` keeps error messages short.
 template < event_descriptor D >
-struct ll_entry< D > : _ll_entry< ll_entry< D >, D, typename D::completion_signatures >
+struct ll_entry< D > : _ll_entry< D, typename D::completion_signatures >
 {
-        using _base = _ll_entry< ll_entry< D >, D, typename D::completion_signatures >;
+        using _base = _ll_entry< D, typename D::completion_signatures >;
         using _base::_base;
 };
 
@@ -1871,11 +1939,10 @@ struct _ll_op : ll_entry< T, S... >
 {
         using operation_state_concept = operation_state_t;
 
-        _ll_op( T data, auto& list, R receiver ) noexcept(
+        _ll_op( T data, _ll_entry_list< ll_entry< T, S... > >& list, R receiver ) noexcept(
             std::is_nothrow_move_constructible_v< R > && std::is_nothrow_move_constructible_v< T > )
-          : ll_entry< T, S... >( _tag< _ll_op >{}, std::move( data ) )
+          : ll_entry< T, S... >( _tag< _ll_op >{}, std::move( data ), list.links() )
           , _r( std::move( receiver ) )
-          , _list( list )
         {
         }
 
@@ -1900,7 +1967,7 @@ struct _ll_op : ll_entry< T, S... >
 
         void start() noexcept
         {
-                _list.link_back( *this );
+                this->_link();
         }
 
         [[nodiscard]] constexpr bool get_stopped() const noexcept
@@ -1912,8 +1979,7 @@ struct _ll_op : ll_entry< T, S... >
         }
 
 private:
-        ECOR_NO_UNIQUE_ADDRESS R             _r;
-        zll::ll_list< ll_entry< T, S... > >& _list;
+        ECOR_NO_UNIQUE_ADDRESS R _r;
 };
 
 /// Skew-heap node of every `seq_source` entry with key type `K`, holding the key.
@@ -2067,7 +2133,7 @@ struct _ll_sender
         using sender_concept = sender_t;
         using entry_type     = ll_entry< T, S... >;
 
-        _ll_sender( T val, zll::ll_list< ll_entry< T, S... > >& ll ) noexcept(
+        _ll_sender( T val, _ll_entry_list< ll_entry< T, S... > >& ll ) noexcept(
             std::is_nothrow_move_constructible_v< T > )
           : _val( std::move( val ) )
           , _ll( ll )
@@ -2087,8 +2153,8 @@ struct _ll_sender
         }
 
 private:
-        ECOR_NO_UNIQUE_ADDRESS T             _val;
-        zll::ll_list< ll_entry< T, S... > >& _ll;
+        ECOR_NO_UNIQUE_ADDRESS T               _val;
+        _ll_entry_list< ll_entry< T, S... > >& _ll;
 };
 
 /// Sender type for skew-heap-based schedulers. This is the type returned by the schedule() function
@@ -2175,8 +2241,9 @@ struct ll_source
 
         /// Transfer all pending entries out of this source into a snapshot list, leaving
         /// the source empty. Entries added to the source *after* this call are not included
-        /// in the returned list.
-        [[nodiscard]] zll::ll_list< ll_entry< T, S... > > take_all() noexcept
+        /// in the returned list, which offers `empty()`, `front()`, `take_front()` and
+        /// `link_back()`.
+        [[nodiscard]] _ll_entry_list< ll_entry< T, S... > > take_all() noexcept
         {
                 return std::move( _ll );
         }
@@ -2208,7 +2275,7 @@ struct ll_source
         }
 
 private:
-        zll::ll_list< ll_entry< T, S... > > _ll;
+        _ll_entry_list< ll_entry< T, S... > > _ll;
 };
 
 
@@ -5733,41 +5800,8 @@ protected:
         ~_queue_link() = default;
 };
 
-/// Typed view over a list of `_queue_link`, restoring the element type at the API boundary
-/// while the underlying list stays shared. Each list is homogeneous by construction, so the
-/// downcasts are sound.
-///
-/// The `derived_from` constraint is load-bearing beyond documentation: it is defined in terms
-/// of the pointer conversion, which is ill-formed when `T` reaches `_queue_link` by more than
-/// one path. A node inheriting the link twice would leave `ll_header` ambiguous and silently
-/// corrupt a list; this makes it a compile error instead.
 template < typename T >
-        requires( std::derived_from< T, _queue_link > )
-struct _queue_list
-{
-        [[nodiscard]] bool empty() const noexcept
-        {
-                return _l.empty();
-        }
-
-        void link_back( T& n ) noexcept
-        {
-                _l.link_back( n );
-        }
-
-        [[nodiscard]] T& front() noexcept
-        {
-                return static_cast< T& >( _l.front() );
-        }
-
-        [[nodiscard]] T& take_front() noexcept
-        {
-                return static_cast< T& >( _l.take_front() );
-        }
-
-private:
-        zll::ll_list< _queue_link > _l;
-};
+using _queue_list = _typed_list< T, _queue_link >;
 
 /// Link node for one queued value; the payload lives in the derived `_queue_node_of<T>`.
 struct _queue_node : _queue_link

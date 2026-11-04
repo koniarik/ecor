@@ -150,12 +150,15 @@ queue shares one `_queue_link` for items and waiters, and one `_queue_waiter` fo
 producers. zll `debae37` shares the relinking code across node types: giving the queue's items
 a node type of their own now costs 0–36 bytes instead of 68–150
 (`doc/plans/queue-config-size.md`), and a firmware's zll code stays flat from 4 node types to 14
-(`doc/plans/zll-erase.md`). Merging node types is no longer worth bending a design for.
+(`doc/plans/zll-erase.md`). Merging node types is no longer worth bending a design for, with one
+exception: each node type's list still has its own `link_back`, inlined where it is called, so
+many types that each link from their own operation state's `start()` pay it per type (see "One
+link function for every `ll_source` entry").
 
 Where a link node is shared anyway, put a typed view over it and constrain the view with
 `std::derived_from<T, Base>` — it is defined via the pointer conversion, so it fails to compile
 when `T` reaches `Base` twice, which would otherwise make `ll_header` ambiguous and silently
-corrupt a list. See `_queue_list` and its test.
+corrupt a list. See `_typed_list` and its test.
 
 ### Type erasure is what you want, but erase the *right* layer
 
@@ -292,6 +295,21 @@ moves that setup into one function, 4 bytes less per caller: −36 / −44 on th
 and the thread firmware, which have no schedulable. RAM is unchanged except for the pump, which
 keeps its context for the handlers beside the core, +1 pointer (`doc/plans/push-and-wait.md`,
 "One reschedule for every schedulable").
+
+### One link function for every `ll_source` entry
+
+Each `ll_source` entry type had a list of its own, so each operation state's `start()` carried
+its own inlined `link_back`. One node type for every entry, `_ll_link`, holding the list it joins
+and linking itself in an out-of-line `_link()` as `_reschedulable` does, saved 35 KB across the
+suite: −2030 of 14546 bytes at 50 sources, −8668 and −4620 on two 1000-coroutine programs. Two
+narrower shapes lost. One shared `link_back` under typed lists left `start()` at 7 size units
+with one or two calls per file, so GCC inlined it at every `co_await`, +5076 on the owning
+1000-coroutine program. A link behind the vtable mixin made every site compute a second address
+beside the one the owning `await_suspend` stores. The link is the entry's first base, so
+`start()` passes the operation state's own address; the price is a `this` adjustment in each
+vtable row thunk, +276 over 117 rows of the default 1000-coroutine program, the one program that
+grew (+356). With a single entry type the out-of-line call is pure cost, +26
+(`doc/plans/llshare.md`).
 
 ### An operation state's constructor runs at every call site
 

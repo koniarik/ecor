@@ -2905,6 +2905,33 @@ TEST_CASE( "ll_source - empty and front" )
         CHECK( source.empty() );
 }
 
+TEST_CASE( "ll_source - take_all moves the pending entries out in FIFO order" )
+{
+        static_assert( std::derived_from< ll_entry< int, set_value_t() >, _ll_link > );
+        static_assert( std::derived_from< ll_entry< unit, set_value_t( int ) >, _ll_link > );
+
+        ll_source< int, set_value_t() > source;
+        auto                            op1 = source.schedule( 1 ).connect( _dummy_receiver{} );
+        op1.start();
+        auto op2 = source.schedule( 2 ).connect( _dummy_receiver{} );
+        op2.start();
+        auto op3 = source.schedule( 3 ).connect( _dummy_receiver{} );
+        op3.start();
+
+        auto snapshot = source.take_all();
+        CHECK( source.empty() );
+
+        // An entry scheduled after the call stays in the source.
+        auto op4 = source.schedule( 4 ).connect( _dummy_receiver{} );
+        op4.start();
+
+        CHECK( snapshot.take_front().data == 1 );
+        CHECK( snapshot.take_front().data == 2 );
+        CHECK( snapshot.take_front().data == 3 );
+        CHECK( snapshot.empty() );
+        CHECK( source.front().data == 4 );
+}
+
 TEST_CASE( "ll_source - fifo basic ordering" )
 {
         nd_mem   mem;
@@ -3898,6 +3925,66 @@ TEST_CASE( "_bare_optional - trivially destructible exactly when its value type 
 {
         static_assert( std::is_trivially_destructible_v< _bare_optional< int > > );
         static_assert( !std::is_trivially_destructible_v< _bare_optional< std::string > > );
+}
+
+namespace
+{
+        struct _tl_link : zll::ll_base< _tl_link >
+        {
+        };
+
+        struct _tl_node : _tl_link
+        {
+                explicit _tl_node( int v )
+                  : value( v )
+                {
+                }
+
+                int value;
+        };
+
+        struct _tl_left : _tl_link
+        {
+        };
+
+        struct _tl_right : _tl_link
+        {
+        };
+
+        struct _tl_twice : _tl_left, _tl_right
+        {
+        };
+
+        template < typename T >
+        concept _has_typed_list = requires { typename _typed_list< T, _tl_link >; };
+}  // namespace
+
+TEST_CASE( "_typed_list - keeps FIFO order and hands back the node type" )
+{
+        _typed_list< _tl_node, _tl_link > l;
+        _tl_node                          a{ 1 }, b{ 2 }, c{ 3 };
+        static_assert( std::same_as< decltype( l.take_front() ), _tl_node& > );
+        CHECK( l.empty() );
+
+        l.link_back( a );
+        l.link_back( b );
+        l.link_back( c );
+        CHECK( !l.empty() );
+        CHECK( &l.front() == &a );
+        CHECK( l.take_front().value == 1 );
+        CHECK( l.take_front().value == 2 );
+        CHECK( &l.front() == &c );
+        CHECK( l.take_front().value == 3 );
+        CHECK( l.empty() );
+}
+
+TEST_CASE( "_typed_list - a doubly-inherited link node is rejected at compile time" )
+{
+        // A node that reached the link twice would leave ll_header ambiguous and quietly
+        // corrupt a list, so _typed_list constrains on std::derived_from, which is defined via
+        // the pointer conversion and therefore fails for an ambiguous base.
+        static_assert( _has_typed_list< _tl_left >, "an unambiguous link node must be usable" );
+        static_assert( !_has_typed_list< _tl_twice >, "an ambiguous link node must be rejected" );
 }
 
 struct test_exception : std::exception

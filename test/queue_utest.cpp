@@ -257,9 +257,6 @@ namespace
                 static constexpr bool            is_closeable = true;
         };
 
-        template < typename T >
-        concept _has_queue_list = requires { typename _queue_list< T >; };
-
         template < typename Q >
         concept _has_core_member = requires( Q& q ) { q._core; };
 
@@ -1320,26 +1317,9 @@ TEST_CASE( "async_queue - layout is pinned, so the README size table cannot drif
             sizeof( async_queue< nd_cfg, int, char > ) );
 }
 
-TEST_CASE( "async_queue - a doubly-inherited link node is rejected at compile time" )
+TEST_CASE( "async_queue - every queue node reaches _queue_link once" )
 {
-        // All queue nodes share one _queue_link so the zll list machinery is emitted once.
-        // A node that reached the link twice would leave ll_header ambiguous and quietly
-        // corrupt a list, so _queue_list constrains on std::derived_from, which is defined via
-        // the pointer conversion and therefore fails for an ambiguous base.
-        struct left : _queue_link
-        {
-        };
-        struct right : _queue_link
-        {
-        };
-        struct twice : left, right
-        {
-        };
-
-        static_assert( _has_queue_list< left >, "an unambiguous link node must be usable" );
-        static_assert( !_has_queue_list< twice >, "an ambiguous link node must be rejected" );
-
-        // The same property is what makes the downcast in _queue_list sound.
+        // The downcast in _queue_list is sound only for an unambiguous base.
         static_assert( std::derived_from< _queue_node, _queue_link > );
         static_assert( std::derived_from< _queue_waiter, _queue_link > );
 }
