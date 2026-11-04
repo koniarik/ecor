@@ -55,8 +55,10 @@ reference row, such as a default configuration; deltas in brackets are the worki
 header against `--against` or `--variant`.
 
 For the cause of a difference, `explain PROBE --against REF` prints the sections that changed,
-demangled, and `--extra-flags -fopt-info-inline-all` puts GCC's inlining decisions in the build
-log, `test/size/build/.ninja_log` holding the commands.
+demangled. `--why` adds every function whose number of inlined calls changed, with how many of
+its calls GCC inlined under each header, its body size and its growth per call, read from the
+dumps of `-fdump-ipa-inline-details`. `--extra-flags -fopt-info-inline-all` puts GCC's inlining
+decisions in the build log, `test/size/build/.ninja_log` holding the commands.
 
 ## Adding probes
 

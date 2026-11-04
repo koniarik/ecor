@@ -103,6 +103,45 @@ decision; the two cores always agreed on the conclusion, with magnitudes 10–20
 
 ## What we have learned
 
+### How GCC 15 decides what to inline at `-Os`
+
+At `-Os` every call counts as cold (`cgraph_edge::maybe_hot_p`), so the speed budgets never
+apply. The early inliner takes only calls whose inlined body is no bigger than the call. The IPA
+inliner takes a call that grows the code only if inlining the callee at all its calls in the
+translation unit costs no more than the out-of-line copy it removes. A template or `inline`
+function's copy is credited at 80% of its body (`comdat-sharing-probability`, default 20), a
+local function's, and every function's under LTO, in full. Sizes are GCC's units, about one per
+statement; a call costs 1, plus 1 per argument and 1 for a used result.
+
+Two phases take such calls. The small-function heap comes first, and its quick pre-check in
+`growth_positive_p` (`ipa-inline-analysis.cc`, GCC 15 and trunk) counts every call it has already
+estimated at its inlined size instead of its growth: a function with body B, growth g per call and
+call size s is taken at all N calls of a file iff N·g + (N−1)·s ≤ 0.8·B. A second phase then
+inlines a function at all its calls iff N·g ≤ 0.8·B, without the overcount, but only when every
+one of them is allowed: no caller may pass 4000 units after inlining
+(`max-inline-functions-called-once-insns`), and no call may sit deeper than loop depth 6. One
+large caller blocks the function at all its calls. `await_suspend` (8, 1, 3) is inlined with one
+or two calls in a file, with three to six only where no caller is near 4000 units (a third of
+them in the 1000-coroutine program, whose largest coroutines have 100 to 140 awaits), and never
+with seven. What follows from that:
+
+- A small template instantiated per type has one or two calls per file and is inlined. Sharing
+  it across many calls keeps it out of line, and splitting it per type pulls it back in, so a
+  change to how many calls a small function has in a file flips its inlining.
+- The counts are per translation unit: a single-file probe, a program of many files and an LTO
+  build, which is one unit counting each copy in full, decide differently.
+- A call with fewer arguments is cheaper, so inlining its callee looks like more growth.
+
+Fixing the overcount in a rebuilt 15.3.1 grew the 1000-coroutine program without LTO by 2.0%
+and shrank single-file probes by up to 2.5%: the first phase, which has no 4000-unit limit on the
+caller, then also inlines into the large coroutines, and each file credits itself a copy that the
+linker keeps anyway for another file. `--param=comdat-sharing-probability=80` shrinks the programs
+built without LTO by 0.7–5.8% and grows the single-file probes by 4.3%; under LTO it changes
+nothing (`doc/plans/gcc-inline-overcount.md`). A decision measured only on single-file probes
+can therefore reverse in a firmware of many files built without LTO: check the `program`
+family. `size.py explain PROBE --variant FILE:NAME --why` lists the functions whose number of
+inlined calls changed, with body size and growth per call.
+
 ### Distinct zll node types are nearly free since zll `debae37`
 
 zll before `debae37` instantiated its list code per node type — `link_back`, `take_front`,

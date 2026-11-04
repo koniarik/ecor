@@ -20,6 +20,8 @@ options:
   --fail-on-growth          with --against: exit with 1 when a probe grew past the tolerance
                             against REF's header, which needs no baseline for the toolchain
   --extra-flags FLAGS       appended to every compile, for instance -fopt-info-inline-all
+  --why                     with explain: also compare GCC's inlining decisions, from the dumps
+                            of -fdump-ipa-inline-details, which it adds to the flags
 
 A probe's figure is the sum of its `.text*` and `.rodata*` sections from `size -A`; `.data*` and
 `.bss*` are recorded beside it. The report goes to BUILD/report.md and the raw figures to
@@ -257,6 +259,7 @@ def save_results(build, results, tid, args):
 def explain(args, build, manifest):
     """Section diff of one probe between 'cur' and the other header variants."""
     sys.path.insert(0, str(HERE / 'tools'))
+    from inlinediff import inlinediff  # noqa: E402
     from secdiff import secdiff  # noqa: E402
     rows = [m for m in manifest if f"{m['family']}/{m['key']}" == args.probe]
     cur = [m for m in rows if m['header'] == 'cur']
@@ -268,6 +271,10 @@ def explain(args, build, manifest):
     for other in [m for m in rows if m['header'] != 'cur']:
         print(f'=== {args.probe}: {other["header"]} -> cur ===')
         secdiff(artifact(other), artifact(cur[0]))
+        if args.why:
+            print(f'--- inlining: {other["header"]} -> cur ---')
+            inlinediff(build / 'CMakeFiles' / f'{other["target"]}.dir',
+                       build / 'CMakeFiles' / f'{cur[0]["target"]}.dir')
 
 
 def main():
@@ -287,8 +294,13 @@ def main():
     ap.add_argument('--no-baseline', action='store_true')
     ap.add_argument('--fail-on-growth', action='store_true')
     ap.add_argument('--extra-flags')
+    ap.add_argument('--why', action='store_true')
     args = ap.parse_args()
     assert args.tier in TIERS
+    if args.why:
+        if args.command != 'explain':
+            sys.exit('--why is an option of explain')
+        args.extra_flags = ' '.join(filter(None, [args.extra_flags, '-fdump-ipa-inline-details']))
 
     build = args.build_dir.resolve()
     build.mkdir(parents=True, exist_ok=True)
