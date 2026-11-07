@@ -191,7 +191,9 @@ list of pending scheduled operations — each one is an async receiver waiting f
 The first template parameter `T` is a payload type embedded in each node by the caller of
 `schedule(T x)` — the same side that creates the sender and attaches the receiver. This lets the
 driver read per-request data from `entry->data` via `query_next()` without knowing the
-receiver type. `unit` is used when there is no payload. The remaining parameters `S...` are
+receiver type. `unit` is used when there is no payload. With a reference type, `ll_source<T&>`,
+the node refers to the object passed to `schedule()` instead of copying it; that object must
+outlive the operation. The remaining parameters `S...` are
 completion signatures (`set_value_t(...)`, `set_error_t(...)`, `set_stopped_t()`,
 `get_stopped_t()`).
 
@@ -543,7 +545,8 @@ pie title pipeline_buffer (capacity 8, 3 in-flight)
 ## Sequential Source - Ordered Event Processing
 
 `seq_source` provides **ordered, keyed event processing**. Events with keys are processed in
-order of the keys.
+order of the keys. The second parameter is a payload type, as in `ll_source`, and a reference
+type, `seq_source<K, T&>`, likewise refers to the caller's object.
 
 ```cpp
 using seq_source = ecor::seq_source<

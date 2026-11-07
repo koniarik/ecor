@@ -1890,7 +1890,7 @@ struct _ll_entry< D, completion_signatures< S... > > : _ll_link, _vtable_mixin< 
             std::is_nothrow_move_constructible_v< D > )
           : _ll_link( list )
           , _vtable_mixin< S... >( _tag< Derived >{} )
-          , data( std::move( d ) )
+          , data( (D&&) d )
         {
         }
 
@@ -1941,7 +1941,7 @@ struct _ll_op : ll_entry< T, S... >
 
         _ll_op( T data, _ll_entry_list< ll_entry< T, S... > >& list, R receiver ) noexcept(
             std::is_nothrow_move_constructible_v< R > && std::is_nothrow_move_constructible_v< T > )
-          : ll_entry< T, S... >( _tag< _ll_op >{}, std::move( data ), list.links() )
+          : ll_entry< T, S... >( _tag< _ll_op >{}, (T&&) data, list.links() )
           , _r( std::move( receiver ) )
         {
         }
@@ -2133,9 +2133,9 @@ struct _ll_sender
         using sender_concept = sender_t;
         using entry_type     = ll_entry< T, S... >;
 
-        _ll_sender( T val, _ll_entry_list< ll_entry< T, S... > >& ll ) noexcept(
+        _ll_sender( T&& val, _ll_entry_list< ll_entry< T, S... > >& ll ) noexcept(
             std::is_nothrow_move_constructible_v< T > )
-          : _val( std::move( val ) )
+          : _val( (T&&) val )
           , _ll( ll )
         {
         }
@@ -2149,7 +2149,7 @@ struct _ll_sender
                 static_assert(
                     _receiver_for_impl< R, completion_signatures >::value,
                     "Receiver does not satisfy the requirements for the sender's completion signatures" );
-                return { std::move( _val ), _ll, std::move( receiver ) };
+                return { (T&&) _val, _ll, std::move( receiver ) };
         }
 
 private:
@@ -2172,7 +2172,7 @@ struct _sh_sender
         _sh_sender( K&& key, T&& val, zll::sh_heap< _sh_link< K > >& sh ) noexcept(
             std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< T > )
           : _key( std::move( key ) )
-          , _val( std::move( val ) )
+          , _val( (T&&) val )
           , _sh( sh )
         {
         }
@@ -2202,7 +2202,9 @@ private:
 
 /// General-purpose linked-list source.
 ///
-/// `T`   — payload data type embedded in each entry (`unit` for no-data use-cases).
+/// `T`   — payload data type embedded in each entry (`unit` for no-data use-cases). For a
+///          reference type `U&` the entry refers to the object passed to `schedule()`, which
+///          must outlive the operation state; `schedule()` then takes no temporaries.
 /// `S...` — completion signatures. May include `get_stopped_t()` to enable stop-polling
 ///          at dequeue time (see `query_next()`).
 ///
@@ -2219,11 +2221,39 @@ struct ll_source
         using entry_type                      = ll_entry< T, S... >;
         static constexpr bool has_get_stopped = entry_type::has_get_stopped;
 
-        /// Schedule a new receiver with this source. For `T = unit`, `val` defaults to `unit{}`.
+        /// Whether `schedule()` takes its payload by value: for a reference, scalar or empty `T`.
+        /// Any other is taken by reference, which keeps the call sites smaller; the sender holds
+        /// its own `T` either way.
+        static constexpr bool _payload_by_value =
+            std::is_reference_v< T > || std::is_scalar_v< T > || std::is_empty_v< T >;
+
+        /// Schedule a new receiver with this source, with `val` as the payload of its entry,
+        /// `T{}` when omitted.
         _ll_sender< T, S... >
         schedule( T val = T{} ) noexcept( std::is_nothrow_move_constructible_v< T > )
+                requires( _payload_by_value )
         {
-                return { std::move( val ), _ll };
+                return { (T&&) val, _ll };
+        }
+
+        _ll_sender< T, S... > schedule() noexcept( noexcept( _ll_sender< T, S... >{ T{}, _ll } ) )
+                requires( !_payload_by_value )
+        {
+                return { T{}, _ll };
+        }
+
+        _ll_sender< T, S... >
+        schedule( T&& val ) noexcept( std::is_nothrow_move_constructible_v< T > )
+                requires( !_payload_by_value )
+        {
+                return { (T&&) val, _ll };
+        }
+
+        _ll_sender< T, S... >
+        schedule( T const& val ) noexcept( noexcept( _ll_sender< T, S... >{ T( val ), _ll } ) )
+                requires( !_payload_by_value && std::is_copy_constructible_v< T > )
+        {
+                return { T( val ), _ll };
         }
 
         /// Returns `true` if no receivers are currently pending.
@@ -2315,7 +2345,9 @@ std::size_t broadcast( ll_source< T, S... >& src, F&& f )
 /// is always delivered to the receiver with the smallest key first.
 ///
 /// `K`   — key type used for ordering (e.g. a timestamp or priority).
-/// `T`   — payload data type embedded in each entry (`unit` for no-data use-cases).
+/// `T`   — payload data type embedded in each entry (`unit` for no-data use-cases). For a
+///          reference type `U&` the entry refers to the object passed to `schedule()`, which
+///          must outlive the operation state; `schedule()` then takes no temporaries.
 /// `S...` — completion signatures.
 ///
 /// Use `seq_source` when you need priority-ordered delivery (e.g. by timestamp or deadline)
@@ -2338,13 +2370,14 @@ struct seq_source
         }
 
         _sh_sender< K, T, S... > schedule( K key, T&& val ) noexcept(
-            noexcept( _sh_sender< K, T, S... >{ std::move( key ), std::move( val ), _sh } ) )
+            noexcept( _sh_sender< K, T, S... >{ std::move( key ), (T&&) val, _sh } ) )
         {
-                return { std::move( key ), std::move( val ), _sh };
+                return { std::move( key ), (T&&) val, _sh };
         }
 
         _sh_sender< K, T, S... > schedule( K key, T const& val ) noexcept(
             noexcept( _sh_sender< K, T, S... >{ std::move( key ), T( val ), _sh } ) )
+                requires( !std::is_reference_v< T > )
         {
                 return { std::move( key ), T( val ), _sh };
         }

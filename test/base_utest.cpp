@@ -2932,6 +2932,90 @@ TEST_CASE( "ll_source - take_all moves the pending entries out in FIFO order" )
         CHECK( source.front().data == 4 );
 }
 
+namespace
+{
+        struct _ref_payload
+        {
+                int v = 0;
+        };
+
+        struct _move_only_payload
+        {
+                std::unique_ptr< int > p;
+        };
+
+        template < typename Source, typename... Args >
+        concept _schedulable_with =
+            requires( Source& s, Args&&... args ) { s.schedule( (Args&&) args... ); };
+}  // namespace
+
+TEST_CASE(
+    "ll_source - schedule takes a reference, scalar or empty payload by value, any other by reference" )
+{
+        static_assert( ll_source< int, set_value_t() >::_payload_by_value );
+        static_assert( ll_source< unit, set_value_t() >::_payload_by_value );
+        static_assert( ll_source< _ref_payload&, set_value_t() >::_payload_by_value );
+        static_assert( !ll_source< _ref_payload, set_value_t() >::_payload_by_value );
+
+        ll_source< _ref_payload, set_value_t() > source;
+        _ref_payload                             lvalue{ 7 };
+        auto op1 = source.schedule( lvalue ).connect( _dummy_receiver{} );
+        op1.start();
+        auto op2 = source.schedule( _ref_payload{ 8 } ).connect( _dummy_receiver{} );
+        op2.start();
+        auto op3 = source.schedule().connect( _dummy_receiver{} );
+        op3.start();
+
+        CHECK( lvalue.v == 7 );
+        auto* first = source.query_next_unchecked();
+        REQUIRE( first != nullptr );
+        CHECK( &first->data != &lvalue );
+        CHECK( first->data.v == 7 );
+        CHECK( source.query_next_unchecked()->data.v == 8 );
+        CHECK( source.query_next_unchecked()->data.v == 0 );
+        CHECK( source.empty() );
+}
+
+TEST_CASE( "ll_source - a move-only payload passed as an rvalue is moved, never copied" )
+{
+        using source_t = ll_source< _move_only_payload, set_value_t() >;
+        static_assert( !_schedulable_with< source_t, _move_only_payload const& > );
+
+        source_t source;
+        auto     op = source.schedule( _move_only_payload{ std::make_unique< int >( 5 ) } )
+                          .connect( _dummy_receiver{} );
+        op.start();
+
+        auto* e = source.query_next_unchecked();
+        REQUIRE( e != nullptr );
+        REQUIRE( e->data.p != nullptr );
+        CHECK( *e->data.p == 5 );
+}
+
+TEST_CASE( "ll_source - a reference payload refers to the caller's object" )
+{
+        using source_t = ll_source< _ref_payload&, set_value_t() >;
+        static_assert( _schedulable_with< source_t, _ref_payload& > );
+        static_assert( !_schedulable_with< source_t, _ref_payload > );
+
+        source_t     source;
+        _ref_payload a{ 1 }, b{ 2 };
+        auto         op1 = source.schedule( a ).connect( _dummy_receiver{} );
+        op1.start();
+        auto op2 = source.schedule( b ).connect( _dummy_receiver{} );
+        op2.start();
+
+        auto* first = source.query_next_unchecked();
+        REQUIRE( first != nullptr );
+        CHECK( &first->data == &a );
+        first->data.v = 7;
+        CHECK( a.v == 7 );
+        auto* second = source.query_next_unchecked();
+        REQUIRE( second != nullptr );
+        CHECK( &second->data == &b );
+        CHECK( source.empty() );
+}
+
 TEST_CASE( "ll_source - fifo basic ordering" )
 {
         nd_mem   mem;
@@ -3265,6 +3349,30 @@ TEST_CASE( "seq_source - schedule copies a payload passed as an lvalue" )
         REQUIRE( e != nullptr );
         e->set_value( e->data );
         CHECK( log == std::vector< int >{ 20 } );
+}
+
+TEST_CASE( "seq_source - a reference payload refers to the caller's object" )
+{
+        using source_t = seq_source< uint32_t, _ref_payload&, set_value_t() >;
+        static_assert( _schedulable_with< source_t, uint32_t, _ref_payload& > );
+        static_assert( !_schedulable_with< source_t, uint32_t, _ref_payload > );
+
+        source_t     source;
+        _ref_payload a{ 1 }, b{ 2 };
+        auto         op_b = source.schedule( 2, b ).connect( _dummy_receiver{} );
+        op_b.start();
+        auto op_a = source.schedule( 1, a ).connect( _dummy_receiver{} );
+        op_a.start();
+
+        auto* first = source.query_next_unchecked();
+        REQUIRE( first != nullptr );
+        CHECK( &first->data == &a );
+        first->data.v = 7;
+        CHECK( a.v == 7 );
+        auto* second = source.query_next_unchecked();
+        REQUIRE( second != nullptr );
+        CHECK( &second->data == &b );
+        CHECK( source.empty() );
 }
 
 struct _completion_counter

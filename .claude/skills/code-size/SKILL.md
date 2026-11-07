@@ -438,10 +438,23 @@ change alone grew that site by 4 bytes; forwarding the key and payload through t
 templates removes those too: −20 bytes at such a site, up to −1500 on 50 source types. It costs
 about 1.7 bytes per operation state connected directly from a temporary sender outside a
 coroutine, whose key and payload GCC then keeps in a stack slot instead of registers (+20 and +68
-on the plain-receiver probes of 12 and 50 sources), a use declined as not mainstream. The same
-change for `ll_source` is mixed: +23 bytes per await with a 5-byte payload and up to +4608 on
-the `task` probes, against −13120 / −7912 on the 1000-coroutine program; it stays out until
-that is understood.
+on the plain-receiver probes of 12 and 50 sources), a use declined as not mainstream.
+
+For `ll_source`, by reference is right for aggregates only. A scalar or empty payload stays by
+value: a temporary bound to a reference inside a `co_await` expression lives across the
+suspension, so it takes a slot in the coroutine frame and is stored and loaded back, +9 bytes
+per `co_await src.schedule( 0u )` with a `uint32_t` payload, and an empty one shifts the frame
+layout into longer encodings, +44 bytes per coroutine. An aggregate of any size, even 1 to 4
+bytes, is cheaper by reference, since by value it goes through two stack slots on its way to
+the operation state. `ll_source` picks the overloads by `std::is_reference_v< T > ||
+std::is_scalar_v< T > || std::is_empty_v< T >`: −141916 over the suite, −34268 / −8604 on the
+1000-coroutine program and −50088 on its owning variant without LTO, nothing on the `task`
+probes; by reference for every payload saved only −115260, with +26640 on the `task` family,
+and by value up to a pointer's size −65688 (`doc/plans/llref.md`). By reference also takes away
+an out-of-line `schedule()`: it is always inlined, which loses at many awaits of one source in
+one file, +52 at 16 awaits of a 5-byte payload. The reference is only ever a parameter: the
+sender stores its own `T`, as CODE_GUIDELINES.md requires of data a type keeps, and a reference
+payload, `ll_source< T& >`, takes the by-value overload.
 
 ### Erase an operation state over its receiver, not only over its element type
 

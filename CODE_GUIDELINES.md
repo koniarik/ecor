@@ -77,6 +77,26 @@ TEST_CASE( "my test" )
 }
 ```
 
+## Interfaces
+
+### Store what is handed over by value
+
+Data that a type keeps after the call that hands it over, such as the payload of an
+`ecor::ll_source` entry or the element of `ecor::async_queue::push()`, is the type's own `T`,
+not a reference to the caller's object. The type cannot know when the data is used: a sender is
+connected, started and completed whenever its owner decides, so a reference would rest on an
+assumption about the caller, such as that the call sits inside a `co_await`. A caller who wants
+a reference instantiates the template with one, `ecor::ll_source< T& >`, and the entry then
+refers to the caller's object; a template that stores a `T` forwards it with `(T&&) x`, never
+`std::move( x )`, so that it compiles for a reference `T`.
+
+A parameter may still be a reference, used only during the call or copied into the stored
+value. A sender or operation state refers to the source, queue or context it was created from;
+that those outlive it is the sender/receiver contract. Where referring is the operation's
+meaning, as in `ecor::async_queue::push_and_wait( T& ev )`, which lends `ev` to a consumer and
+completes once the consumer is done with it, the function documents what the caller keeps
+alive.
+
 ## Common pitfalls
 
 - **Do not assume `set_error_t(std::exception_ptr)` exists** in a sender's signatures unless the

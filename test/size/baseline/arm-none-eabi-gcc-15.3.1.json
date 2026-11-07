@@ -156,19 +156,19 @@
    0
   ],
   "co_await/kind=ll_source_payload,awaits=16": [
-   1982,
+   2034,
    0
   ],
   "co_await/kind=ll_source_payload,awaits=16,cfg=owning": [
-   1856,
+   1906,
    0
   ],
   "co_await/kind=ll_source_payload,awaits=8": [
-   1528,
+   1394,
    0
   ],
   "co_await/kind=ll_source_payload,awaits=8,cfg=owning": [
-   1514,
+   1382,
    0
   ],
   "co_await/kind=ll_source_payload_value,awaits=16": [
@@ -764,51 +764,51 @@
    0
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0": [
-   134408,
+   131784,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0,cfg=owning": [
-   114696,
+   112060,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1": [
-   127600,
+   125232,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1,cfg=owning": [
-   106844,
+   104572,
    49292
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0": [
-   1505992,
+   1471724,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0,cfg=owning": [
-   1320288,
+   1270200,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1": [
-   1426220,
+   1417616,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1,cfg=owning": [
-   1210944,
+   1202660,
    49828
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0": [
-   434216,
+   424008,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0,cfg=owning": [
-   373868,
+   363764,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1": [
-   414320,
+   408624,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1,cfg=owning": [
-   349940,
+   345136,
    49420
   ],
   "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=call": [
@@ -2040,7 +2040,7 @@
    0
   ],
   "source/kind=ll,n=2,stopcheck=0,drain=broadcast,await=1": [
-   1016,
+   1020,
    0
   ],
   "source/kind=ll,n=2,stopcheck=0,drain=next,await=0": [
@@ -2048,7 +2048,7 @@
    0
   ],
   "source/kind=ll,n=2,stopcheck=0,drain=next,await=1": [
-   960,
+   964,
    0
   ],
   "source/kind=ll,n=2,stopcheck=1,drain=next,await=0": [
@@ -2056,7 +2056,7 @@
    0
   ],
   "source/kind=ll,n=2,stopcheck=1,drain=next,await=1": [
-   1136,
+   1140,
    0
   ],
   "source/kind=ll,n=4,stopcheck=0,drain=broadcast,await=0": [
@@ -2064,7 +2064,7 @@
    0
   ],
   "source/kind=ll,n=4,stopcheck=0,drain=broadcast,await=1": [
-   1590,
+   1594,
    0
   ],
   "source/kind=ll,n=4,stopcheck=0,drain=next,await=0": [
@@ -2072,7 +2072,7 @@
    0
   ],
   "source/kind=ll,n=4,stopcheck=0,drain=next,await=1": [
-   1418,
+   1422,
    0
   ],
   "source/kind=ll,n=4,stopcheck=1,drain=next,await=0": [
@@ -2080,7 +2080,7 @@
    0
   ],
   "source/kind=ll,n=4,stopcheck=1,drain=next,await=1": [
-   1758,
+   1762,
    0
   ],
   "source/kind=ll,n=50,stopcheck=0,drain=broadcast,await=0": [
@@ -2088,7 +2088,7 @@
    0
   ],
   "source/kind=ll,n=50,stopcheck=0,drain=broadcast,await=1": [
-   12094,
+   12150,
    0
   ],
   "source/kind=ll,n=50,stopcheck=0,drain=next,await=0": [
@@ -2096,7 +2096,7 @@
    0
   ],
   "source/kind=ll,n=50,stopcheck=0,drain=next,await=1": [
-   10838,
+   10894,
    0
   ],
   "source/kind=ll,n=50,stopcheck=1,drain=next,await=0": [
@@ -2104,7 +2104,7 @@
    0
   ],
   "source/kind=ll,n=50,stopcheck=1,drain=next,await=1": [
-   12516,
+   12572,
    0
   ],
   "source/kind=ll,n=8,stopcheck=0,drain=broadcast,await=0": [
@@ -2112,7 +2112,7 @@
    0
   ],
   "source/kind=ll,n=8,stopcheck=0,drain=broadcast,await=1": [
-   2542,
+   2546,
    0
   ],
   "source/kind=ll,n=8,stopcheck=0,drain=next,await=0": [
@@ -2120,7 +2120,7 @@
    0
   ],
   "source/kind=ll,n=8,stopcheck=0,drain=next,await=1": [
-   2298,
+   2302,
    0
   ],
   "source/kind=ll,n=8,stopcheck=1,drain=next,await=0": [
@@ -2128,7 +2128,7 @@
    0
   ],
   "source/kind=ll,n=8,stopcheck=1,drain=next,await=1": [
-   2870,
+   2874,
    0
   ],
   "source/kind=seq,n=1,stopcheck=0,drain=next,await=0": [
