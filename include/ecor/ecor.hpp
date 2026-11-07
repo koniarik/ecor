@@ -1573,10 +1573,12 @@ concept stoppable_token = requires( Token const tok ) {
 } && std::copyable< Token > && std::equality_comparable< Token > && std::swappable< Token >;
 
 /// Concept for unstoppable tokens, which are a special case of stoppable tokens that cannot be
-/// stopped.
+/// stopped: their type alone says so, through a static `stop_possible()` that is a constant
+/// `false`.
 template < class Token >
-concept unstoppable_token =
-    stoppable_token< Token > && requires { requires( !Token{}.stop_possible() ); };
+concept unstoppable_token = stoppable_token< Token > && requires {
+        requires std::bool_constant< !Token::stop_possible() >::value;
+};
 
 /// Concept for stoppable sources, requires that the type has get_token, stop_possible,
 /// stop_requested, and request_stop member functions with appropriate signatures, and that the
@@ -3904,9 +3906,7 @@ struct _task_op
         ///
         void start()
         {
-                if constexpr ( !std::same_as<
-                                   decltype( ecor::get_stop_token( ecor::get_env( _recv ) ) ),
-                                   never_stop_token > )
+                if constexpr ( !unstoppable_token< _stop_token_of_t< env_type< R > > > )
                         if ( _h )
                                 _h.promise().token = ecor::get_stop_token( ecor::get_env( _recv ) );
                 if ( promise_type::_base::template _start_op< CFG >(
@@ -4197,7 +4197,7 @@ struct _when_any_op_base< R, completion_signatures< Sigs... >, Count > : _when_a
         using _env_t    = std::remove_cvref_t< env_type< R > >;
         using _rtoken_t = _stop_token_of_t< _env_t >;
 
-        static constexpr bool _stoppable = !std::same_as< _rtoken_t, never_stop_token >;
+        static constexpr bool _stoppable = !unstoppable_token< _rtoken_t >;
         static constexpr bool _trivial =
             ( std::is_trivially_destructible_v< _stored_t< Sigs > > && ... );
         static constexpr std::size_t _result_size = std::max( { sizeof( _stored_t< Sigs > )... } );
@@ -4375,7 +4375,7 @@ struct _when_any_sender
 
         template < typename Env >
         using _stopped = std::conditional_t<
-            std::same_as< _stop_token_of_t< Env >, never_stop_token >,
+            unstoppable_token< _stop_token_of_t< Env > >,
             completion_signatures<>,
             completion_signatures< set_stopped_t() > >;
 
@@ -5042,8 +5042,7 @@ struct _wait_until_stopped
                 {
                         auto st = get_stop_token( ecor::get_env( _r ) );
                         static_assert(
-                            !std::same_as< decltype( st ), never_stop_token >,
-                            "Receiver must be stoppable" );
+                            !unstoppable_token< decltype( st ) >, "Receiver must be stoppable" );
                         // A callback registered under a requested stop runs inside `emplace()`,
                         // which writes to this object after the receiver may have destroyed it.
                         if ( st.stop_requested() ) {
@@ -6552,9 +6551,7 @@ struct _queue_core : _queue_core_base< Closeable >
 
 /// True when `R`'s environment carries a stop token that can actually be triggered.
 template < typename R >
-concept _queue_stoppable = !std::same_as<
-    std::remove_cvref_t< decltype( get_stop_token( get_env( std::declval< R const& >() ) ) ) >,
-    never_stop_token >;
+concept _queue_stoppable = !unstoppable_token< _stop_token_of_t< env_type< R > > >;
 
 /// The stop callback of an operation state `Op`, which must provide `_cancel()`. With
 /// `Stoppable` false it holds nothing and `_disarm()` is empty.

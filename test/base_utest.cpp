@@ -3433,12 +3433,30 @@ TEST_CASE( "stop_token_concepts - stoppable_source" )
         CHECK( token.stop_requested() );
 }
 
+/// A stoppable token whose type says whether it can stop.
+template < bool Possible >
+struct _static_token
+{
+        [[nodiscard]] static constexpr bool stop_requested() noexcept
+        {
+                return false;
+        }
+
+        [[nodiscard]] static constexpr bool stop_possible() noexcept
+        {
+                return Possible;
+        }
+
+        bool operator==( _static_token const& ) const = default;
+};
+
 TEST_CASE( "stop_token_concepts - unstoppable_token" )
 {
-        // Default-constructed inplace_stop_token has no source, so stop_possible() returns false
-        // However, the unstoppable_token concept requires this to be determinable at compile time
-        // inplace_stop_token cannot satisfy unstoppable_token because its behavior depends on
-        // runtime state (whether _source is nullptr)
+        static_assert( unstoppable_token< never_stop_token > );
+        static_assert( unstoppable_token< _static_token< false > > );
+        static_assert( !unstoppable_token< _static_token< true > > );
+        // Whether an inplace_stop_token can stop depends on its source, known only at run time.
+        static_assert( !unstoppable_token< inplace_stop_token > );
 
         inplace_stop_token default_token;
         CHECK( !default_token.stop_possible() );
