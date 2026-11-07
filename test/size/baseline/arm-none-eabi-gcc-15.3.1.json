@@ -763,6 +763,206 @@
    2298,
    0
   ],
+  "or/kind=mixed,operands=1,at=recv": [
+   176,
+   0
+  ],
+  "or/kind=mixed,operands=1,at=task,uses=1": [
+   728,
+   0
+  ],
+  "or/kind=mixed,operands=1,at=task,uses=1,cfg=owning": [
+   794,
+   0
+  ],
+  "or/kind=mixed,operands=1,at=task,uses=4": [
+   1408,
+   0
+  ],
+  "or/kind=mixed,operands=1,at=task,uses=4,cfg=owning": [
+   1494,
+   0
+  ],
+  "or/kind=mixed,operands=2,at=recv": [
+   472,
+   0
+  ],
+  "or/kind=mixed,operands=2,at=task,uses=1": [
+   1242,
+   0
+  ],
+  "or/kind=mixed,operands=2,at=task,uses=1,cfg=owning": [
+   1312,
+   0
+  ],
+  "or/kind=mixed,operands=2,at=task,uses=4": [
+   2414,
+   0
+  ],
+  "or/kind=mixed,operands=2,at=task,uses=4,cfg=owning": [
+   2452,
+   0
+  ],
+  "or/kind=mixed,operands=3,at=recv": [
+   734,
+   0
+  ],
+  "or/kind=mixed,operands=3,at=task,uses=1": [
+   1558,
+   0
+  ],
+  "or/kind=mixed,operands=3,at=task,uses=1,cfg=owning": [
+   1598,
+   0
+  ],
+  "or/kind=mixed,operands=3,at=task,uses=4": [
+   3672,
+   0
+  ],
+  "or/kind=mixed,operands=3,at=task,uses=4,cfg=owning": [
+   3704,
+   0
+  ],
+  "or/kind=mixed,operands=4,at=recv": [
+   1104,
+   0
+  ],
+  "or/kind=mixed,operands=4,at=task,uses=1": [
+   1944,
+   0
+  ],
+  "or/kind=mixed,operands=4,at=task,uses=1,cfg=owning": [
+   2020,
+   0
+  ],
+  "or/kind=mixed,operands=4,at=task,uses=4": [
+   2630,
+   0
+  ],
+  "or/kind=mixed,operands=4,at=task,uses=4,cfg=owning": [
+   2644,
+   0
+  ],
+  "or/kind=mixed,operands=8,at=recv": [
+   1796,
+   0
+  ],
+  "or/kind=mixed,operands=8,at=task,uses=1": [
+   2816,
+   0
+  ],
+  "or/kind=mixed,operands=8,at=task,uses=1,cfg=owning": [
+   2892,
+   0
+  ],
+  "or/kind=mixed,operands=8,at=task,uses=4": [
+   4260,
+   0
+  ],
+  "or/kind=mixed,operands=8,at=task,uses=4,cfg=owning": [
+   4288,
+   0
+  ],
+  "or/kind=same,operands=1,at=recv": [
+   176,
+   0
+  ],
+  "or/kind=same,operands=1,at=task,uses=1": [
+   728,
+   0
+  ],
+  "or/kind=same,operands=1,at=task,uses=1,cfg=owning": [
+   794,
+   0
+  ],
+  "or/kind=same,operands=1,at=task,uses=4": [
+   912,
+   0
+  ],
+  "or/kind=same,operands=1,at=task,uses=4,cfg=owning": [
+   946,
+   0
+  ],
+  "or/kind=same,operands=2,at=recv": [
+   356,
+   0
+  ],
+  "or/kind=same,operands=2,at=task,uses=1": [
+   1114,
+   0
+  ],
+  "or/kind=same,operands=2,at=task,uses=1,cfg=owning": [
+   1176,
+   0
+  ],
+  "or/kind=same,operands=2,at=task,uses=4": [
+   1314,
+   0
+  ],
+  "or/kind=same,operands=2,at=task,uses=4,cfg=owning": [
+   1372,
+   0
+  ],
+  "or/kind=same,operands=3,at=recv": [
+   392,
+   0
+  ],
+  "or/kind=same,operands=3,at=task,uses=1": [
+   1156,
+   0
+  ],
+  "or/kind=same,operands=3,at=task,uses=1,cfg=owning": [
+   1222,
+   0
+  ],
+  "or/kind=same,operands=3,at=task,uses=4": [
+   1420,
+   0
+  ],
+  "or/kind=same,operands=3,at=task,uses=4,cfg=owning": [
+   1474,
+   0
+  ],
+  "or/kind=same,operands=4,at=recv": [
+   424,
+   0
+  ],
+  "or/kind=same,operands=4,at=task,uses=1": [
+   1210,
+   0
+  ],
+  "or/kind=same,operands=4,at=task,uses=1,cfg=owning": [
+   1276,
+   0
+  ],
+  "or/kind=same,operands=4,at=task,uses=4": [
+   1550,
+   0
+  ],
+  "or/kind=same,operands=4,at=task,uses=4,cfg=owning": [
+   1596,
+   0
+  ],
+  "or/kind=same,operands=8,at=recv": [
+   554,
+   0
+  ],
+  "or/kind=same,operands=8,at=task,uses=1": [
+   1494,
+   0
+  ],
+  "or/kind=same,operands=8,at=task,uses=1,cfg=owning": [
+   1528,
+   0
+  ],
+  "or/kind=same,operands=8,at=task,uses=4": [
+   2310,
+   0
+  ],
+  "or/kind=same,operands=8,at=task,uses=4,cfg=owning": [
+   2336,
+   0
+  ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0": [
    131784,
    49292

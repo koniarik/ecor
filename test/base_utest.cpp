@@ -596,6 +596,7 @@ test_seq_or_f( task_ctx&, auto& seq1, auto& seq2, uint32_t& result, bool& comple
         completed = true;
 };
 
+// These sources cannot stop, so every operand fires before the result arrives.
 TEST_CASE( "operator||" )
 {
         nd_mem   mem;
@@ -618,17 +619,15 @@ TEST_CASE( "operator||" )
                         e.set_value( 42 );
                 } );
                 ctx.core.run_once();
+                CHECK( !completed );
 
-                CHECK( completed );
-                CHECK( result == 42 );
-
-                completed = false;
                 broadcast( es2, []( auto& e ) {
                         e.set_value( 99 );
                 } );
                 ctx.core.run_once();
 
-                CHECK( !completed );
+                CHECK( completed );
+                CHECK( result == 42 );
         }
 
         {
@@ -647,6 +646,9 @@ TEST_CASE( "operator||" )
                 // Second event source fires first
                 broadcast( es2, []( auto& e ) {
                         e.set_value( 123 );
+                } );
+                broadcast( es1, []( auto& e ) {
+                        e.set_value( 7 );
                 } );
                 ctx.core.run_once();
 
@@ -672,6 +674,9 @@ TEST_CASE( "operator||" )
                 broadcast( es_string, []( auto& e ) {
                         e.set_value( std::string( "hello" ) );
                 } );
+                broadcast( es_int, []( auto& e ) {
+                        e.set_value( 1 );
+                } );
                 ctx.core.run_once();
 
                 CHECK( completed );
@@ -693,16 +698,1009 @@ TEST_CASE( "operator||" )
 
                 CHECK( !completed );
 
-                // Process time 5 - seq2 should win
-                while ( !seq2.empty() && seq2.front().key <= 5 ) {
-                        auto* e = seq2.query_next();
-                        e->set_value( e->key );
-                }
+                // Process time 5 - seq2 wins, then time 10
+                for ( auto* seq : { &seq2, &seq1 } )
+                        while ( auto* e = seq->query_next() )
+                                e->set_value( e->key );
                 ctx.core.run_once();
 
                 CHECK( completed );
                 CHECK( result == 5 );
         }
+}
+
+using or_source_t = ll_source< unit, set_value_t( int ) >;
+
+static ecor::task< void >
+test_or_chain_f( task_ctx&, std::array< or_source_t, 4 >& es, int& result, bool& completed )
+{
+        result = co_await (
+            es[0].schedule() || es[1].schedule() || es[2].schedule() || es[3].schedule() );
+        completed = true;
+}
+
+TEST_CASE( "operator|| - a chain is one operation over all of its senders" )
+{
+        using s_t = or_source_t::sender_type;
+        static_assert(
+            std::same_as<
+                decltype( std::declval< s_t >() || std::declval< s_t >() || std::declval< s_t >() || std::declval< s_t >() ),
+                _when_any_sender< s_t, s_t, s_t, s_t > > );
+
+        nd_mem                       mem;
+        task_ctx                     ctx{ mem };
+        std::array< or_source_t, 4 > es;
+        int                          result    = -1;
+        bool                         completed = false;
+
+        auto h = test_or_chain_f( ctx, es, result, completed ).connect( _dummy_receiver{} );
+        h.start();
+        ctx.core.run_once();
+        for ( auto& e : es )
+                CHECK( !e.empty() );
+
+        broadcast( es[2], []( auto& e ) {
+                e.set_value( 2 );
+        } );
+        ctx.core.run_once();
+        CHECK( !completed );
+
+        for ( int i : { 0, 1, 3 } )
+                broadcast( es[i], [i]( auto& e ) {
+                        e.set_value( i );
+                } );
+        ctx.core.run_once();
+        CHECK( completed );
+        CHECK( result == 2 );
+}
+
+template < typename A, typename B >
+concept or_combinable = requires( A a, B b ) { a || b; };
+
+TEST_CASE( "operator|| - takes senders only" )
+{
+        static_assert( or_combinable< or_source_t::sender_type, or_source_t::sender_type > );
+        static_assert( !or_combinable< unit, bool > );
+        static_assert( !or_combinable< unit, or_source_t::sender_type > );
+}
+
+TEST_CASE( "_uint_for_t - the smallest unsigned type that holds a value" )
+{
+        static_assert( std::same_as< _uint_for_t< 0 >, std::uint8_t > );
+        static_assert( std::same_as< _uint_for_t< 255 >, std::uint8_t > );
+        static_assert( std::same_as< _uint_for_t< 256 >, std::uint16_t > );
+        static_assert( std::same_as< _uint_for_t< 65535 >, std::uint16_t > );
+        static_assert( std::same_as< _uint_for_t< 65536 >, std::uint32_t > );
+        static_assert( std::same_as< _uint_for_t< 4294967296 >, std::uint64_t > );
+}
+
+TEST_CASE( "_stop_token_of_t - the stop token type of an environment" )
+{
+        static_assert( std::same_as< _stop_token_of_t< empty_env >, never_stop_token > );
+        static_assert( std::same_as<
+                       _stop_token_of_t< stop_token_env< inplace_stop_token > >,
+                       inplace_stop_token > );
+        static_assert( std::same_as<
+                       _stop_token_of_t< stop_token_env< inplace_stop_token const& > >,
+                       inplace_stop_token > );
+}
+
+TEST_CASE( "_decay_sigs_t - decays every argument of every signature" )
+{
+        static_assert( std::same_as<
+                       _decay_sigs_t< completion_signatures<
+                           set_value_t( int const&, std::string&& ),
+                           set_error_t( int& ),
+                           set_stopped_t() > >,
+                       completion_signatures<
+                           set_value_t( int, std::string ),
+                           set_error_t( int ),
+                           set_stopped_t() > > );
+        static_assert(
+            std::same_as< _decay_sigs_t< completion_signatures<> >, completion_signatures<> > );
+}
+
+using wa_source_t =
+    ll_source< unit, set_value_t( int ), set_error_t( int ), set_stopped_t(), get_stopped_t() >;
+
+struct wa_log
+{
+        int values = 0;
+        int value  = -1;
+        int errors = 0;
+        int error  = -1;
+        int stops  = 0;
+
+        [[nodiscard]] int calls() const
+        {
+                return values + errors + stops;
+        }
+};
+
+struct wa_recv
+{
+        using receiver_concept = receiver_t;
+
+        wa_log*                    log;
+        inplace_stop_source const* stop = nullptr;
+
+        void set_value( int v )
+        {
+                ++log->values;
+                log->value = v;
+        }
+
+        void set_error( int e )
+        {
+                ++log->errors;
+                log->error = e;
+        }
+
+        void set_stopped()
+        {
+                ++log->stops;
+        }
+
+        [[nodiscard]] stop_token_env< inplace_stop_token > get_env() const noexcept
+        {
+                return { stop ? stop->get_token() : inplace_stop_token{} };
+        }
+};
+
+TEST_CASE( "when_any - the first value wins, delivered after every operand finished" )
+{
+        wa_source_t a, b;
+        wa_log      log;
+        auto        op = ecor::when_any( a.schedule(), b.schedule() ).connect( wa_recv{ &log } );
+        op.start();
+
+        b.query_next()->set_value( 2 );
+        CHECK( log.calls() == 0 );
+
+        CHECK( a.query_next() == nullptr );
+        CHECK( a.empty() );
+        CHECK( log.values == 1 );
+        CHECK( log.value == 2 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE( "when_any - an error wins like a value" )
+{
+        wa_source_t a, b;
+        wa_log      log;
+        auto        op = ecor::when_any( a.schedule(), b.schedule() ).connect( wa_recv{ &log } );
+        op.start();
+
+        b.query_next()->set_error( 7 );
+        CHECK( a.query_next() == nullptr );
+        CHECK( log.errors == 1 );
+        CHECK( log.error == 7 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE( "when_any - a stopped operand wins like a value" )
+{
+        wa_source_t a, b;
+        wa_log      log;
+        auto        op = ecor::when_any( a.schedule(), b.schedule() ).connect( wa_recv{ &log } );
+        op.start();
+
+        b.query_next()->set_stopped();
+        CHECK( a.query_next() == nullptr );
+        CHECK( log.stops == 1 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE( "when_any - a value after the first completion is dropped" )
+{
+        wa_source_t a, b;
+        wa_log      log;
+        auto        op = ecor::when_any( a.schedule(), b.schedule() ).connect( wa_recv{ &log } );
+        op.start();
+
+        b.query_next()->set_value( 2 );
+        a.query_next_unchecked()->set_value( 1 );
+        CHECK( log.value == 2 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE( "when_any - an error after the first completion is dropped" )
+{
+        wa_source_t a, b;
+        wa_log      log;
+        auto        op = ecor::when_any( a.schedule(), b.schedule() ).connect( wa_recv{ &log } );
+        op.start();
+
+        b.query_next()->set_value( 2 );
+        a.query_next_unchecked()->set_error( 5 );
+        CHECK( log.value == 2 );
+        CHECK( log.errors == 0 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE( "when_any - a stop of the receiver stops every operand" )
+{
+        wa_source_t         a, b;
+        wa_log              log;
+        inplace_stop_source stop;
+        auto op = ecor::when_any( a.schedule(), b.schedule() ).connect( wa_recv{ &log, &stop } );
+        op.start();
+
+        stop.request_stop();
+        CHECK( log.calls() == 0 );
+        CHECK( a.query_next() == nullptr );
+        CHECK( log.calls() == 0 );
+        CHECK( b.query_next() == nullptr );
+        CHECK( log.stops == 1 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE( "when_any - a receiver stopped after the first completion completes stopped" )
+{
+        wa_source_t         a, b;
+        wa_log              log;
+        inplace_stop_source stop;
+        auto op = ecor::when_any( a.schedule(), b.schedule() ).connect( wa_recv{ &log, &stop } );
+        op.start();
+
+        b.query_next()->set_value( 2 );
+        stop.request_stop();
+        CHECK( a.query_next() == nullptr );
+        CHECK( log.stops == 1 );
+        CHECK( log.values == 0 );
+        CHECK( log.calls() == 1 );
+}
+
+struct wa_ref_token_recv
+{
+        using receiver_concept = receiver_t;
+
+        wa_log*                   log;
+        inplace_stop_token const* token;
+
+        void set_value( int /*v*/ )
+        {
+                ++log->values;
+        }
+
+        void set_error( int /*e*/ )
+        {
+                ++log->errors;
+        }
+
+        void set_stopped()
+        {
+                ++log->stops;
+        }
+
+        [[nodiscard]] stop_token_env< inplace_stop_token const& > get_env() const noexcept
+        {
+                return { *token };
+        }
+};
+
+TEST_CASE( "when_any - a receiver whose stop token query returns a reference" )
+{
+        wa_source_t         a, b;
+        wa_log              log;
+        inplace_stop_source stop;
+        inplace_stop_token  token = stop.get_token();
+        auto                op    = ecor::when_any( a.schedule(), b.schedule() )
+                                        .connect( wa_ref_token_recv{ &log, &token } );
+        op.start();
+
+        stop.request_stop();
+        CHECK( a.query_next() == nullptr );
+        CHECK( b.query_next() == nullptr );
+        CHECK( log.stops == 1 );
+        CHECK( log.calls() == 1 );
+}
+
+struct wa_other_token
+{
+        inplace_stop_token tok;
+
+        [[nodiscard]] bool stop_requested() const noexcept
+        {
+                return tok.stop_requested();
+        }
+
+        [[nodiscard]] bool stop_possible() const noexcept
+        {
+                return tok.stop_possible();
+        }
+
+        bool operator==( wa_other_token const& ) const = default;
+
+        template < typename F >
+        struct callback_type
+        {
+                template < typename I >
+                callback_type( wa_other_token t, I&& init )
+                  : cb( t.tok, (I&&) init )
+                {
+                }
+
+                inplace_stop_callback< F > cb;
+        };
+};
+
+struct wa_other_token_recv
+{
+        using receiver_concept = receiver_t;
+
+        wa_log*                    log;
+        inplace_stop_source const* stop;
+
+        void set_value( int v )
+        {
+                ++log->values;
+                log->value = v;
+        }
+
+        void set_error( int /*e*/ )
+        {
+                ++log->errors;
+        }
+
+        void set_stopped()
+        {
+                ++log->stops;
+        }
+
+        [[nodiscard]] stop_token_env< wa_other_token > get_env() const noexcept
+        {
+                return { wa_other_token{ stop->get_token() } };
+        }
+};
+
+TEST_CASE( "when_any - a receiver whose stop token is of another type" )
+{
+        {
+                wa_source_t         a, b;
+                wa_log              log;
+                inplace_stop_source stop;
+                auto                op = ecor::when_any( a.schedule(), b.schedule() )
+                                             .connect( wa_other_token_recv{ &log, &stop } );
+                op.start();
+
+                stop.request_stop();
+                CHECK( a.query_next() == nullptr );
+                CHECK( b.query_next() == nullptr );
+                CHECK( log.stops == 1 );
+                CHECK( log.calls() == 1 );
+        }
+        {
+                wa_source_t         a, b;
+                wa_log              log;
+                inplace_stop_source stop;
+                auto                op = ecor::when_any( a.schedule(), b.schedule() )
+                                             .connect( wa_other_token_recv{ &log, &stop } );
+                op.start();
+
+                b.query_next()->set_value( 2 );
+                CHECK( a.query_next() == nullptr );
+                stop.request_stop();
+                CHECK( log.value == 2 );
+                CHECK( log.calls() == 1 );
+        }
+}
+
+TEST_CASE( "when_any - a stop requested before start reaches every operand" )
+{
+        wa_source_t         a, b;
+        wa_log              log;
+        inplace_stop_source stop;
+        stop.request_stop();
+        auto op = ecor::when_any( a.schedule(), b.schedule() ).connect( wa_recv{ &log, &stop } );
+        op.start();
+
+        CHECK( log.calls() == 0 );
+        CHECK( a.query_next() == nullptr );
+        CHECK( b.query_next() == nullptr );
+        CHECK( log.stops == 1 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE( "when_any - an operand that completes inside start() wins" )
+{
+        wa_source_t a;
+        wa_log      log;
+        auto        op = ecor::when_any( ecor::just( 1 ), a.schedule() ).connect( wa_recv{ &log } );
+        op.start();
+
+        CHECK( log.calls() == 0 );
+        CHECK( a.query_next() == nullptr );
+        CHECK( log.value == 1 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE( "when_any - the receiver may destroy the operation state in its completion" )
+{
+        wa_source_t                a, b;
+        std::vector< std::string > log;
+        op_slot                    slot;
+        auto&                      op = slot.emplace_from( [&] {
+                return ecor::when_any( a.schedule(), b.schedule() )
+                    .connect( self_destroying_recv{ &log, &slot } );
+        } );
+        op.start();
+
+        b.query_next()->set_value( 2 );
+        CHECK( log.empty() );
+        CHECK( a.query_next() == nullptr );
+        CHECK( log == std::vector< std::string >{ "value" } );
+        CHECK( slot.untouched() );
+}
+
+using wa_task_source_t = ll_source< unit, set_value_t( int ), set_stopped_t(), get_stopped_t() >;
+
+static ecor::task< void >
+test_when_any_f( task_ctx&, wa_task_source_t& a, wa_task_source_t& b, int& result, bool& completed )
+{
+        result    = co_await ecor::when_any( a.schedule(), b.schedule() );
+        completed = true;
+}
+
+TEST_CASE( "when_any - co_await in a task gives the winner's value" )
+{
+        nd_mem           mem;
+        task_ctx         ctx{ mem };
+        wa_task_source_t a, b;
+        int              result    = -1;
+        bool             completed = false;
+
+        auto h = test_when_any_f( ctx, a, b, result, completed ).connect( _dummy_receiver{} );
+        h.start();
+        ctx.core.run_once();
+        CHECK( !a.empty() );
+        CHECK( !b.empty() );
+
+        b.query_next()->set_value( 2 );
+        CHECK( !completed );
+        CHECK( a.query_next() == nullptr );
+        ctx.core.run_once();
+        CHECK( completed );
+        CHECK( result == 2 );
+}
+
+TEST_CASE( "when_any - completion signatures, and || builds the same sender" )
+{
+        using s_t = wa_source_t::sender_type;
+        static_assert(
+            std::same_as<
+                decltype( std::declval< s_t >() || std::declval< s_t >() || std::declval< s_t >() ),
+                decltype( ecor::when_any(
+                    std::declval< s_t >(), std::declval< s_t >(), std::declval< s_t >() ) ) > );
+
+        using int_src_t = ll_source< unit, set_value_t( int ) >;
+        using str_src_t = ll_source< unit, set_value_t( std::string ) >;
+        using sender_t  = decltype( ecor::when_any(
+            std::declval< int_src_t::sender_type >(), std::declval< str_src_t::sender_type >() ) );
+        static_assert( std::same_as<
+                       _sender_completions_t< sender_t, empty_env >,
+                       completion_signatures< set_value_t( int ), set_value_t( std::string ) > > );
+        static_assert( std::same_as<
+                       _sender_completions_t< sender_t, stop_token_env< inplace_stop_token > >,
+                       completion_signatures<
+                           set_value_t( int ),
+                           set_value_t( std::string ),
+                           set_stopped_t() > > );
+
+        using int_ref_src_t = ll_source< unit, set_value_t( int& ) >;
+        using merged_t      = decltype( ecor::when_any(
+            std::declval< int_ref_src_t::sender_type >(),
+            std::declval< int_src_t::sender_type >() ) );
+        static_assert( std::same_as<
+                       _sender_completions_t< merged_t, empty_env >,
+                       completion_signatures< set_value_t( int ) > > );
+}
+
+struct wa_flat
+{
+        static auto make( auto a, auto b, auto c )
+        {
+                return a || b || c;
+        }
+};
+
+struct wa_nested
+{
+        static auto make( auto a, auto b, auto c )
+        {
+                return a || ( b || c );
+        }
+};
+
+// Each event order is one that both forms accept: the nested form tells the outer operands only
+// once the inner when_any has completed.
+TEST_CASE_TEMPLATE( "when_any - a || (b || c) behaves as a || b || c", Shape, wa_flat, wa_nested )
+{
+        wa_source_t         a, b, c;
+        wa_log              log;
+        inplace_stop_source stop;
+        auto                op = Shape::make( a.schedule(), b.schedule(), c.schedule() )
+                                     .connect( wa_recv{ &log, &stop } );
+        op.start();
+
+        SUBCASE( "an outer operand wins" )
+        {
+                a.query_next()->set_value( 1 );
+                CHECK( b.query_next() == nullptr );
+                CHECK( log.calls() == 0 );
+                CHECK( c.query_next() == nullptr );
+                CHECK( log.value == 1 );
+        }
+        SUBCASE( "an inner operand wins" )
+        {
+                c.query_next()->set_value( 3 );
+                CHECK( b.query_next() == nullptr );
+                CHECK( log.calls() == 0 );
+                CHECK( a.query_next() == nullptr );
+                CHECK( log.value == 3 );
+        }
+        SUBCASE( "an error wins" )
+        {
+                b.query_next()->set_error( 7 );
+                CHECK( c.query_next() == nullptr );
+                CHECK( a.query_next() == nullptr );
+                CHECK( log.errors == 1 );
+                CHECK( log.error == 7 );
+        }
+        SUBCASE( "the receiver is stopped" )
+        {
+                stop.request_stop();
+                CHECK( a.query_next() == nullptr );
+                CHECK( b.query_next() == nullptr );
+                CHECK( log.calls() == 0 );
+                CHECK( c.query_next() == nullptr );
+                CHECK( log.stops == 1 );
+        }
+        CHECK( log.calls() == 1 );
+}
+
+struct wa_queue_cfg : queue_default_cfg< nd_mem >
+{
+        static constexpr async_queue_api pop_api                 = async_queue_api::cancellable;
+        static constexpr async_queue_api push_api                = async_queue_api::cancellable;
+        static constexpr bool            is_closeable            = true;
+        static constexpr bool            trivially_copyable_only = false;
+};
+
+/// Its `pop_value()` completes stopped inside the stop request, from its stop callback.
+using wa_queue_t = async_queue< wa_queue_cfg, int >;
+
+TEST_CASE( "when_any - a loser completes inside the winner's stop request" )
+{
+        nd_mem      mem;
+        wa_queue_t  q{ mem };
+        wa_source_t a;
+        wa_log      log;
+        auto        op = ecor::when_any( a.schedule(), q.pop_value() ).connect( wa_recv{ &log } );
+        op.start();
+
+        a.query_next()->set_value( 7 );
+        CHECK( log.value == 7 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE(
+    "when_any - a receiver destroys the operation after a loser completed inside the stop request" )
+{
+        nd_mem                     mem;
+        wa_queue_t                 q{ mem };
+        wa_source_t                a;
+        std::vector< std::string > log;
+        op_slot                    slot;
+        auto&                      op = slot.emplace_from( [&] {
+                return ecor::when_any( a.schedule(), q.pop_value() )
+                    .connect( self_destroying_recv{ &log, &slot } );
+        } );
+        op.start();
+
+        a.query_next()->set_value( 7 );
+        CHECK( log == std::vector< std::string >{ "value" } );
+        CHECK( slot.untouched() );
+}
+
+TEST_CASE( "when_any - every operand completes inside the receiver's stop, which destroys it" )
+{
+        nd_mem                     mem;
+        wa_queue_t                 q1{ mem }, q2{ mem };
+        std::vector< std::string > log;
+        op_slot                    slot;
+        inplace_stop_source        stop;
+        auto&                      op = slot.emplace_from( [&] {
+                return ecor::when_any( q1.pop_value(), q2.pop_value() )
+                    .connect( self_destroying_recv{ &log, &slot, stop.get_token() } );
+        } );
+        op.start();
+
+        stop.request_stop();
+        CHECK( log == std::vector< std::string >{ "stopped" } );
+        CHECK( slot.untouched() );
+}
+
+TEST_CASE( "when_any - one operand, stopped by the receiver" )
+{
+        nd_mem              mem;
+        wa_queue_t          q{ mem };
+        wa_log              log;
+        inplace_stop_source stop;
+        auto                op = ecor::when_any( q.pop_value() ).connect( wa_recv{ &log, &stop } );
+        op.start();
+
+        stop.request_stop();
+        CHECK( log.stops == 1 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE( "when_any - a nested when_any completes inside the outer's stop request" )
+{
+        nd_mem                     mem;
+        wa_queue_t                 q1{ mem }, q2{ mem };
+        wa_source_t                a;
+        std::vector< std::string > log;
+        op_slot                    slot;
+        auto&                      op = slot.emplace_from( [&] {
+                return ecor::when_any(
+                           a.schedule(), ecor::when_any( q1.pop_value(), q2.pop_value() ) )
+                    .connect( self_destroying_recv{ &log, &slot } );
+        } );
+        op.start();
+
+        a.query_next()->set_value( 1 );
+        CHECK( log == std::vector< std::string >{ "value" } );
+        CHECK( slot.untouched() );
+}
+
+TEST_CASE( "when_any - a nested when_any stopped by the receiver, which destroys it" )
+{
+        nd_mem                     mem;
+        wa_queue_t                 q1{ mem }, q2{ mem };
+        std::vector< std::string > log;
+        op_slot                    slot;
+        inplace_stop_source        stop;
+        auto&                      op = slot.emplace_from( [&] {
+                return ecor::when_any( q1.pop_value(), ecor::when_any( q2.pop_value() ) )
+                    .connect( self_destroying_recv{ &log, &slot, stop.get_token() } );
+        } );
+        op.start();
+
+        stop.request_stop();
+        CHECK( log == std::vector< std::string >{ "stopped" } );
+        CHECK( slot.untouched() );
+}
+
+struct wa_counted
+{
+        static inline int alive = 0;
+
+        int v;
+
+        explicit wa_counted( int v )
+          : v( v )
+        {
+                ++alive;
+        }
+
+        wa_counted( wa_counted const& o )
+          : v( o.v )
+        {
+                ++alive;
+        }
+
+        wa_counted( wa_counted&& o ) noexcept
+          : v( o.v )
+        {
+                ++alive;
+        }
+
+        ~wa_counted()
+        {
+                --alive;
+        }
+};
+
+using wa_counted_source_t =
+    ll_source< unit, set_value_t( wa_counted ), set_stopped_t(), get_stopped_t() >;
+
+struct wa_counted_recv
+{
+        using receiver_concept = receiver_t;
+
+        int* delivered;
+
+        void set_value( wa_counted c )
+        {
+                *delivered = c.v;
+        }
+
+        void set_stopped()
+        {
+                *delivered = -2;
+        }
+
+        [[nodiscard]] empty_env get_env() const noexcept
+        {
+                return {};
+        }
+};
+
+TEST_CASE( "when_any - a stored result is destroyed with the operation, delivered or not" )
+{
+        wa_counted_source_t a, b;
+        int                 delivered = -1;
+
+        SUBCASE( "undelivered" )
+        {
+                {
+                        auto op = ecor::when_any( a.schedule(), b.schedule() )
+                                      .connect( wa_counted_recv{ &delivered } );
+                        op.start();
+                        b.query_next()->set_value( wa_counted{ 5 } );
+                        CHECK( wa_counted::alive == 1 );
+                        CHECK( !a.empty() );
+                }
+                CHECK( a.empty() );
+                CHECK( delivered == -1 );
+        }
+        SUBCASE( "delivered" )
+        {
+                {
+                        auto op = ecor::when_any( a.schedule(), b.schedule() )
+                                      .connect( wa_counted_recv{ &delivered } );
+                        op.start();
+                        b.query_next()->set_value( wa_counted{ 5 } );
+                        CHECK( a.query_next() == nullptr );
+                        CHECK( delivered == 5 );
+                        CHECK( wa_counted::alive == 1 );
+                }
+        }
+        CHECK( wa_counted::alive == 0 );
+}
+
+using wa_str_source_t = ll_source<
+    unit,
+    set_value_t( std::string ),
+    set_error_t( std::string ),
+    set_stopped_t(),
+    get_stopped_t() >;
+
+struct wa_str_recv
+{
+        using receiver_concept = receiver_t;
+
+        std::string* out;
+
+        void set_value( std::string s )
+        {
+                *out = "value " + s;
+        }
+
+        void set_error( std::string s )
+        {
+                *out = "error " + s;
+        }
+
+        void set_stopped()
+        {
+                *out = "stopped";
+        }
+
+        [[nodiscard]] empty_env get_env() const noexcept
+        {
+                return {};
+        }
+};
+
+TEST_CASE( "when_any - a string error wins over a later string value" )
+{
+        wa_str_source_t a, b;
+        std::string     out;
+        auto op = ecor::when_any( a.schedule(), b.schedule() ).connect( wa_str_recv{ &out } );
+        op.start();
+
+        b.query_next()->set_error( std::string( 64, 'e' ) );
+        a.query_next_unchecked()->set_value( std::string( 64, 'v' ) );
+        CHECK( out == "error " + std::string( 64, 'e' ) );
+}
+
+/// The receiver of a task, whose environment carries `parent`'s stop token.
+struct wa_parent_recv
+{
+        using receiver_concept = receiver_t;
+
+        inplace_stop_source* parent;
+
+        void set_value() noexcept
+        {
+        }
+
+        void set_error( auto&& /*e*/ ) noexcept
+        {
+        }
+
+        void set_stopped() noexcept
+        {
+        }
+
+        [[nodiscard]] stop_token_env< inplace_stop_token > get_env() const noexcept
+        {
+                return { parent->get_token() };
+        }
+};
+
+static ecor::task< void, _owning_cfg > test_when_any_owning_f(
+    task_ctx&,
+    wa_task_source_t& a,
+    wa_task_source_t& b,
+    int&              result,
+    bool&             completed )
+{
+        result    = co_await ecor::when_any( a.schedule(), b.schedule() );
+        completed = true;
+}
+
+TEST_CASE( "when_any - a task destroyed while it awaits when_any leaves nothing registered" )
+{
+        nd_mem              mem;
+        task_ctx            ctx{ mem };
+        wa_task_source_t    a, b;
+        int                 result    = -1;
+        bool                completed = false;
+        inplace_stop_source parent;
+
+        SUBCASE( "default configuration" )
+        {
+                auto h = test_when_any_f( ctx, a, b, result, completed )
+                             .connect( wa_parent_recv{ &parent } );
+                h.start();
+                ctx.core.run_once();
+                CHECK( !a.empty() );
+                CHECK( !b.empty() );
+        }
+        SUBCASE( "promise_owns_operations" )
+        {
+                auto h = test_when_any_owning_f( ctx, a, b, result, completed )
+                             .connect( wa_parent_recv{ &parent } );
+                h.start();
+                ctx.core.run_once();
+                CHECK( !a.empty() );
+                CHECK( !b.empty() );
+        }
+        CHECK( a.empty() );
+        CHECK( b.empty() );
+        parent.request_stop();
+        CHECK( !completed );
+}
+
+TEST_CASE( "when_any - a stop of the task's parent completes the task stopped" )
+{
+        nd_mem              mem;
+        task_ctx            ctx{ mem };
+        wa_task_source_t    a, b;
+        int                 result    = -1;
+        bool                completed = false;
+        inplace_stop_source parent;
+        auto                h =
+            test_when_any_f( ctx, a, b, result, completed ).connect( wa_parent_recv{ &parent } );
+        h.start();
+        ctx.core.run_once();
+
+        parent.request_stop();
+        CHECK( a.query_next() == nullptr );
+        CHECK( b.query_next() == nullptr );
+        ctx.core.run_once();
+        CHECK( !completed );
+        CHECK( result == -1 );
+}
+
+/// Completes with `v`, then requests a stop on `stop`, both inside `start()`.
+struct wa_value_then_stop
+{
+        using sender_concept        = sender_t;
+        using completion_signatures = ecor::completion_signatures< set_value_t( int ) >;
+
+        inplace_stop_source* stop;
+        int                  v;
+
+        template < receiver R >
+        struct op
+        {
+                using operation_state_concept = operation_state_t;
+
+                inplace_stop_source* stop;
+                int                  v;
+                R                    r;
+
+                void start()
+                {
+                        auto* s = stop;
+                        r.set_value( v );
+                        s->request_stop();
+                }
+        };
+
+        template < receiver R >
+        op< R > connect( R r )
+        {
+                return { stop, v, std::move( r ) };
+        }
+};
+
+/// Requests a stop on `stop`, then completes stopped, both inside `start()`.
+struct wa_stop_then_stopped
+{
+        using sender_concept        = sender_t;
+        using completion_signatures = ecor::completion_signatures< set_stopped_t() >;
+
+        inplace_stop_source* stop;
+
+        template < receiver R >
+        struct op
+        {
+                using operation_state_concept = operation_state_t;
+
+                inplace_stop_source* stop;
+                R                    r;
+
+                void start()
+                {
+                        stop->request_stop();
+                        r.set_stopped();
+                }
+        };
+
+        template < receiver R >
+        op< R > connect( R r )
+        {
+                return { stop, std::move( r ) };
+        }
+};
+
+TEST_CASE( "when_any - a receiver stopped inside the winner's completion completes stopped" )
+{
+        wa_source_t         b;
+        wa_log              log;
+        inplace_stop_source stop;
+        auto                op = ecor::when_any( wa_value_then_stop{ &stop, 4 }, b.schedule() )
+                                     .connect( wa_recv{ &log, &stop } );
+        op.start();
+
+        CHECK( log.calls() == 0 );
+        CHECK( b.query_next() == nullptr );
+        CHECK( log.stops == 1 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE( "when_any - a stop requested during start() before every operand started" )
+{
+        wa_log              log;
+        inplace_stop_source stop;
+        auto                op = ecor::when_any( wa_stop_then_stopped{ &stop }, ecor::just( 2 ) )
+                                     .connect( wa_recv{ &log, &stop } );
+        op.start();
+
+        CHECK( log.stops == 1 );
+        CHECK( log.calls() == 1 );
+}
+
+TEST_CASE(
+    "when_any - every operand completes inside start() under a stop, the receiver destroys it" )
+{
+        std::vector< std::string > log;
+        op_slot                    slot;
+        inplace_stop_source        stop;
+        stop.request_stop();
+        auto& op = slot.emplace_from( [&] {
+                return ecor::when_any( ecor::just( 1 ), ecor::just( 2 ) )
+                    .connect( self_destroying_recv{ &log, &slot, stop.get_token() } );
+        } );
+        op.start();
+
+        CHECK( log == std::vector< std::string >{ "stopped" } );
+        CHECK( slot.untouched() );
 }
 
 TEST_CASE( "_align_idx" )

@@ -36,6 +36,7 @@
 #include <new>
 #include <optional>
 #include <span>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -164,6 +165,19 @@ struct _all_distinct< T, Ts... >
         static constexpr bool value =
             !_contains_type< T, Ts... >::value && _all_distinct< Ts... >::value;
 };
+
+/// The smallest unsigned integer type that holds `Max`.
+template < std::uint64_t Max >
+using _uint_for_t = std::conditional_t<
+    Max <= std::numeric_limits< std::uint8_t >::max(),
+    std::uint8_t,
+    std::conditional_t<
+        Max <= std::numeric_limits< std::uint16_t >::max(),
+        std::uint16_t,
+        std::conditional_t<
+            Max <= std::numeric_limits< std::uint32_t >::max(),
+            std::uint32_t,
+            std::uint64_t > > >;
 
 /// Typed view over a list of `Link` nodes that holds only `T`s, restoring `T` at the API
 /// boundary while every list over `Link` shares one instance of the list code. Each list is
@@ -365,6 +379,28 @@ struct _filter_basic_signatures< completion_signatures< Acc... >, completion_sig
 template < typename Sigs >
 using _filter_basic_signatures_t =
     typename _filter_basic_signatures< completion_signatures<>, Sigs >::type;
+
+template < typename S >
+struct _decay_signature;
+
+template < typename Tag, typename... Args >
+struct _decay_signature< Tag( Args... ) >
+{
+        using type = Tag( std::decay_t< Args >... );
+};
+
+template < typename Sigs >
+struct _decay_sigs;
+
+template < typename... S >
+struct _decay_sigs< completion_signatures< S... > >
+{
+        using type = completion_signatures< typename _decay_signature< S >::type... >;
+};
+
+/// `Sigs` with every argument decayed; may contain duplicates.
+template < typename Sigs >
+using _decay_sigs_t = typename _decay_sigs< Sigs >::type;
 
 /// Check whether a `completion_signatures<S...>` type contains `get_stopped_t()`.
 template < typename Sigs >
@@ -1799,6 +1835,11 @@ struct get_stop_token_t
 /// CPO for getting the stop token from the environment. If the environment does not have a stop
 /// token, returns a never_stop_token that cannot be stopped.
 inline constexpr get_stop_token_t get_stop_token{};
+
+/// The stop token type that `get_stop_token` gives for an environment of type `Env`.
+template < typename Env >
+using _stop_token_of_t =
+    std::remove_cvref_t< decltype( get_stop_token( std::declval< Env const& >() ) ) >;
 
 /// A minimal environment that carries a stop token and satisfies `get_stop_token` queries.
 /// `Token` may be a value type or a reference type — e.g. `inplace_stop_token` or
@@ -4029,116 +4070,384 @@ private:
 
 /// -------------------------------------------------------------------------------
 
-template < typename S1, typename S2, typename R >
-struct _or_op
+/// `Count` holds the number of operands plus one.
+template < typename Count >
+struct _when_any_core
 {
-        using operation_state_concept = operation_state_t;
+        using finish_fn = void ( * )( _when_any_core&, bool destroy ) noexcept;
 
-        _or_op( S1 s1, S2 s2, R r )
-          : _recv( std::move( r ) )
-          , _op1( std::move( s1 ).connect( _r{ ._fired = _fired, ._recv = _recv } ) )
-          , _op2( std::move( s2 ).connect( _r{ ._fired = _fired, ._recv = _recv } ) )
+        explicit _when_any_core( Count pending ) noexcept
+          : _pending( pending )
         {
         }
 
-        // XXX: cancel of the other one shall be used instead
-        void start()
+        /// Arrives after the stop request, so that no completion inside it is the last one,
+        /// which may destroy this object.
+        ECOR_NOINLINE void _won( finish_fn finish ) noexcept
         {
-                _op1.start();
-                _op2.start();
+                _finish = finish;
+                _stop.request_stop();
+                _arrive();
         }
+
+        ECOR_NOINLINE void _arrive() noexcept
+        {
+                if ( --_pending == 0 )
+                        _finish( *this, false );
+        }
+
+        /// The stop request counts as a completion in flight, so that no completion inside it is
+        /// the last one.
+        ECOR_NOINLINE void _stop_all() noexcept
+        {
+                ++_pending;
+                _stop.request_stop();
+                _arrive();
+        }
+
+        inplace_stop_source _stop;
+        finish_fn           _finish = nullptr;
+        Count               _pending;
+};
+
+template < typename Count >
+struct _when_any_on_stop
+{
+        _when_any_core< Count >* _op;
+
+        void operator()() noexcept
+        {
+                _op->_stop_all();
+        }
+};
+
+template < typename Sig >
+struct _when_any_slot;
+
+template < typename... A >
+struct _when_any_slot< set_value_t( A... ) >
+{
+        using type = std::tuple< A... >;
+
+        template < typename R >
+        static void deliver( R& r, type& t ) noexcept
+        {
+                std::apply(
+                    [&]( A&... a ) {
+                            r.set_value( std::move( a )... );
+                    },
+                    t );
+        }
+};
+
+template < typename E >
+struct _when_any_slot< set_error_t( E ) >
+{
+        using type = std::tuple< E >;
+
+        template < typename R >
+        static void deliver( R& r, type& t ) noexcept
+        {
+                r.set_error( std::move( std::get< 0 >( t ) ) );
+        }
+};
+
+template <>
+struct _when_any_slot< set_stopped_t() >
+{
+        using type = std::tuple<>;
+
+        template < typename R >
+        static void deliver( R& r, type& /*t*/ ) noexcept
+        {
+                r.set_stopped();
+        }
+};
+
+template < typename Env >
+struct _when_any_env
+{
+        inplace_stop_token         _token;
+        ECOR_NO_UNIQUE_ADDRESS Env _env;
+
+        [[nodiscard]] inplace_stop_token query( get_stop_token_t /*tag*/ ) const noexcept
+        {
+                return _token;
+        }
+
+        template < typename Tag >
+                requires(
+                    !std::same_as< Tag, get_stop_token_t > &&
+                    requires( Env const& e, Tag t ) { e.query( t ); } )
+        [[nodiscard]] decltype( auto ) query( Tag t ) const noexcept
+        {
+                return _env.query( t );
+        }
+};
+
+template < typename R, typename Sigs, typename Count >
+struct _when_any_op_base;
+
+template < typename R, typename... Sigs, typename Count >
+struct _when_any_op_base< R, completion_signatures< Sigs... >, Count > : _when_any_core< Count >
+{
+        template < typename Sig >
+        using _stored_t = typename _when_any_slot< Sig >::type;
+
+        using _env_t    = std::remove_cvref_t< env_type< R > >;
+        using _rtoken_t = _stop_token_of_t< _env_t >;
+
+        static constexpr bool _stoppable = !std::same_as< _rtoken_t, never_stop_token >;
+        static constexpr bool _trivial =
+            ( std::is_trivially_destructible_v< _stored_t< Sigs > > && ... );
+        static constexpr std::size_t _result_size = std::max( { sizeof( _stored_t< Sigs > )... } );
+        static constexpr std::size_t _result_align =
+            std::max( { alignof( _stored_t< Sigs > )... } );
+
+        using _callback_t =
+            typename _rtoken_t::template callback_type< _when_any_on_stop< Count > >;
 
         struct _r
         {
                 using receiver_concept = receiver_t;
 
-                bool& _fired;
-                R&    _recv;
+                _when_any_op_base* _op;
 
                 template < typename... Args >
-                void set_value( Args&&... v )
+                void set_value( Args&&... args ) noexcept
                 {
-                        if ( _fired )
-                                return;
-                        _fired = true;
-                        _recv.set_value( (Args&&) v... );
+                        _op->template _complete< set_value_t( std::decay_t< Args >... ) >(
+                            (Args&&) args... );
                 }
 
-                template < typename T >
-                void set_error( T&& e )
+                template < typename E >
+                void set_error( E&& e ) noexcept
                 {
-                        if ( _fired )
-                                return;
-                        _fired = true;
-                        _recv.set_error( (T&&) e );
+                        _op->template _complete< set_error_t( std::decay_t< E > ) >( (E&&) e );
                 }
 
-                // XXX: investigate whenever this should cancel the other operation
-                void set_stopped()
+                void set_stopped() noexcept
                 {
-                        if ( _fired )
-                                return;
-                        _fired = true;
-                        _recv.set_stopped();
+                        _op->template _complete< set_stopped_t() >();
                 }
 
-                decltype( auto ) get_env() noexcept
+                [[nodiscard]] _when_any_env< _env_t > get_env() const noexcept
                 {
-                        return ecor::get_env( _recv );
+                        return { _op->_stop.get_token(), ecor::get_env( _op->_recv ) };
                 }
         };
 
-        R    _recv;
-        bool _fired = false;
-
-        connect_type< S1, _r > _op1{};
-        connect_type< S2, _r > _op2{};
-};
-
-template < typename S1, typename S2 >
-struct _or_sender
-{
-        using sender_concept = sender_t;
-
-        _or_sender( S1 s1, S2 s2 )
-          : _s1( std::move( s1 ) )
-          , _s2( std::move( s2 ) )
+        _when_any_op_base( R r, Count pending ) noexcept(
+            std::is_nothrow_move_constructible_v< R > )
+          : _when_any_core< Count >( pending )
+          , _recv( std::move( r ) )
         {
         }
 
-        template < typename Env >
-        using _completions =
-            _sigs_merge_t< _sender_completions_t< S1, Env >, _sender_completions_t< S2, Env > >;
+        ~_when_any_op_base()
+                requires( _trivial )
+        = default;
+
+        ~_when_any_op_base()
+                requires( !_trivial )
+        {
+                if ( this->_finish )
+                        this->_finish( *this, true );
+        }
+
+        template < typename Sig, typename... Args >
+        void _complete( Args&&... args ) noexcept
+        {
+                static_assert(
+                    _contains_type< Sig, Sigs... >::value,
+                    "an operand completed with a signature its completion signatures do not list" );
+                if ( this->_finish ) {
+                        this->_arrive();
+                        return;
+                }
+                ::new ( static_cast< void* >( _result ) ) _stored_t< Sig >( (Args&&) args... );
+                this->_won( &_finish_of< Sig > );
+        }
+
+        bool _finish_stopped() noexcept
+        {
+                if constexpr ( _stoppable ) {
+                        _rcb.reset();
+                        if ( get_stop_token( ecor::get_env( _recv ) ).stop_requested() ) {
+                                _recv.set_stopped();
+                                return true;
+                        }
+                }
+                return false;
+        }
+
+        template < typename Sig >
+        static void _finish_of( _when_any_core< Count >& core, bool destroy ) noexcept
+        {
+                auto& op     = static_cast< _when_any_op_base& >( core );
+                auto& stored = *std::launder( reinterpret_cast< _stored_t< Sig >* >( op._result ) );
+                if ( destroy ) {
+                        std::destroy_at( &stored );
+                        return;
+                }
+                if ( op._finish_stopped() )
+                        return;
+                _when_any_slot< Sig >::deliver( op._recv, stored );
+        }
+
+        R _recv;
+        /// Holds the first completion's `_stored_t` whenever `_finish` is set.
+        alignas( _result_align ) unsigned char _result[_result_size];
+        ECOR_NO_UNIQUE_ADDRESS std::conditional_t< _stoppable, std::optional< _callback_t >, unit >
+                               _rcb;
+};
+
+template < typename R, typename... Ss >
+struct _when_any_ops
+{
+        explicit _when_any_ops( R /*r*/ ) noexcept
+        {
+        }
+
+        static void start() noexcept
+        {
+        }
+};
+
+template < typename R, typename S, typename... Ss >
+struct _when_any_ops< R, S, Ss... > : _when_any_ops< R, Ss... >
+{
+        _when_any_ops( R r, S& s, Ss&... ss )
+          : _when_any_ops< R, Ss... >( r, ss... )
+          , _op( std::move( s ).connect( r ) )
+        {
+        }
+
+        void start()
+        {
+                _op.start();
+                _when_any_ops< R, Ss... >::start();
+        }
+
+        connect_type< S, R > _op;
+};
+
+template < typename R, typename Sigs, typename... Ss >
+struct _when_any_op : _when_any_op_base< R, Sigs, _uint_for_t< sizeof...( Ss ) + 1 > >
+{
+        using operation_state_concept = operation_state_t;
+        using _count_t                = _uint_for_t< sizeof...( Ss ) + 1 >;
+        using _base                   = _when_any_op_base< R, Sigs, _count_t >;
+        using _r                      = typename _base::_r;
+
+        _when_any_op( R r, Ss&... ss )
+          : _base( std::move( r ), sizeof...( Ss ) )
+          , _ops( _r{ this }, ss... )
+        {
+        }
+
+        /// Touches nothing after the operands' `start()`: the last may destroy this object.
+        void start() noexcept
+        {
+                if constexpr ( _base::_stoppable )
+                        this->_rcb.emplace(
+                            get_stop_token( ecor::get_env( this->_recv ) ),
+                            _when_any_on_stop< _count_t >{ this } );
+                _ops.start();
+        }
+
+        _when_any_ops< _r, Ss... > _ops;
+};
+
+template < typename... Ss >
+struct _when_any_sender
+{
+        using sender_concept = sender_t;
+
+        _when_any_sender( Ss... ss )
+          : _ss( std::move( ss )... )
+        {
+        }
+
+        template < typename S, typename Env >
+        using _operand_completions =
+            _decay_sigs_t< _sender_completions_t< S, _when_any_env< Env > > >;
 
         template < typename Env >
-        _completions< Env > get_completion_signatures( Env&& /*env*/ ) noexcept
+        using _stopped = std::conditional_t<
+            std::same_as< _stop_token_of_t< Env >, never_stop_token >,
+            completion_signatures<>,
+            completion_signatures< set_stopped_t() > >;
+
+        template < typename Env >
+        using _completions = _sigs_merge_t< _operand_completions< Ss, Env >..., _stopped< Env > >;
+
+        template < typename R >
+        using _op_t =
+            _when_any_op< R, _completions< std::remove_cvref_t< env_type< R > > >, Ss... >;
+
+        template < typename Env >
+        _completions< std::remove_cvref_t< Env > >
+        get_completion_signatures( Env&& /*env*/ ) noexcept
         {
                 return {};
         }
 
-
         template < receiver R >
-        _or_op< S1, S2, R > connect( R receiver )
+        _op_t< R > connect( R receiver )
         {
                 static_assert(
-                    receiver_for< R, _or_sender >,
-                    "Receiver does not satisfy the requirements for the combined completion signatures of the two senders" );
-                return { std::move( _s1 ), std::move( _s2 ), std::move( receiver ) };
+                    receiver_for< R, _when_any_sender >,
+                    "Receiver does not satisfy the requirements for the combined completion signatures of the senders" );
+                return std::apply(
+                    [&]( Ss&... ss ) {
+                            return _op_t< R >( std::move( receiver ), ss... );
+                    },
+                    _ss );
+        }
+
+        template < sender S >
+        _when_any_sender< Ss..., S > _append( S s ) &&
+        {
+                return std::apply(
+                    [&]( Ss&... ss ) {
+                            return _when_any_sender< Ss..., S >(
+                                std::move( ss )..., std::move( s ) );
+                    },
+                    _ss );
         }
 
 private:
-        S1 _s1;
-        S2 _s2;
+        std::tuple< Ss... > _ss;
 };
 
-/// XXX: not recommended for production use, is not safe - lifetime of the senders is not managed in
-/// any way, and it's on the user to ensure that they are valid until the completion of the
-/// operation. This is mostly intended for testing and demonstration purposes, and should be used
-/// with caution in production code.
-template < typename S1, typename S2 >
-_or_sender< S1, S2 > operator||( S1 s1, S2 s2 )
+/// Starts every sender and, once all have completed, completes with the first completion,
+/// value, error or stopped; the others are asked to stop and their completions dropped. A
+/// receiver whose stop was requested gets `set_stopped()`. `a || b` builds the same sender.
+///
+/// Usage: `auto v = co_await ecor::when_any( a.schedule(), b.schedule() );`
+struct _when_any_t
+{
+        template < sender... Ss >
+                requires( sizeof...( Ss ) > 0 )
+        _when_any_sender< Ss... > operator()( Ss... ss ) const
+        {
+                return { std::move( ss )... };
+        }
+};
+
+inline constexpr _when_any_t when_any{};
+
+template < sender S1, sender S2 >
+_when_any_sender< S1, S2 > operator||( S1 s1, S2 s2 )
 {
         return { std::move( s1 ), std::move( s2 ) };
+}
+
+template < sender... Ss, sender S >
+_when_any_sender< Ss..., S > operator||( _when_any_sender< Ss... > o, S s )
+{
+        return std::move( o )._append( std::move( s ) );
 }
 
 /// -------------------------------------------------------------------------------

@@ -862,18 +862,31 @@ void check_memory() {
 
 ecor provides P2300-style sender combinators for composing async operations.
 
-### or - Race Multiple Senders
+### when_any - Race Multiple Senders
 
-Passess calls to the first sender that completes (value, error, or stopped), other is ignored.
+`ecor::when_any(a, b, ...)` starts every sender and completes with whichever completion comes
+first: a value, an error or stopped. `a || b || ...` builds the same sender. The other senders
+are then asked to stop, and the result arrives once every one of them has finished. A stop
+request on the awaiting task reaches every sender, and the result is then `set_stopped()`.
 
 ```cpp
-ecor::task<void> example(ecor::task_ctx& ctx, auto sender1, auto sender2) {
-    // Race two async operations
-    auto winner = co_await (sender1 || sender2);
-    // Completes with whichever finishes first
+using button_events = ecor::ll_source<
+    ecor::unit,
+    ecor::set_value_t(int),
+    ecor::set_stopped_t(),
+    ecor::get_stopped_t()>;
+
+ecor::task<void> first_press(ecor::task_ctx& ctx, button_events& left, button_events& right) {
+    // The value of whichever source fires first
+    int button = co_await ecor::when_any(left.schedule(), right.schedule());
+    (void) button;
     co_return;
 }
 ```
+
+> An `ll_source` or `seq_source` entry sees the stop request only when its driver's
+> `query_next()` reaches it, so `when_any` completes once the drivers of the other sources have
+> polled.
 
 ### as_variant - Handle Multiple Completions
 

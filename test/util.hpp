@@ -124,7 +124,7 @@ struct op_slot
                 } );
         }
 
-        alignas( std::max_align_t ) unsigned char bytes[256];
+        alignas( std::max_align_t ) unsigned char bytes[2048];
         void ( *destroy_op )( void* ) noexcept = nullptr;
 };
 

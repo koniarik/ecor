@@ -26,6 +26,7 @@ Each module in `scenarios/` is a family with its dimensions in its docstring:
 | `coroutine` | the fixed cost of one coroutine function, as the slope between 1 and 16 coroutines |
 | `awaited` | one coroutine awaiting 1 to 8 sources or child tasks of one or of distinct value types |
 | `co_await` | one `co_await` of each kind of awaitable, as the slope between 8 and 16 awaits |
+| `or` | chains `a \|\| b \|\| ...` of 1 to 8 operands, of one sender type and of four, awaited or connected |
 | `source` | `ll_source` and `seq_source` count, stop polling, draining, awaiting |
 | `holder` | holders per program, factory type, distinct coroutine bodies, stopping |
 | `arena` | arenas, distinct memory resource types, object types |

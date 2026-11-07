@@ -158,9 +158,6 @@ pitfalls from the work; the size lessons are in the code-size skill:
   and deallocates an item node. A waiter's `_receive()` owns the node it took and passes it to the
   queue's `_release()`, which knows the set and completes a call through the nullary value row;
   only a pump holding a call keeps the node instead.
-- **`||` with a class operand inside `ecor.hpp` resolves to the sender `operator||`**, which is
-  unconstrained: `cond || _slot` tried to copy an `inplace_variant` into an `_or_sender`. Write
-  `static_cast< bool >( x )` for a class operand.
 - **A receiver may destroy its operation state in any completion**, including the stopped one
   that a stop requested before `start()` fires from inside the stop callback's registration.
   Save in locals whatever the code still needs before completing, and check `stop_requested()`
@@ -239,6 +236,42 @@ measured alternatives are in the code-size skill:
   directly; only the stop callback and the `close()` nudge use the stopped row.
 - **A receiver written for `pop()` may not fit `pop_value()`.** One that takes `T&` cannot bind
   the rvalue; a receiver taking `T` or `T&&` serves both senders.
+
+### Feature Implementation Reference: `when_any`
+
+`ecor::when_any( a, b, c )`, and `a || b || c`, which builds the same sender, follow stdexec's
+`exec::when_any`: the first completion is stored, the other operands are asked to stop, and the
+receiver completes once every operand has completed. Patterns and pitfalls from the work:
+
+- **Nothing inside a `request_stop()` loop may be the last completion.** The last one may
+  destroy the operation, and with it the stop source whose callback list the loop still walks.
+  The winner arrives only after it has requested stop, and a stop request of the receiver is
+  counted as one more completion in flight while it runs, so the count cannot reach zero inside
+  either loop.
+- **Completion signatures depend on the environment.** `set_stopped_t()` is added only when the
+  receiver's stop token can stop, and the operands' completions are taken with the environment
+  they see, `_when_any_env`. Storage is sized from those signatures, so the store
+  static_asserts that an operand's completion is among them.
+- **ecor's sources see a stop request only when polled.** An `ll_source` or `seq_source` entry
+  with `get_stopped_t()` completes stopped when its driver's `query_next()` reaches it, so a
+  `when_any` over such an operand waits for that driver. Tests drive the losers to completion
+  with `query_next()`, which drains stopped entries; stop callbacks in the sources are todo
+  item 36.
+- **Test the stop loops with operands that complete inside a stop callback.** An `ll_source`
+  entry never does, so it cannot reach the invariant above; `async_queue::pop_value()` with a
+  cancellable `pop_api` completes stopped from its callback. Such an operation state needs the
+  2048 bytes of `op_slot`.
+- **`unstoppable_token` holds for `inplace_stop_token`**: it evaluates `Token{}.stop_possible()`,
+  which is a constant `false` for a token without a source. Test for `never_stop_token` instead.
+- **Keep the counting out of the receiver's template.** `_when_any_core< Count >` holds the stop
+  source, the count and the function that finishes the operation, with out-of-line `_won()`,
+  `_arrive()` and `_stop_all()` shared by every `when_any` with the same counter type, the
+  smallest that holds the operand count plus one; only the store and one finishing function per
+  completion signature are compiled per receiver.
+- **The stop callback on the receiver's token stays in a `std::optional`.** Destroying a
+  suspended task destroys a started `when_any`, so the operation must know whether the callback
+  is still registered. One path serves every token type; `wa_other_token` in the tests is a
+  minimal stoppable token that is not an `inplace_stop_token`.
 
 ## Source comments
 

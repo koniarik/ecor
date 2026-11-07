@@ -517,6 +517,32 @@ such pumps, up to 692 at eight. A one-pump probe sees only the cost: without LTO
 and 16 to 28 on a stoppable pump, where the stop source's non-trivial destructor gave the
 shared core a 12-byte vtable of its own while `schedulable` was polymorphic; with LTO none.
 
+### Flatten a chain of a binary combinator into one operation
+
+`a || b || c || d` built three nested operations, each with a child receiver type of its own,
+so every nesting level instantiated its operands' operation states, their vtables and rows, and
+its own completion functions again. One variadic `_when_any_op`, whose operands all connect to
+one receiver holding a pointer to the shared part, and an `operator||` overload that appends to
+a `_when_any_sender` instead of nesting it: on a plain receiver −10 at two operands of one type,
+−134 at four and −422 at eight; −278 at four operands of four types and −1168 at eight; in a
+task −168 at four and −468 at eight (`or` family, before `when_any`'s stop handling). The
+operands start in a recursive `_when_any_ops` base chain, which builds each operation state
+from its `connect()` prvalue: a `std::tuple` of operation states would need them movable.
+
+`when_any`'s stop handling and its stored result, on top of that: +110 to +176 on a plain receiver
+without a stop token; +294 to +392 in a task with operands of one type, of which ~120 is the stop
+callback machinery (`_register`, `request_stop`, zll's `_link`) that any other stop callback in a
+firmware already pays and 56 the shared `_when_any_core`. Each distinct completion signature costs a
+finishing function and a store: a child task among four operand types, +308 to +1162. Building an
+`inplace_stop_token`'s callback into the core as a node, instead of
+`std::optional< inplace_stop_callback< F > >`, measured −1334 on the `or` family (about −38 per
+`when_any` in a task) and 8 bytes of RAM less, and was declined: one path for every token type is
+worth more than that. Moving the callback reset and the stop check out of the per-signature
+finishing functions into one function per receiver pays only inlined: −8 to −42 with mixed types,
+nothing with one; out of line, +14 (`doc/plans/whenany.md`). Against the nested form `when_any` is
+smaller at eight operands (−140 to −992) and on a plain receiver from four (−20, −114), larger in a
+task up to four (+128 to +522).
+
 ### Key an awaitable on the promise's configuration-level base
 
 `_task_awaitable_base< PromiseType, V >` and its `_receiver` were keyed on the awaiting
