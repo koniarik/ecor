@@ -1767,7 +1767,7 @@ namespace
         {
                 static constexpr bool is_stoppable = true;
         };
-        using pump_t = event_pump< pump_cfg, q_t, rec_handler >;
+        using pump_t = event_pump< pump_cfg, q_t, rec_handler& >;
 
         /// A plain queue — trivially copyable elements and no `pop()` — from which the pump takes
         /// its events byte-wise.
@@ -1991,7 +1991,7 @@ namespace
                 std::ignore = ctx;
         }
 
-        using blocking_pump_t = event_pump< pump_cfg, q_t, blocking_handler >;
+        using blocking_pump_t = event_pump< pump_cfg, q_t, blocking_handler& >;
 }  // namespace
 
 TEST_CASE( "event_pump - stop() must not destroy a handler that is still blocked" )
@@ -2089,10 +2089,60 @@ namespace
 
         using hook_q = async_queue< minimal_cfg, int >;
         using error_hook_pump_t =
-            event_pump< pump_default_cfg< task_ctx, task< void > >, hook_q, error_hook_handler >;
+            event_pump< pump_default_cfg< task_ctx, task< void > >, hook_q, error_hook_handler& >;
         using hookless_pump_t =
             event_pump< pump_default_cfg< task_ctx, task< void > >, hook_q, hookless_handler >;
+
+        struct counting_handler
+        {
+                int seen = 0;
+        };
+
+        task< void > handle( task_ctx& ctx, counting_handler& h, int& ev )
+        {
+                h.seen += ev;
+                std::ignore = ctx;
+                co_return;
+        }
+
+        struct empty_handler
+        {
+        };
+
+        template < typename Handler >
+        using hook_q_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, hook_q, Handler >;
 }  // namespace
+
+TEST_CASE( "event_pump - keeps its own handler, or refers to one given as a reference type" )
+{
+        static_assert(
+            sizeof( hook_q_pump_t< empty_handler > ) < sizeof( hook_q_pump_t< empty_handler& > ) );
+
+        nd_mem           mem;
+        task_ctx         ctx{ mem };
+        hook_q           q{ mem };
+        counting_handler h;
+
+        SUBCASE( "by value" )
+        {
+                hook_q_pump_t< counting_handler > p{ ctx, q, h };
+                p.start();
+                CHECK( q.try_push( 3 ) );
+                ctx.core.run_n( 16 );
+                CHECK( q.empty() );
+                CHECK( h.seen == 0 );
+        }
+        SUBCASE( "by reference" )
+        {
+                hook_q_pump_t< counting_handler& > p{ ctx, q, h };
+                p.start();
+                CHECK( q.try_push( 3 ) );
+                ctx.core.run_n( 16 );
+                CHECK( q.empty() );
+                CHECK( h.seen == 3 );
+        }
+}
 
 TEST_CASE( "event_pump - an on_error() hook runs next to a hook-less pump with the same sender" )
 {
@@ -2326,7 +2376,7 @@ namespace
         using typed_call_pump_t = event_pump<
             pump_default_cfg< task_ctx, task< void > >,
             typed_call_q,
-            typed_call_handler >;
+            typed_call_handler& >;
 
         /// Pump handler over `reply_q` returning the reply through its task.
         struct reply_handler

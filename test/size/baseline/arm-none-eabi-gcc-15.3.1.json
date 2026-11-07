@@ -964,35 +964,35 @@
    0
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0": [
-   131784,
+   131780,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0,cfg=owning": [
-   112060,
+   112056,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1": [
-   125232,
+   125228,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1,cfg=owning": [
-   104572,
+   104568,
    49292
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0": [
-   1471724,
+   1471612,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0,cfg=owning": [
-   1270200,
+   1270088,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1": [
-   1417616,
+   1417476,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1,cfg=owning": [
-   1202660,
+   1202524,
    49828
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0": [
@@ -1004,175 +1004,175 @@
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1": [
-   408624,
+   408620,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1,cfg=owning": [
-   345136,
+   345132,
    49420
   ],
   "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=call": [
-   2832,
+   2826,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=closeable": [
-   2150,
+   2144,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=default": [
-   2014,
+   2008,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=imm,types=1,qcfg=default": [
-   724,
+   720,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=imm,types=4,qcfg=call": [
-   1738,
+   1734,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=imm,types=4,qcfg=closeable": [
-   1014,
+   1010,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=imm,types=4,qcfg=default": [
-   880,
+   876,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=imm,types=8,qcfg=default": [
-   1028,
+   1024,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=task,types=1,qcfg=default": [
-   1172,
+   1168,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=task,types=4,qcfg=call": [
-   2802,
+   2798,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=task,types=4,qcfg=closeable": [
-   2124,
+   2120,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=task,types=4,qcfg=default": [
-   1988,
+   1984,
    0
   ],
   "pump/pumps=1,stoppable=0,handler=task,types=8,qcfg=default": [
-   2972,
+   2968,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=hooks,types=4,qcfg=call": [
-   3114,
+   3108,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=hooks,types=4,qcfg=closeable": [
-   2418,
+   2412,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=hooks,types=4,qcfg=default": [
-   2290,
+   2284,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=imm,types=1,qcfg=default": [
-   986,
+   982,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=imm,types=4,qcfg=call": [
-   2000,
+   1996,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=imm,types=4,qcfg=closeable": [
-   1268,
+   1264,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=imm,types=4,qcfg=default": [
-   1142,
+   1138,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=imm,types=8,qcfg=default": [
-   1290,
+   1286,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=task,types=1,qcfg=default": [
-   1440,
+   1436,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=task,types=4,qcfg=call": [
-   3084,
+   3080,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=task,types=4,qcfg=closeable": [
-   2388,
+   2384,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=task,types=4,qcfg=default": [
-   2260,
+   2256,
    0
   ],
   "pump/pumps=1,stoppable=1,handler=task,types=8,qcfg=default": [
-   3244,
+   3240,
    0
   ],
   "pump/pumps=2,stoppable=0,handler=imm,types=4,qcfg=default": [
-   1344,
+   1336,
    0
   ],
   "pump/pumps=2,stoppable=0,handler=task,types=4,qcfg=default": [
-   3330,
+   3322,
    0
   ],
   "pump/pumps=2,stoppable=1,handler=imm,types=4,qcfg=default": [
-   1704,
+   1696,
    0
   ],
   "pump/pumps=2,stoppable=1,handler=task,types=4,qcfg=default": [
-   3700,
+   3692,
    0
   ],
   "pump/pumps=4,stoppable=0,handler=imm,types=4,qcfg=default": [
-   2186,
+   2166,
    0
   ],
   "pump/pumps=4,stoppable=0,handler=task,types=4,qcfg=default": [
-   5914,
+   5894,
    0
   ],
   "pump/pumps=4,stoppable=1,handler=imm,types=4,qcfg=default": [
-   2696,
+   2680,
    0
   ],
   "pump/pumps=4,stoppable=1,handler=task,types=4,qcfg=default": [
-   6440,
+   6424,
    0
   ],
   "pump/pumps=8,stoppable=0,handler=imm,types=4,qcfg=default": [
-   3846,
+   3826,
    0
   ],
   "pump/pumps=8,stoppable=0,handler=task,types=4,qcfg=default": [
-   11038,
+   11018,
    0
   ],
   "pump/pumps=8,stoppable=1,handler=hooks,types=4,qcfg=default": [
-   13048,
+   12772,
    0
   ],
   "pump/pumps=8,stoppable=1,handler=imm,types=4,qcfg=default": [
-   4732,
+   4640,
    0
   ],
   "pump/pumps=8,stoppable=1,handler=task,types=4,qcfg=default": [
-   12144,
+   11876,
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
-   4452,
+   4448,
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
-   4748,
+   4744,
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1212,19 +1212,19 @@
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
-   3220,
+   3216,
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
-   3566,
+   3562,
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3426,
+   3422,
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3722,
+   3718,
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
@@ -1232,7 +1232,7 @@
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
-   5154,
+   5146,
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1276,15 +1276,15 @@
    0
   ],
   "queue/pop=cancellable,push=cancellable,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   4126,
+   4122,
    0
   ],
   "queue/pop=cancellable,push=parking,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
-   4452,
+   4448,
    0
   ],
   "queue/pop=cancellable,push=parking,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
-   4620,
+   4612,
    0
   ],
   "queue/pop=cancellable,push=parking,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1296,19 +1296,19 @@
    0
   ],
   "queue/pop=cancellable,push=parking,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
-   3220,
+   3216,
    0
   ],
   "queue/pop=cancellable,push=parking,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
-   3440,
+   3432,
    0
   ],
   "queue/pop=cancellable,push=parking,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3426,
+   3422,
    0
   ],
   "queue/pop=cancellable,push=parking,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3594,
+   3586,
    0
   ],
   "queue/pop=cancellable,push=parking,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
@@ -1316,7 +1316,7 @@
    0
   ],
   "queue/pop=cancellable,push=parking,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
-   5024,
+   5020,
    0
   ],
   "queue/pop=cancellable,push=parking,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1332,15 +1332,15 @@
    0
   ],
   "queue/pop=cancellable,push=parking,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3996,
+   3988,
    0
   ],
   "queue/pop=cancellable,push=try_only,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
-   4192,
+   4188,
    0
   ],
   "queue/pop=cancellable,push=try_only,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
-   4316,
+   4324,
    0
   ],
   "queue/pop=cancellable,push=try_only,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1380,27 +1380,27 @@
    0
   ],
   "queue/pop=cancellable,push=try_only,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
-   2958,
+   2954,
    0
   ],
   "queue/pop=cancellable,push=try_only,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
-   3136,
+   3132,
    0
   ],
   "queue/pop=cancellable,push=try_only,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3166,
+   3162,
    0
   ],
   "queue/pop=cancellable,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3290,
+   3286,
    0
   ],
   "queue/pop=cancellable,push=try_only,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
-   4534,
+   4522,
    0
   ],
   "queue/pop=cancellable,push=try_only,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
-   4662,
+   4674,
    0
   ],
   "queue/pop=cancellable,push=try_only,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1412,19 +1412,19 @@
    0
   ],
   "queue/pop=cancellable,push=try_only,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3502,
+   3498,
    0
   ],
   "queue/pop=cancellable,push=try_only,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3634,
+   3630,
    0
   ],
   "queue/pop=parking,push=cancellable,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
-   4452,
+   4448,
    0
   ],
   "queue/pop=parking,push=cancellable,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
-   4634,
+   4626,
    0
   ],
   "queue/pop=parking,push=cancellable,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1436,19 +1436,19 @@
    0
   ],
   "queue/pop=parking,push=cancellable,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
-   3220,
+   3216,
    0
   ],
   "queue/pop=parking,push=cancellable,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
-   3454,
+   3450,
    0
   ],
   "queue/pop=parking,push=cancellable,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3426,
+   3422,
    0
   ],
   "queue/pop=parking,push=cancellable,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3608,
+   3604,
    0
   ],
   "queue/pop=parking,push=cancellable,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
@@ -1456,7 +1456,7 @@
    0
   ],
   "queue/pop=parking,push=cancellable,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
-   5042,
+   5034,
    0
   ],
   "queue/pop=parking,push=cancellable,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1472,15 +1472,15 @@
    0
   ],
   "queue/pop=parking,push=cancellable,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   4010,
+   4006,
    0
   ],
   "queue/pop=parking,push=parking,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
-   4452,
+   4448,
    0
   ],
   "queue/pop=parking,push=parking,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
-   4504,
+   4500,
    0
   ],
   "queue/pop=parking,push=parking,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1520,19 +1520,19 @@
    0
   ],
   "queue/pop=parking,push=parking,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
-   3220,
+   3216,
    0
   ],
   "queue/pop=parking,push=parking,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
-   3276,
+   3272,
    0
   ],
   "queue/pop=parking,push=parking,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3426,
+   3422,
    0
   ],
   "queue/pop=parking,push=parking,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3482,
+   3478,
    0
   ],
   "queue/pop=parking,push=parking,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
@@ -1540,7 +1540,7 @@
    0
   ],
   "queue/pop=parking,push=parking,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
-   4912,
+   4908,
    0
   ],
   "queue/pop=parking,push=parking,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1556,15 +1556,15 @@
    0
   ],
   "queue/pop=parking,push=parking,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3880,
+   3876,
    0
   ],
   "queue/pop=parking,push=try_only,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
-   4192,
+   4188,
    0
   ],
   "queue/pop=parking,push=try_only,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
-   4200,
+   4196,
    0
   ],
   "queue/pop=parking,push=try_only,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1604,27 +1604,27 @@
    0
   ],
   "queue/pop=parking,push=try_only,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
-   2958,
+   2954,
    0
   ],
   "queue/pop=parking,push=try_only,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
-   2962,
+   2954,
    0
   ],
   "queue/pop=parking,push=try_only,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3166,
+   3162,
    0
   ],
   "queue/pop=parking,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3174,
+   3166,
    0
   ],
   "queue/pop=parking,push=try_only,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
-   4534,
+   4522,
    0
   ],
   "queue/pop=parking,push=try_only,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
-   4548,
+   4544,
    0
   ],
   "queue/pop=parking,push=try_only,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1636,19 +1636,19 @@
    0
   ],
   "queue/pop=parking,push=try_only,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3502,
+   3498,
    0
   ],
   "queue/pop=parking,push=try_only,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3516,
+   3508,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
-   4264,
+   4260,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
-   4442,
+   4438,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1660,35 +1660,35 @@
    0
   ],
   "queue/pop=try_only,push=cancellable,close=0,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
-   3180,
+   3176,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=0,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
-   3358,
+   3354,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
-   3028,
+   3024,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
-   3258,
+   3254,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3234,
+   3230,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3412,
+   3408,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
-   4610,
+   4606,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
-   4804,
+   4796,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1700,27 +1700,27 @@
    0
   ],
   "queue/pop=try_only,push=cancellable,close=1,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
-   3536,
+   3532,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=1,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
-   3730,
+   3726,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3582,
+   3578,
    0
   ],
   "queue/pop=try_only,push=cancellable,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3776,
+   3772,
    0
   ],
   "queue/pop=try_only,push=parking,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
-   4264,
+   4260,
    0
   ],
   "queue/pop=try_only,push=parking,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
-   4316,
+   4312,
    0
   ],
   "queue/pop=try_only,push=parking,close=0,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1732,35 +1732,35 @@
    0
   ],
   "queue/pop=try_only,push=parking,close=0,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
-   3180,
+   3176,
    0
   ],
   "queue/pop=try_only,push=parking,close=0,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
-   3232,
+   3224,
    0
   ],
   "queue/pop=try_only,push=parking,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
-   3028,
+   3024,
    0
   ],
   "queue/pop=try_only,push=parking,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
-   3080,
+   3076,
    0
   ],
   "queue/pop=try_only,push=parking,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3234,
+   3230,
    0
   ],
   "queue/pop=try_only,push=parking,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3286,
+   3282,
    0
   ],
   "queue/pop=try_only,push=parking,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
-   4610,
+   4606,
    0
   ],
   "queue/pop=try_only,push=parking,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
-   4668,
+   4664,
    0
   ],
   "queue/pop=try_only,push=parking,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -1772,51 +1772,51 @@
    0
   ],
   "queue/pop=try_only,push=parking,close=1,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
-   3536,
+   3532,
    0
   ],
   "queue/pop=try_only,push=parking,close=1,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
-   3594,
+   3586,
    0
   ],
   "queue/pop=try_only,push=parking,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3582,
+   3578,
    0
   ],
   "queue/pop=try_only,push=parking,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3636,
+   3628,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=full,stop=0,types=4,queues=1,owning=0": [
-   3996,
+   3992,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=1,queues=1,owning=0": [
-   2138,
+   2134,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=1,queues=1,owning=1": [
-   2282,
+   2278,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=4,queues=1,owning=0": [
-   3996,
+   3992,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=4,queues=1,owning=1": [
-   4428,
+   4420,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=4,queues=2,owning=0": [
-   6890,
+   6902,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=4,queues=4,owning=0": [
-   12666,
+   12638,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=8,queues=1,owning=0": [
-   6408,
+   6404,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=full,stop=1,types=8,queues=1,owning=1": [
@@ -1860,99 +1860,99 @@
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
-   2908,
+   2904,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=1,queues=1,owning=0": [
-   1592,
+   1588,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=1,queues=1,owning=1": [
-   1716,
+   1712,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
-   2908,
+   2904,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=4,queues=1,owning=1": [
-   3334,
+   3330,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=4,queues=2,owning=0": [
-   4906,
+   4898,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=4,queues=4,owning=0": [
-   8774,
+   8758,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=8,queues=1,owning=0": [
-   4560,
+   4556,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=reply_stop,stop=1,types=8,queues=1,owning=1": [
-   5416,
+   5412,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value,stop=0,types=4,queues=1,owning=0": [
-   2758,
+   2754,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value,stop=1,types=4,queues=1,owning=0": [
-   2758,
+   2754,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   2966,
+   2962,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=1,queues=1,owning=0": [
-   1680,
+   1676,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=1,queues=1,owning=1": [
-   1824,
+   1820,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   2966,
+   2962,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=1,owning=1": [
-   3398,
+   3394,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=2,owning=0": [
-   4982,
+   4974,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=4,queues=4,owning=0": [
-   8962,
+   8938,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=8,queues=1,owning=0": [
-   4546,
+   4542,
    0
   ],
   "queue/pop=try_only,push=try_only,close=0,call=value_stop,stop=1,types=8,queues=1,owning=1": [
-   5400,
+   5396,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=full,stop=0,types=4,queues=1,owning=0": [
-   4292,
+   4296,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=1,queues=1,owning=0": [
-   2402,
+   2398,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=1,queues=1,owning=1": [
-   2542,
+   2538,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=4,queues=1,owning=0": [
-   4302,
+   4306,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=4,queues=1,owning=1": [
@@ -1960,19 +1960,19 @@
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=4,queues=2,owning=0": [
-   7324,
+   7316,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=4,queues=4,owning=0": [
-   13248,
+   13232,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=8,queues=1,owning=0": [
-   6754,
+   6750,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=full,stop=1,types=8,queues=1,owning=1": [
-   7608,
+   7604,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=none,stop=0,types=4,queues=1,owning=0": [
@@ -2012,19 +2012,19 @@
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=reply_stop,stop=0,types=4,queues=1,owning=0": [
-   3222,
+   3218,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=reply_stop,stop=1,types=4,queues=1,owning=0": [
-   3232,
+   3228,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=value_stop,stop=0,types=4,queues=1,owning=0": [
-   3264,
+   3260,
    0
   ],
   "queue/pop=try_only,push=try_only,close=1,call=value_stop,stop=1,types=4,queues=1,owning=0": [
-   3274,
+   3270,
    0
   ],
   "ram/type=async_arena": [
@@ -2108,11 +2108,11 @@
    0
   ],
   "ram/type=pump": [
-   76,
+   72,
    0
   ],
   "ram/type=pump_stoppable": [
-   96,
+   92,
    0
   ],
   "ram/type=push_op_cancellable": [

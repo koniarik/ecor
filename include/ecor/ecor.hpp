@@ -7863,8 +7863,11 @@ struct _pump_has_hooks< H, completion_signatures< S... > >
 /// A running handler pins no queue memory, and receives its event by reference. Several pumps
 /// may share one queue.
 ///
-/// Preconditions: the context, queue and handler all outlive the pump, and the sender returned
-/// by `stop()` completes before the pump is destroyed.
+/// The pump keeps its own `Handler`; with a reference type, `Driver&`, it refers to the caller's
+/// object instead.
+///
+/// Preconditions: the context, the queue and a referred handler outlive the pump, and the sender
+/// returned by `stop()` completes before the pump is destroyed.
 template < pump_config CFG, typename Queue, typename Handler >
 struct event_pump : _pump_core< typename Queue::_call_sigs_t, Queue::_call, CFG::is_stoppable >,
                     _queue_waiter,
@@ -7880,12 +7883,13 @@ struct event_pump : _pump_core< typename Queue::_call_sigs_t, Queue::_call, CFG:
 
         static constexpr bool is_stoppable = CFG::is_stoppable;
 
-        event_pump( ctx_type& ctx, Queue& q, Handler& h ) noexcept
+        event_pump( ctx_type& ctx, Queue& q, Handler h ) noexcept(
+            std::is_nothrow_move_constructible_v< Handler > )
           : _call_base( get_task_core( ctx ), &schedulable::_resume_of< event_pump > )
           , _queue_waiter( _waiter_ops )
           , _ctx( ctx )
           , _q( q )
-          , _h( h )
+          , _h( (Handler&&) h )
         {
         }
 
@@ -8039,9 +8043,9 @@ private:
                 _reschedule();
         }
 
-        ctx_type& _ctx;
-        Queue&    _q;
-        Handler&  _h;
+        ctx_type&                      _ctx;
+        Queue&                         _q;
+        ECOR_NO_UNIQUE_ADDRESS Handler _h;
 
         event_type                      _slot;
         _bare_optional< _handler_op_t > _op;

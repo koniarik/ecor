@@ -1658,7 +1658,8 @@ expression that created it.
 user-supplied handler over each event in turn.
 
 Exactly one handler runs at a time: the sender it returns must complete before the next event
-is taken.
+is taken. The pump keeps its own copy of the handler; with a reference type,
+`event_pump<CFG, Queue, Driver&>`, it refers to an object you own, which must outlive it.
 
 ```cpp
 struct pump_mem {
