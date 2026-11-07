@@ -336,6 +336,13 @@ namespace
                 static constexpr bool            is_closeable = true;
         };
 
+        /// Consumers are cancellable and the queue cannot close: a parked consumer stops only
+        /// through its receiver's token.
+        struct cancellable_no_close_cfg : queue_default_cfg< nd_mem >
+        {
+                static constexpr async_queue_api pop_api = async_queue_api::cancellable;
+        };
+
         using q_t = async_queue< nd_cfg, int, std::string >;
 
 }  // namespace
@@ -1224,6 +1231,56 @@ TEST_CASE( "async_queue - push_api=parking ignores the receiver's stop token" )
         static_assert(
             !_queue_producer_stoppable< async_queue< cb_no_producer_stop_cfg, int >, sig_recv >,
             "producer cancellation must be gone" );
+}
+
+TEST_CASE( "async_queue - a parked pop() of a queue that cannot close stops through its token" )
+{
+        using q_nc = async_queue< cancellable_no_close_cfg, int >;
+        static_assert( _queue_consumer_stoppable< q_nc, pop_recv > );
+        static_assert( !_queue_consumer_stoppable< q_nc, plain_pop_recv > );
+        static_assert( !_has_close< q_nc > );
+
+        nd_mem                     mem;
+        q_nc                       q{ mem };
+        std::vector< std::string > log;
+        inplace_stop_source        src;
+
+        auto op = q.pop().connect( pop_recv{ &log, src.get_token() } );
+        op.start();
+        CHECK( log.empty() );
+
+        src.request_stop();
+        CHECK( log == std::vector< std::string >{ "stopped" } );
+
+        // A consumer without a token on the same queue has no stopped row and is served normally.
+        std::vector< std::string > plain_log;
+        auto                       plain = q.pop().connect( plain_pop_recv{ &plain_log } );
+        plain.start();
+        CHECK( q.try_push( 3 ) );
+        CHECK( plain_log == std::vector< std::string >{ "int:3" } );
+        CHECK( q.empty() );
+}
+
+TEST_CASE(
+    "async_queue - a parked pop_value() of a queue that cannot close stops through its token" )
+{
+        nd_mem                                       mem;
+        async_queue< cancellable_no_close_cfg, int > q{ mem };
+        std::vector< std::string >                   log;
+        inplace_stop_source                          src;
+
+        auto op = q.pop_value().connect( pop_recv{ &log, src.get_token() } );
+        op.start();
+        CHECK( log.empty() );
+
+        src.request_stop();
+        CHECK( log == std::vector< std::string >{ "stopped" } );
+
+        std::vector< std::string > plain_log;
+        auto                       plain = q.pop_value().connect( plain_pop_recv{ &plain_log } );
+        plain.start();
+        CHECK( q.try_push( 4 ) );
+        CHECK( plain_log == std::vector< std::string >{ "int:4" } );
 }
 
 TEST_CASE( "async_queue - is_closeable=false removes the shutdown protocol" )

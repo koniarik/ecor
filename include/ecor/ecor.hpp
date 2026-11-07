@@ -7026,8 +7026,8 @@ void _queue_release( Core& core, _queue_node& n )
 
 /// Everything of a pop operation but its receiver, shared by `pop()` and `pop_value()` and by
 /// every queue over `Core` whose calls have the signatures `CallSigs`. `_rows` reaches the
-/// receiver: its `set_stopped()` first, null when unreachable, then its `set_value()` for each
-/// element type, by the descriptor's index.
+/// receiver: its `set_stopped()` first when the operation can stop, then its `set_value()` for
+/// each element type, by the descriptor's index.
 template < typename Core, typename CallSigs, bool Stoppable >
 struct _queue_pop_op_base
   : _queue_waiter,
@@ -7076,7 +7076,7 @@ private:
         {
                 // The receiver may destroy this object inside its row.
                 Core&        core = _core;
-                _row_t const row  = _rows[1 + n._desc->index];
+                _row_t const row  = _rows[_stops + n._desc->index];
                 _unregister();
                 row( *this, _queue_payload< _call >( n ) );
                 _queue_release< CallSigs >( core, n );
@@ -7128,7 +7128,7 @@ struct _queue_pop_op final : _queue_pop_op_base_of< Q, R >
         using _base                   = _queue_pop_op_base_of< Q, R >;
 
         _queue_pop_op( Q& q, R r ) noexcept( std::is_nothrow_move_constructible_v< R > )
-          : _base( q._core, Q::template _pop_rows< _queue_pop_op > )
+          : _base( q._core, Q::template _pop_rows< _queue_pop_op >() )
           , _r( std::move( r ) )
         {
         }
@@ -7142,10 +7142,7 @@ struct _queue_pop_op final : _queue_pop_op_base_of< Q, R >
 
         static constexpr typename _base::_row_t _stopped_row() noexcept
         {
-                if constexpr ( _base::_stops )
-                        return &_stopped_fn;
-                else
-                        return nullptr;
+                return &_stopped_fn;
         }
 
         /// `payload` is valid only until this returns.
@@ -7300,12 +7297,25 @@ struct async_queue
                 return _queue_payload< _call >( n );
         }
 
-        /// The rows of the pop operation `Op`: its `set_stopped()`, then its `set_value()` for each
-        /// element type.
         template < typename Op >
-        static constexpr typename Op::_base::_row_t _pop_rows[] = {
+        static constexpr typename Op::_base::_row_t _pop_rows_stopping[] = {
             Op::_stopped_row(),
             &Op::template _value_row< Ts >... };
+
+        template < typename Op >
+        static constexpr
+            typename Op::_base::_row_t _pop_rows_values[] = { &Op::template _value_row< Ts >... };
+
+        /// The rows of the pop operation `Op`: its `set_stopped()` when it can stop, then its
+        /// `set_value()` for each element type.
+        template < typename Op >
+        static constexpr typename Op::_base::_row_t const* _pop_rows() noexcept
+        {
+                if constexpr ( Op::_base::_stops )
+                        return _pop_rows_stopping< Op >;
+                else
+                        return _pop_rows_values< Op >;
+        }
 
         /// Move the payload of the detached node `n` into `dst`, which must be empty:
         /// through its vtable's `take` when it has one, byte-wise otherwise. Decided at compile

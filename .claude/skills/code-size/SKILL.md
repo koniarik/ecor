@@ -238,6 +238,10 @@ type. One empty function shared by every trivially destructible type is a differ
 costs 2 bytes once, and lets the descriptor's `vt` pointer alone carry the decision (see
 "Describe plain data with data").
 
+A row that is null for every user of a configuration is better left out of the table than kept
+as null: a pop operation that cannot stop has no stopped row, and indexes `_rows[ _stops +
+index ]`; −332 over the suite, up to −18 on four queues (`doc/plans/poprows/variant.py`).
+
 ### Conditional virtuals need structure, and always cost something to fake
 
 - A virtual function **may not carry a requires-clause**, and `override` may not be combined
