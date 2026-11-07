@@ -17,7 +17,8 @@ The probe's key is its population:
   queues    queues of `qtypes` element types each, drained by a pump with task handlers
   ll, seq   `ll_source` and `seq_source` instances of distinct payload types
   lto       linked with link-time optimisation (1) or without (0)
-  cfg       owning for tasks with `promise_owns_operations`, absent for the default configuration
+  cfg       owning for tasks with `promise_owns_operations` and `shared_await_suspend`, absent for
+            the default configuration
 
 Populations: 100, 300 and 1000 coroutines, each linked with and without LTO; the quick tier holds
 the 100-coroutine program without LTO in the default configuration only.
@@ -130,7 +131,7 @@ uint32_t now();
 bool     failed();
 }
 task_ctx& the_ctx();
-''' + ptask_alias(cfg)))
+''' + ptask_alias('owning_shared' if cfg == 'owning' else cfg)))
 
     L = ['#include "sys.hpp"', '', '#include <span>', '',
          'extern "C" {',
@@ -391,8 +392,8 @@ def report(results, headers, w):
     w('')
     w('Buckets come from the demangled names of sized symbols, so code inlined elsewhere counts'
       ' where it landed; `.data + .bss` is dominated by the 32 KiB frame and 16 KiB node buffers.'
-      ' The owning rows run their tasks with `promise_owns_operations`, their delta against the'
-      ' default configuration in parentheses.')
+      ' The owning rows run their tasks with `promise_owns_operations` and'
+      ' `shared_await_suspend`, their delta against the default configuration in parentheses.')
     w('')
     w('| program | cfg | lto | flash | ram | ' + ' | '.join(names) + ' |')
     w('|---|---|---:|---:|---:|' + '---:|' * len(names))

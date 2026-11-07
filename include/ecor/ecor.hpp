@@ -2850,12 +2850,9 @@ struct _task_awaitable_base
                 }
         }
 
-        /// Must take the handle, not the promise: with a reference parameter GCC inlines this
-        /// and `await_suspend` at every `co_await`.
-        template < typename P >
-        void _bind( std::coroutine_handle< P > ch ) noexcept
+        void _bind( PromiseBase* p ) noexcept
         {
-                this->_promise = &ch.promise();
+                this->_promise = p;
                 this->_promise->trace.on_await_suspend( *this );
         }
 
@@ -2969,7 +2966,21 @@ struct _task_awaitable : _task_awaitable_base< PromiseBase, ValueType >
         template < typename P >
         void await_suspend( std::coroutine_handle< P > ch ) noexcept
         {
-                _base::_bind( ch );
+                if constexpr ( PromiseBase::_shared_await_suspend )
+                        _suspend_shared( &ch.promise() );
+                else
+                        _suspend( &ch.promise() );
+        }
+
+        ECOR_NOINLINE void _suspend_shared( PromiseBase* p ) noexcept
+        {
+                _suspend( p );
+        }
+
+        template < typename Promise >
+        void _suspend( Promise* p ) noexcept
+        {
+                _base::_bind( p );
 #ifdef ECOR_DEBUG_PARENT
                 this->_bind_debug_parent( _op );
 #endif
@@ -3010,7 +3021,21 @@ struct _task_awaitable< PromiseBase, ValueType, Op >
         template < typename P >
         void await_suspend( std::coroutine_handle< P > ch ) noexcept
         {
-                _base::_bind( ch );
+                if constexpr ( PromiseBase::_shared_await_suspend )
+                        _suspend_shared( &ch.promise() );
+                else
+                        _suspend( &ch.promise() );
+        }
+
+        ECOR_NOINLINE void _suspend_shared( PromiseBase* p ) noexcept
+        {
+                _suspend( p );
+        }
+
+        template < typename Promise >
+        void _suspend( Promise* p ) noexcept
+        {
+                _base::_bind( p );
                 Op* op = std::launder( reinterpret_cast< Op* >( _buf ) );
 #ifdef ECOR_DEBUG_PARENT
                 this->_bind_debug_parent( *op );
@@ -3299,6 +3324,7 @@ struct task_default_cfg
         using trace_type       = task_default_trace;
 
         static constexpr bool promise_owns_operations = false;
+        static constexpr bool shared_await_suspend    = false;
 
         ECOR_FORCE_INLINE static task_error convert_error( task_error err ) noexcept
         {
@@ -3316,6 +3342,13 @@ template < typename CFG >
         requires( requires { CFG::promise_owns_operations; } )
 inline constexpr bool _task_cfg_promise_owns_operations< CFG > = CFG::promise_owns_operations;
 
+template < typename CFG >
+inline constexpr bool _task_cfg_shared_await_suspend = false;
+
+template < typename CFG >
+        requires( requires { CFG::shared_await_suspend; } )
+inline constexpr bool _task_cfg_shared_await_suspend< CFG > = CFG::shared_await_suspend;
+
 /// Concept for the task configuration. A type is task configuration if:
 /// - It has a nested type `error_signatures` that is a `completion_signatures` type specifying the
 ///   full set of error signatures the task can complete with.
@@ -3327,6 +3360,10 @@ inline constexpr bool _task_cfg_promise_owns_operations< CFG > = CFG::promise_ow
 /// - It may have a `static constexpr bool promise_owns_operations`, false when absent. When true,
 ///   the promise owns the operation state of each `co_await`: less code at every `co_await` and in
 ///   every coroutine, for three more pointers of RAM per coroutine frame.
+/// - It may have a `static constexpr bool shared_await_suspend`, false when absent. When true,
+///   a `co_await` reaches one out-of-line function per awaitable type, shared by every task type
+///   with this configuration's promise base, instead of a copy per awaitable and task type: less
+///   code when many task types await the same things, a little more for one awaited only once.
 template < typename T >
 concept task_config =
     requires() {
@@ -3530,13 +3567,15 @@ struct _promise_op_slot< false >
         }
 };
 
-template < typename Trace, typename ErrSigs, bool OwnsOps >
+template < typename Trace, typename ErrSigs, bool OwnsOps, bool SharedSuspend >
 struct _promise_cfg_base : _promise_base,
                            _promise_sched_slot< OwnsOps >,
                            _promise_op_slot< OwnsOps >
 {
         using trace_type     = Trace;
         using _cont_vtable_t = _task_cont_vtable_base< ErrSigs >;
+
+        static constexpr bool _shared_await_suspend = SharedSuspend;
 
         _promise_cfg_base( task_core& core, schedulable::resume_fn resume ) noexcept
           : _promise_sched_slot< OwnsOps >( core, resume )
@@ -3707,7 +3746,8 @@ template < typename Task >
 struct _promise_type : _promise_cfg_base<
                            typename Task::config_type::trace_type,
                            typename Task::_error_completions,
-                           _task_cfg_promise_owns_operations< typename Task::config_type > >,
+                           _task_cfg_promise_owns_operations< typename Task::config_type >,
+                           _task_cfg_shared_await_suspend< typename Task::config_type > >,
                        _promise_return_mixin< Task, typename Task::value_type >
 {
         using value_type = typename Task::value_type;
@@ -3716,7 +3756,8 @@ struct _promise_type : _promise_cfg_base<
         using _base      = _promise_cfg_base<
             trace_type,
             typename Task::_error_completions,
-            _task_cfg_promise_owns_operations< cfg_type > >;
+            _task_cfg_promise_owns_operations< cfg_type >,
+            _task_cfg_shared_await_suspend< cfg_type > >;
         using vtable =
             _task_cont_vtable< typename Task::_error_completions, _value_setter_t< value_type > >;
 

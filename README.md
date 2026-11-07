@@ -1170,6 +1170,29 @@ not only for the innermost.
 > `task_holder`'s deduction guide assumes `task_default_cfg`: spell out a holder of such tasks,
 > as in `ecor::task_holder<small_cfg, ecor::task_ctx, factory_t>`.
 
+### Sharing await code across task types — `shared_await_suspend`
+
+Every `co_await` in a task calls the awaitable's suspend step, which is compiled once per
+awaitable and task type. With `shared_await_suspend` set, the step is one out-of-line function per
+awaitable type, shared by every task type of the configuration. That pays when many task types
+await the same things: on a generated program of 1000 coroutines with `promise_owns_operations`,
+3% less flash without LTO and 0.9% less with it. An awaitable type awaited in one place only
+costs a few bytes more, since its step is no longer inlined there.
+
+```cpp
+struct shared_cfg : ecor::task_default_cfg {
+    static constexpr bool promise_owns_operations = true;
+    static constexpr bool shared_await_suspend    = true;
+};
+
+ecor::ll_source<ecor::unit, ecor::set_value_t(int)> readings;
+
+ecor::task<int, shared_cfg> next_reading(ecor::task_ctx& ctx)
+{
+    co_return co_await readings.schedule();
+}
+```
+
 ## Async Arena - Managed Async Lifetimes
 
 `async_arena` provides reference-counted smart pointers (`async_ptr`) with

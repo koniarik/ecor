@@ -8,7 +8,9 @@ object holds the coroutines, their awaitables and the task machinery only.
 
 Dimensions:
   cfg     default | err2 (two error signatures) | err3 (three) | trace (a trace type with state
-          and two live hooks) | convert (two error signatures, `convert_error` maps to a wrapper)
+          and two live hooks) | shared (`shared_await_suspend`) | owning_shared (that and
+          `promise_owns_operations`) | convert (two error signatures, `convert_error` maps to a
+          wrapper)
   types   1 | 4 | 8 value types
   coros   1 | 4 | 16 coroutine functions
   awaits  1 | 4 | 8 | 32 rounds of the sender set per coroutine
@@ -91,6 +93,15 @@ struct cfg_t
         {
                 return e;
         }
+};'''),
+    'shared': (('task_error',), '''struct cfg_t : task_default_cfg
+{
+        static constexpr bool shared_await_suspend = true;
+};'''),
+    'owning_shared': (('task_error',), '''struct cfg_t : task_default_cfg
+{
+        static constexpr bool promise_owns_operations = true;
+        static constexpr bool shared_await_suspend    = true;
 };'''),
     'convert': (('task_error_wrap', 'my_error'), '''struct my_error
 {

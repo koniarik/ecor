@@ -1703,6 +1703,203 @@ TEST_CASE(
         CHECK( slot.untouched() );
 }
 
+struct _shared_suspend_cfg : task_default_cfg
+{
+        static constexpr bool shared_await_suspend = true;
+};
+
+struct _owning_shared_suspend_cfg : task_default_cfg
+{
+        static constexpr bool promise_owns_operations = true;
+        static constexpr bool shared_await_suspend    = true;
+};
+
+struct _undeclared_flag_cfg
+{
+        using error_signatures = completion_signatures< set_error_t( task_error ) >;
+        using trace_type       = task_default_trace;
+};
+
+using ss_source_t = ll_source< unit, set_value_t( int ), set_stopped_t() >;
+
+struct ss_recv
+{
+        using receiver_concept = receiver_t;
+
+        int* values;
+        int* errors;
+        int* stops;
+
+        void set_value() noexcept
+        {
+                ++*values;
+        }
+
+        void set_error( task_error /*e*/ ) noexcept
+        {
+                ++*errors;
+        }
+
+        void set_stopped() noexcept
+        {
+                ++*stops;
+        }
+
+        [[nodiscard]] empty_env get_env() const noexcept
+        {
+                return {};
+        }
+};
+
+struct ss_int_recv
+{
+        using receiver_concept = receiver_t;
+
+        int* out;
+
+        void set_value( int v ) noexcept
+        {
+                *out = v;
+        }
+
+        void set_error( task_error /*e*/ ) noexcept
+        {
+        }
+
+        void set_stopped() noexcept
+        {
+        }
+
+        [[nodiscard]] empty_env get_env() const noexcept
+        {
+                return {};
+        }
+};
+
+template < typename Cfg >
+static task< int, Cfg > ss_child( task_ctx&, int v )
+{
+        co_return v;
+}
+
+template < typename Cfg >
+static task< int, Cfg > ss_failing_child( task_ctx& )
+{
+        co_yield with_error( task_error::task_unfinished );
+        co_return 0;
+}
+
+template < typename Cfg >
+static task< void, Cfg > ss_parent( task_ctx& ctx, ss_source_t& src, int& out )
+{
+        int const a = co_await src.schedule();
+        int const b = co_await ss_child< Cfg >( ctx, 2 );
+        out         = a + b;
+}
+
+template < typename Cfg >
+static task< void, Cfg > ss_parent_of_failing( task_ctx& ctx, int& out )
+{
+        out = co_await ss_failing_child< Cfg >( ctx );
+}
+
+template < typename Cfg >
+static task< int, Cfg > ss_int_awaiter( task_ctx&, ss_source_t& src )
+{
+        co_return co_await src.schedule();
+}
+
+template < typename Cfg >
+static task< void, Cfg > ss_void_awaiter( task_ctx&, ss_source_t& src, int& out )
+{
+        out = co_await src.schedule();
+}
+
+TEST_CASE( "_task_cfg_shared_await_suspend - false unless the configuration sets it" )
+{
+        static_assert( !_task_cfg_shared_await_suspend< task_default_cfg > );
+        static_assert( !_task_cfg_shared_await_suspend< _undeclared_flag_cfg > );
+        static_assert( _task_cfg_shared_await_suspend< _shared_suspend_cfg > );
+        static_assert( _task_cfg_shared_await_suspend< _owning_shared_suspend_cfg > );
+}
+
+TEST_CASE_TEMPLATE(
+    "shared_await_suspend - awaits behave as without it",
+    Cfg,
+    _shared_suspend_cfg,
+    _owning_shared_suspend_cfg )
+{
+        nd_mem      mem;
+        task_ctx    ctx{ mem };
+        ss_source_t src;
+        int         out = -1, values = 0, errors = 0, stops = 0;
+
+        SUBCASE( "a source's value, then a child task's" )
+        {
+                auto h = ss_parent< Cfg >( ctx, src, out )
+                             .connect( ss_recv{ &values, &errors, &stops } );
+                h.start();
+                ctx.core.run_once();
+                REQUIRE( !src.empty() );
+                src.query_next()->set_value( 1 );
+                ctx.core.run_once();  // the parent resumes and awaits the child
+                ctx.core.run_once();  // the child completes
+                ctx.core.run_once();  // the parent resumes and completes
+                CHECK( out == 3 );
+                CHECK( values == 1 );
+        }
+        SUBCASE( "a stopped source stops the task" )
+        {
+                auto h = ss_parent< Cfg >( ctx, src, out )
+                             .connect( ss_recv{ &values, &errors, &stops } );
+                h.start();
+                ctx.core.run_once();
+                REQUIRE( !src.empty() );
+                src.query_next()->set_stopped();
+                CHECK( stops == 1 );
+                CHECK( out == -1 );
+        }
+        SUBCASE( "a child task's error reaches the receiver" )
+        {
+                auto h = ss_parent_of_failing< Cfg >( ctx, out )
+                             .connect( ss_recv{ &values, &errors, &stops } );
+                h.start();
+                ctx.core.run_once();  // the parent awaits the child
+                ctx.core.run_once();  // the child fails
+                CHECK( errors == 1 );
+                CHECK( out == -1 );
+        }
+}
+
+TEST_CASE_TEMPLATE(
+    "shared_await_suspend - two task types await one source type",
+    Cfg,
+    _shared_suspend_cfg,
+    _owning_shared_suspend_cfg )
+{
+        nd_mem      mem;
+        task_ctx    ctx{ mem };
+        ss_source_t src;
+        int         from_int = -1, from_void = -1, values = 0, errors = 0, stops = 0;
+
+        auto hi = ss_int_awaiter< Cfg >( ctx, src ).connect( ss_int_recv{ &from_int } );
+        auto hv = ss_void_awaiter< Cfg >( ctx, src, from_void )
+                      .connect( ss_recv{ &values, &errors, &stops } );
+        hi.start();
+        hv.start();
+        ctx.core.run_once();
+        ctx.core.run_once();
+
+        broadcast( src, []( auto& e ) {
+                e.set_value( 5 );
+        } );
+        ctx.core.run_once();
+        ctx.core.run_once();
+        CHECK( from_int == 5 );
+        CHECK( from_void == 5 );
+        CHECK( values == 1 );
+}
+
 TEST_CASE( "_align_idx" )
 {
         // Create a test buffer with known alignment

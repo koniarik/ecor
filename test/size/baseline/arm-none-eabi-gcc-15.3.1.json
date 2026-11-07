@@ -852,7 +852,7 @@
    0
   ],
   "or/kind=mixed,operands=8,at=task,uses=1,cfg=owning": [
-   2892,
+   2896,
    0
   ],
   "or/kind=mixed,operands=8,at=task,uses=4": [
@@ -860,7 +860,7 @@
    0
   ],
   "or/kind=mixed,operands=8,at=task,uses=4,cfg=owning": [
-   4288,
+   4280,
    0
   ],
   "or/kind=same,operands=1,at=recv": [
@@ -968,15 +968,15 @@
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0,cfg=owning": [
-   112056,
+   110672,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1": [
-   125228,
+   125208,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1,cfg=owning": [
-   104568,
+   103616,
    49292
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0": [
@@ -984,31 +984,31 @@
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0,cfg=owning": [
-   1270088,
+   1231504,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1": [
-   1417476,
+   1417460,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1,cfg=owning": [
-   1202524,
+   1192360,
    49828
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0": [
-   424008,
+   424016,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0,cfg=owning": [
-   363764,
+   356784,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1": [
-   408620,
+   408608,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1,cfg=owning": [
-   345132,
+   341584,
    49420
   ],
   "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=call": [
@@ -2809,6 +2809,22 @@
   ],
   "task/cfg=err3,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
    7164,
+   0
+  ],
+  "task/cfg=owning_shared,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   5954,
+   0
+  ],
+  "task/cfg=owning_shared,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   6238,
+   0
+  ],
+  "task/cfg=shared,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   6648,
+   0
+  ],
+  "task/cfg=shared,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
+   6872,
    0
   ],
   "task/cfg=trace,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [

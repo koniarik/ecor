@@ -288,6 +288,21 @@ with the reschedule that follows it*: the rows of every pump's handler receiver 
 `_reschedulable::_reschedule()`, −524 / −428 at eight pumps. A shared completion alone left each
 row with its own reschedule and frame (`doc/plans/push-and-wait.md`).
 
+### Out of line pays only where the code is shared, and only the program knows where
+
+`_task_awaitable::await_suspend` is compiled per awaitable and task type. One out-of-line
+`_suspend( PromiseBase* )` per awaitable type, reached from a one-line template, saves 22 KB /
+38 KB on the 1000-coroutine programs (default / owning, LTO off), but grows 375 small probes by up
+to 924 bytes: an awaitable type awaited once used to be inlined into its coroutine and now gets a
+function and a call. No compile-time rule separates the two cases. Keying on the operation state
+(only child tasks, all but source entries, by `sizeof`) keeps a quarter to a third of the saving
+and still grows probes; passing the promise to the constructor loses outright. The owning
+configuration's copies are larger, so sharing there pays at a cost of at most 52 bytes on a probe:
+the split became the opt-in task-config flag `shared_await_suspend` (`doc/plans/suspend.md`).
+Two side lessons: an `ECOR_NOINLINE` function with an unused parameter is cloned per file without
+LTO (`.isra`), and passing a pointer at frame+8 costs a 4-byte `add.w` where the frame pointer
+itself was a 2-byte `mov`.
+
 ### One out-of-line reschedule for every schedulable
 
 The promise, the task holder, the arena core and the pump each held a `task_core&` and called
