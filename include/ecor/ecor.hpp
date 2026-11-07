@@ -2214,7 +2214,7 @@ struct _sh_sender
 
         _sh_sender( K&& key, T&& val, zll::sh_heap< _sh_link< K > >& sh ) noexcept(
             std::is_nothrow_move_constructible_v< K > && std::is_nothrow_move_constructible_v< T > )
-          : _key( std::move( key ) )
+          : _key( (K&&) key )
           , _val( (T&&) val )
           , _sh( sh )
         {
@@ -2388,9 +2388,11 @@ std::size_t broadcast( ll_source< T, S... >& src, F&& f )
 /// is always delivered to the receiver with the smallest key first.
 ///
 /// `K`   — key type used for ordering (e.g. a timestamp or priority).
-/// `T`   — payload data type embedded in each entry (`unit` for no-data use-cases). For a
-///          reference type `U&` the entry refers to the object passed to `schedule()`, which
-///          must outlive the operation state; `schedule()` then takes no temporaries.
+/// `T`   — payload data type embedded in each entry (`unit` for no-data use-cases).
+///
+/// With a reference type `U&` as `K` or `T`, the entry refers to the object passed to
+/// `schedule()`, which must outlive the operation state, and `schedule()` takes no temporaries.
+/// A referred key must keep its order while the entry is pending.
 /// `S...` — completion signatures.
 ///
 /// Use `seq_source` when you need priority-ordered delivery (e.g. by timestamp or deadline)
@@ -2406,23 +2408,23 @@ struct seq_source
 
         /// Schedule a new entry with this source, using `key` for heap ordering and `val` as the
         /// payload stored in the entry, `T{}` when omitted.
-        _sh_sender< K, T, S... > schedule( K key ) noexcept(
-            noexcept( _sh_sender< K, T, S... >{ std::move( key ), T{}, _sh } ) )
+        _sh_sender< K, T, S... >
+        schedule( K key ) noexcept( noexcept( _sh_sender< K, T, S... >{ (K&&) key, T{}, _sh } ) )
         {
-                return { std::move( key ), T{}, _sh };
+                return { (K&&) key, T{}, _sh };
         }
 
         _sh_sender< K, T, S... > schedule( K key, T&& val ) noexcept(
-            noexcept( _sh_sender< K, T, S... >{ std::move( key ), (T&&) val, _sh } ) )
+            noexcept( _sh_sender< K, T, S... >{ (K&&) key, (T&&) val, _sh } ) )
         {
-                return { std::move( key ), (T&&) val, _sh };
+                return { (K&&) key, (T&&) val, _sh };
         }
 
         _sh_sender< K, T, S... > schedule( K key, T const& val ) noexcept(
-            noexcept( _sh_sender< K, T, S... >{ std::move( key ), T( val ), _sh } ) )
+            noexcept( _sh_sender< K, T, S... >{ (K&&) key, T( val ), _sh } ) )
                 requires( !std::is_reference_v< T > )
         {
-                return { std::move( key ), T( val ), _sh };
+                return { (K&&) key, T( val ), _sh };
         }
 
         /// Returns `true` if no receivers are currently pending.

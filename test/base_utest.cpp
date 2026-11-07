@@ -4367,6 +4367,28 @@ TEST_CASE( "seq_source - schedule copies a payload passed as an lvalue" )
         CHECK( log == std::vector< int >{ 20 } );
 }
 
+TEST_CASE( "seq_source - a reference key refers to the caller's object" )
+{
+        using source_t = seq_source< int&, unit, set_value_t() >;
+        static_assert( _schedulable_with< source_t, int& > );
+        static_assert( !_schedulable_with< source_t, int > );
+
+        source_t source;
+        int      later = 2, sooner = 1;
+        auto     op_later = source.schedule( later ).connect( _dummy_receiver{} );
+        op_later.start();
+        auto op_sooner = source.schedule( sooner ).connect( _dummy_receiver{} );
+        op_sooner.start();
+
+        auto* first = source.query_next_unchecked();
+        REQUIRE( first != nullptr );
+        CHECK( &first->key == &sooner );
+        auto* second = source.query_next_unchecked();
+        REQUIRE( second != nullptr );
+        CHECK( &second->key == &later );
+        CHECK( source.empty() );
+}
+
 TEST_CASE( "seq_source - a reference payload refers to the caller's object" )
 {
         using source_t = seq_source< uint32_t, _ref_payload&, set_value_t() >;

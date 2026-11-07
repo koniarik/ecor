@@ -545,8 +545,9 @@ pie title pipeline_buffer (capacity 8, 3 in-flight)
 ## Sequential Source - Ordered Event Processing
 
 `seq_source` provides **ordered, keyed event processing**. Events with keys are processed in
-order of the keys. The second parameter is a payload type, as in `ll_source`, and a reference
-type, `seq_source<K, T&>`, likewise refers to the caller's object.
+order of the keys. The second parameter is a payload type, as in `ll_source`. A reference type as
+the key or the payload, `seq_source<K&, T>` or `seq_source<K, T&>`, refers to the caller's object
+instead of copying it; a referred key must keep its order while the entry is pending.
 
 ```cpp
 using seq_source = ecor::seq_source<
