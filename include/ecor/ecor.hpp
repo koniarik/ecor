@@ -3751,9 +3751,6 @@ protected:
         void*                 _cont_obj    = nullptr;
 };
 
-template < typename Task >
-struct _promise_type;
-
 /// The `T`-independent promise of tasks with configuration `CFG`: `promise_owns_operations` turns
 /// on all three of its optimizations.
 template < typename CFG, typename ErrSigs >
@@ -3765,24 +3762,25 @@ using _promise_cfg_base_of = _promise_cfg_base<
     _task_cfg_promise_owns_operations< CFG >,
     _task_cfg_shared_await_suspend< CFG > >;
 
-/// Promise type subset that implements value_type specific behavior of the task.
-template < typename Task, typename Val >
+/// The `return_value` or `return_void` of `Promise`, whichever its value type `Val` calls for: a
+/// promise may declare only one of them.
+template < typename Promise, typename Val >
 struct _promise_return_mixin
 {
         void return_value( Val v )
         {
-                auto* p = static_cast< _promise_type< Task >* >( this );
+                auto* p = static_cast< Promise* >( this );
                 p->trace.on_return( *p, v );
                 p->invoke_set_value( std::move( v ) );
         }
 };
 
-template < typename Task >
-struct _promise_return_mixin< Task, void >
+template < typename Promise >
+struct _promise_return_mixin< Promise, void >
 {
         void return_void()
         {
-                auto* p = static_cast< _promise_type< Task >* >( this );
+                auto* p = static_cast< Promise* >( this );
                 p->trace.on_return( *p );
                 p->invoke_set_value();
         }
@@ -3804,7 +3802,7 @@ struct _promise_return_mixin< Task, void >
 template < typename Task >
 struct _promise_type
   : _promise_cfg_base_of< typename Task::config_type, typename Task::_error_completions >,
-    _promise_return_mixin< Task, typename Task::value_type >
+    _promise_return_mixin< _promise_type< Task >, typename Task::value_type >
 {
         using value_type = typename Task::value_type;
         using cfg_type   = typename Task::config_type;
