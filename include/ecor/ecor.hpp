@@ -3293,6 +3293,21 @@ template < bool LazyNode >
 using _promise_node_base_t =
     std::conditional_t< LazyNode, _absent< _reschedulable >, _reschedulable >;
 
+/// The part of a task's promise that every task type of one configuration shares, whatever its
+/// value type. Its frame follows these rules:
+/// 1. `_start_op()` starts a task at most once: it stores the task's receiver, `_cont_obj`, and
+///    the receiver's completion rows, `_cont_vtable`, and schedules the coroutine. `_cont_obj`
+///    stays set from then on, which tells `_destroy_frame()` that the node was built.
+/// 2. The receiver completes at most once: `_cont_vtable` is cleared before a row is called, so
+///    that a frame destroyed later, or by the receiver during the call, does not complete it
+///    again. A started frame destroyed while `_cont_vtable` is set completes it stopped.
+/// 3. Every resumption goes through `_promise_type::_resume()`, which first destroys the operation
+///    state of the `co_await` it returns from, when the promise owns it.
+/// 4. A frame that a `_task_op` holds is destroyed only through `_destroy_coroutine()`, which
+///    destroys the owned operation state and the node with it. `task` destroys a frame that was
+///    never connected directly.
+/// 5. An awaited operation starts in `await_suspend()`, once the coroutine is suspended.
+///
 /// One parameter per optimization:
 /// - `LazyNode`: the ready-list node is built in `_node` when the task starts.
 /// - `OwnsAwaitedOp`: the promise destroys the operation state of the current `co_await`.
