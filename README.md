@@ -562,11 +562,11 @@ using seq_source = ecor::seq_source<
 ```cpp
 #include <ecor/ecor.hpp>
 
-// Timer event: key is wake-up time, value is task ID
+// Timer event: the key is the wake-up time; a sleeping task needs no value
 using timer_source = ecor::seq_source<
     uint64_t,  // Key: timestamp when to wake
     ecor::unit,
-    ecor::set_value_t(uint64_t)  // Value: timestamp when timer fired
+    ecor::set_value_t()
 >;
 
 class timer_manager {
@@ -584,8 +584,7 @@ public:
     void tick(uint64_t current_time) {
         // Fire all timers that are due (min-key entry first)
         while (!source.empty() && source.front().key <= current_time) {
-            auto* entry = source.query_next();
-            entry->set_value(entry->key);
+            source.query_next()->set_value();
         }
     }
 
@@ -619,6 +618,10 @@ ecor::task<void> read_sensor(ecor::task_ctx& ctx, timer_manager& timer) {
 // Multiple tasks can sleep simultaneously with different wake times
 // The seq_source ensures they wake in the correct order
 ```
+
+> **Key width:** on a 32-bit core a `uint32_t` key makes the timer about 30 bytes smaller than
+> `uint64_t`, but the heap orders keys by `<`, so it fits only a tick count that cannot wrap
+> while the device runs: a 1 ms counter wraps after 49.7 days.
 
 ### Priority Queue Pattern
 
