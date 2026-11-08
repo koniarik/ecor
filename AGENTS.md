@@ -186,11 +186,9 @@ measured alternatives are in the code-size skill:
   `_promise_core::_destroy_frame()`: the pending operation state, the ready-list node, the
   frame, then the continuation is completed stopped. The promise has a destructor only in builds
   with `ECOR_DEFAULT_ASSERT`, where it asserts that nothing is pending.
-- **A convention replaces the destructor's guarantee.** Every resumption goes through
-  `_promise_type::_resume()` and every destruction of a started frame through `_task_op`; a new
-  `h.resume()` or `h.destroy()` anywhere else breaks the option, silently in release builds, and
-  a frame destroyed elsewhere leaves its node on the ready list. The "exactly once" test covers
-  the paths that exist.
+- **A convention replaces the destructor's guarantee**: rules 3 and 4 on `_promise_core`. A new
+  `h.resume()` or `h.destroy()` elsewhere breaks the option silently in release builds; the
+  "exactly once" test covers the paths that exist.
 - **A child's stop arrives after its frame is gone**, so the code it reaches must not look at the
   child. The test "a chain suspended in a child can be destroyed, whatever the two
   configurations" covers every pair of the six test configurations; run it in the asan preset
