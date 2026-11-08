@@ -3040,7 +3040,7 @@ struct task_default_trace
 enum class task_error : uint8_t
 {
         none                     = 1,  ///< No error
-        task_unfinished          = 2,  ///< Task was destructed without signal.
+        task_unfinished          = 2,  ///< Not reported by ecor itself.
         task_allocation_failure  = 3,  ///< Task memory allocation failed.
         task_already_started     = 4,  ///< Task was already started.
         task_unhandled_exception = 5,  ///< Task threw an exception that was not caught.
@@ -4000,13 +4000,8 @@ struct _promise_type
         std::suspend_always final_suspend() noexcept
         {
                 this->trace.on_final_suspend( *this );
-                if ( this->_cont_vtable ) {
-                        auto* r = std::exchange( this->_cont_vtable, nullptr );
-                        r->invoke(
-                            set_error_t{},
-                            this->_cont_obj,
-                            cfg_type::convert_error( task_error::task_unfinished ) );
-                }
+                // A non-void task whose body ends without `co_return` still has its receiver.
+                ECOR_ASSERT( !this->_cont_vtable );
                 return {};
         }
 };
@@ -4144,7 +4139,7 @@ struct _task_op
 ///     template parameter of the task. If the value type is void, then the set_value signature is
 ///     set_value_t().
 ///   - set_error_t( task_error ) - This is the default error signature that all tasks have, and it
-///     is used to report internal task errors such as allocation failures or unfinished tasks.
+///     is used to report internal task errors such as allocation failures or a task started twice.
 ///     Custom task configurations map these internal errors to their own declared error type via
 ///     `convert_error(task_error)`.
 ///   - Additional error signatures specified by the user in the task configuration.

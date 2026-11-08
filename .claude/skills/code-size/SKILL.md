@@ -432,6 +432,15 @@ its two arguments out of the storage as a struct made GCC round-trip them throug
 reading the two fields as scalars keeps them in registers. And emptying `_task_op`'s handle
 before `_destroy_frame()` is a store per destroy site; only a debug build needs it.
 
+### A check that only undefined behaviour reaches still costs every coroutine
+
+`final_suspend()` completed a receiver still attached with `task_unfinished`, which only a
+non-void task whose body ends without `co_return` leaves attached. Compiled per task type and
+cloned per file, the check cost 8.8 bytes per coroutine; as an `ECOR_ASSERT` it is −103120 over
+the suite with no probe larger, −0.6% to −1.2% on every program. The same check in one
+out-of-line function per configuration kept only −3858 and grew 535 probes
+(`doc/plans/final_suspend.md`).
+
 ### Key the erased part on the core, not on the queue
 
 `_queue_pop_op` was compiled whole per queue, receiver type and sender: 125 bytes per extra
