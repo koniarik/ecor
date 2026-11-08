@@ -32,6 +32,8 @@ namespace ecor
 
 static_assert( std::is_trivially_destructible_v< task< void, _owning_cfg >::promise_type > );
 static_assert( std::is_trivially_destructible_v< task< int, _owning_cfg >::promise_type > );
+static_assert(
+    std::is_trivially_destructible_v< task< void, _owning_debug_parent_cfg >::promise_type > );
 static_assert( !std::is_trivially_destructible_v< task< void >::promise_type > );
 
 }  // namespace ecor

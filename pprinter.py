@@ -83,7 +83,7 @@ class PromiseTypePrinter(gdb.ValuePrinter):
         loc = _source_location_at(addr)
         result = "ecor::_promise_type [{}] @ {}".format(name, loc)
 
-        # Follow _debug_parent chain (only present when compiled with ECOR_DEBUG_PARENT)
+        # Follow the _debug_parent chain, present when the task config sets debug_parent
         seen = {int(self.__val.address)}
         val = self.__val
         try:
@@ -102,7 +102,7 @@ class PromiseTypePrinter(gdb.ValuePrinter):
                 result += "\n    <- awaited by [{}] @ {}".format(p_name, p_loc)
                 val = parent_val
         except gdb.error:
-            pass  # _debug_parent field not present — compiled without ECOR_DEBUG_PARENT
+            pass  # no _debug_parent: the task config does not set debug_parent
 
         return result
 

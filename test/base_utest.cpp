@@ -768,28 +768,28 @@ namespace
 {
         struct _two_absent
         {
-                ECOR_NO_UNIQUE_ADDRESS _absent< 0 > a;
-                ECOR_NO_UNIQUE_ADDRESS _absent< 1 > b;
-                int                                 x;
+                ECOR_NO_UNIQUE_ADDRESS _absent< int > a;
+                ECOR_NO_UNIQUE_ADDRESS _absent< double > b;
+                int                                      x;
         };
 
         struct _other_empty
         {
         };
 
-        struct ECOR_EMPTY_BASES _absent_beside_empty_base : _other_empty, _absent< 0 >
+        struct ECOR_EMPTY_BASES _absent_beside_empty_base : _other_empty, _absent< int >
         {
                 int x;
         };
 }  // namespace
 
-TEST_CASE( "_absent - empty, distinct per index, constructible from anything" )
+TEST_CASE( "_absent - empty, distinct per type, constructible from anything" )
 {
-        static_assert( std::is_empty_v< _absent< 0 > > );
-        static_assert( !std::same_as< _absent< 0 >, _absent< 1 > > );
-        static_assert( std::is_constructible_v< _absent< 0 >, int, double& > );
-        static_assert( std::is_nothrow_constructible_v< _absent< 0 > > );
-        static_assert( std::is_trivially_destructible_v< _absent< 0 > > );
+        static_assert( std::is_empty_v< _absent< int > > );
+        static_assert( !std::same_as< _absent< int >, _absent< double > > );
+        static_assert( std::is_constructible_v< _absent< int >, int, double& > );
+        static_assert( std::is_nothrow_constructible_v< _absent< int > > );
+        static_assert( std::is_trivially_destructible_v< _absent< std::string > > );
         static_assert( sizeof( _two_absent ) == sizeof( int ) );
         static_assert( sizeof( _absent_beside_empty_base ) == sizeof( int ) );
 }
@@ -1744,6 +1744,16 @@ struct _owning_shared_suspend_cfg : task_default_cfg
         static constexpr bool shared_await_suspend    = true;
 };
 
+struct _debug_shared_suspend_cfg : _shared_suspend_cfg
+{
+        static constexpr bool debug_parent = true;
+};
+
+struct _owning_debug_shared_suspend_cfg : _owning_shared_suspend_cfg
+{
+        static constexpr bool debug_parent = true;
+};
+
 struct _undeclared_flag_cfg
 {
         using error_signatures = completion_signatures< set_error_t( task_error ) >;
@@ -1857,7 +1867,9 @@ TEST_CASE_TEMPLATE(
     "shared_await_suspend - awaits behave as without it",
     Cfg,
     _shared_suspend_cfg,
-    _owning_shared_suspend_cfg )
+    _owning_shared_suspend_cfg,
+    _debug_shared_suspend_cfg,
+    _owning_debug_shared_suspend_cfg )
 {
         nd_mem      mem;
         task_ctx    ctx{ mem };
@@ -1905,7 +1917,9 @@ TEST_CASE_TEMPLATE(
     "shared_await_suspend - two task types await one source type",
     Cfg,
     _shared_suspend_cfg,
-    _owning_shared_suspend_cfg )
+    _owning_shared_suspend_cfg,
+    _debug_shared_suspend_cfg,
+    _owning_debug_shared_suspend_cfg )
 {
         nd_mem      mem;
         task_ctx    ctx{ mem };
@@ -4766,7 +4780,9 @@ TEST_CASE_TEMPLATE(
     "task - co_await starts the operation once the coroutine is suspended",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem   mem;
         task_ctx ctx{ mem };
@@ -4787,7 +4803,9 @@ TEST_CASE_TEMPLATE(
     "ll_source - co_await links the entry once the coroutine is suspended",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem           mem;
         task_ctx         ctx{ mem };
@@ -4811,7 +4829,9 @@ TEST_CASE_TEMPLATE(
     "seq_source - co_await links the entry once the coroutine is suspended",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem            mem;
         task_ctx          ctx{ mem };
@@ -4835,7 +4855,9 @@ TEST_CASE_TEMPLATE(
     "seq_source - destroying a task suspended on an entry takes the entry out",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem            mem;
         task_ctx          ctx{ mem };
@@ -4870,7 +4892,9 @@ TEST_CASE_TEMPLATE(
     "ll_source - destroying a task suspended on an entry takes the entry out",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem           mem;
         task_ctx         ctx{ mem };
@@ -4900,7 +4924,9 @@ TEST_CASE_TEMPLATE(
     "task - destroying a parent suspended on a child destroys the child",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem           mem;
         task_ctx         ctx{ mem };
@@ -4923,7 +4949,9 @@ TEST_CASE_TEMPLATE(
     "ll_source - an entry completed through front() leaves the list once its task resumes",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem           mem;
         task_ctx         ctx{ mem };
@@ -4946,7 +4974,9 @@ TEST_CASE_TEMPLATE(
     "ll_source - an entry completed through front() leaves the list when its task is destroyed",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem           mem;
         task_ctx         ctx{ mem };
@@ -4989,7 +5019,9 @@ TEST_CASE_TEMPLATE(
     "ll_source - a destroyed task takes its entry out before destroying its locals",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem           mem;
         task_ctx         ctx{ mem };
@@ -5038,7 +5070,9 @@ TEST_CASE_TEMPLATE(
     "task - a destroyed parent destroys its child before its own locals",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem           mem;
         task_ctx         ctx{ mem };
@@ -5081,7 +5115,9 @@ TEST_CASE_TEMPLATE(
     "task - with promise_owns_operations a destroyed chain completes stopped after all its frames",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem           mem;
         task_ctx         ctx{ mem };
@@ -5124,7 +5160,9 @@ TEST_CASE_TEMPLATE(
     "task - destroying a task that completed while queued takes it off the ready list",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem   mem;
         task_ctx ctx{ mem };
@@ -5208,7 +5246,9 @@ TEST_CASE_TEMPLATE(
     "task - an awaited operation state is destroyed exactly once",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem   mem;
         task_ctx ctx{ mem };
@@ -5258,7 +5298,9 @@ TEST_CASE_TEMPLATE(
     "task - with promise_owns_operations an operation state ends before its co_await returns",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem   mem;
         task_ctx ctx{ mem };
@@ -5292,6 +5334,321 @@ TEST_CASE(
         using owning_int_awaitable = decltype( std::declval< owning_promise& >().await_transform(
             std::declval< ll_source< unit, set_value_t( int ) >& >().schedule() ) );
         static_assert( std::is_trivially_destructible_v< owning_int_awaitable > );
+}
+
+struct _captured_promise
+{
+        void*                promise = nullptr;
+        _promise_debug_link* link    = nullptr;
+};
+
+/// Records the promise of the coroutine that awaits it, without suspending.
+struct _capture_promise
+{
+        _captured_promise* out;
+
+        [[nodiscard]] bool await_ready() const noexcept
+        {
+                return false;
+        }
+        template < typename P >
+        bool await_suspend( std::coroutine_handle< P > h ) noexcept
+        {
+                out->promise = &h.promise();
+                if constexpr ( std::derived_from< P, _promise_debug_link > )
+                        out->link = &h.promise();
+                return false;
+        }
+        void await_resume() const noexcept
+        {
+        }
+};
+
+/// True when `t`'s promise has no link or links no task.
+static bool unlinked( _captured_promise const& t )
+{
+        return !t.link || !t.link->_debug_parent;
+}
+
+using dp_source_t = ll_source< unit, set_value_t(), set_error_t( task_error ), set_stopped_t() >;
+
+template < typename CFG >
+static task< void, CFG > dp_child( task_ctx&, dp_source_t& src, _captured_promise& self )
+{
+        co_await _capture_promise{ &self };
+        co_await src.schedule();
+}
+
+template < typename ParentCFG, typename ChildCFG >
+static task< void, ParentCFG >
+dp_parent( task_ctx& ctx, dp_source_t& src, _captured_promise& self, _captured_promise& child )
+{
+        co_await _capture_promise{ &self };
+        co_await dp_child< ChildCFG >( ctx, src, child );
+}
+
+template < typename CFG >
+static task< void, CFG > dp_grandparent(
+    task_ctx&          ctx,
+    dp_source_t&       src,
+    _captured_promise& self,
+    _captured_promise& parent,
+    _captured_promise& child )
+{
+        co_await _capture_promise{ &self };
+        co_await dp_parent< CFG, CFG >( ctx, src, parent, child );
+}
+
+template < typename CFG >
+static task< void, CFG > dp_parent_of_two(
+    task_ctx&          ctx,
+    dp_source_t&       src,
+    _captured_promise& self,
+    _captured_promise& first,
+    _captured_promise& second )
+{
+        co_await _capture_promise{ &self };
+        co_await dp_child< CFG >( ctx, src, first );
+        co_await dp_child< CFG >( ctx, src, second );
+}
+
+template < typename Parent, typename Child >
+struct dp_pair
+{
+        using parent = Parent;
+        using child  = Child;
+};
+
+/// Every pair of `Cfgs`, in both orders and with itself.
+template < typename... Cfgs >
+struct dp_pairs_of
+{
+        template < typename Parent >
+        using row = std::tuple< dp_pair< Parent, Cfgs >... >;
+
+        using type = decltype( std::tuple_cat( std::declval< row< Cfgs > >()... ) );
+};
+
+using dp_cfg_pairs = dp_pairs_of<
+    task_default_cfg,
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg,
+    _debug_shared_suspend_cfg,
+    _owning_debug_shared_suspend_cfg >::type;
+
+static_assert( std::tuple_size_v< dp_cfg_pairs > == 36 );
+
+TEST_CASE( "_task_cfg_debug_parent - false unless the configuration sets it" )
+{
+        static_assert( !_task_cfg_debug_parent< task_default_cfg > );
+        static_assert( !_task_cfg_debug_parent< _undeclared_flag_cfg > );
+        static_assert( !_task_cfg_debug_parent< _owning_cfg > );
+        static_assert( !_task_cfg_debug_parent< _owning_shared_suspend_cfg > );
+        static_assert( _task_cfg_debug_parent< _debug_parent_cfg > );
+        static_assert( _task_cfg_debug_parent< _owning_debug_parent_cfg > );
+        static_assert( _task_cfg_debug_parent< _debug_shared_suspend_cfg > );
+        static_assert( _task_cfg_debug_parent< _owning_debug_shared_suspend_cfg > );
+}
+
+TEST_CASE( "task - debug_parent adds one pointer to the promise and two to an awaitable" )
+{
+        using default_promise      = task< void >::promise_type;
+        using debug_promise        = task< void, _debug_parent_cfg >::promise_type;
+        using owning_promise       = task< void, _owning_cfg >::promise_type;
+        using owning_debug_promise = task< void, _owning_debug_parent_cfg >::promise_type;
+        static_assert( !std::is_base_of_v< _promise_debug_link, default_promise > );
+        static_assert( !std::is_base_of_v< _promise_debug_link, owning_promise > );
+        static_assert( sizeof( debug_promise ) == sizeof( default_promise ) + sizeof( void* ) );
+        static_assert(
+            sizeof( owning_debug_promise ) == sizeof( owning_promise ) + sizeof( void* ) );
+
+        using default_awaitable = decltype( std::declval< default_promise& >().await_transform(
+            std::declval< _plain_ll_source& >().schedule() ) );
+        using debug_awaitable   = decltype( std::declval< debug_promise& >().await_transform(
+            std::declval< _plain_ll_source& >().schedule() ) );
+        static_assert(
+            sizeof( debug_awaitable ) == sizeof( default_awaitable ) + 2 * sizeof( void* ) );
+
+        using owning_awaitable = decltype( std::declval< owning_promise& >().await_transform(
+            std::declval< _plain_ll_source& >().schedule() ) );
+        using owning_debug_awaitable =
+            decltype( std::declval< owning_debug_promise& >().await_transform(
+                std::declval< _plain_ll_source& >().schedule() ) );
+        static_assert(
+            sizeof( owning_debug_awaitable ) == sizeof( owning_awaitable ) + 2 * sizeof( void* ) );
+        static_assert( std::is_trivially_destructible_v< owning_debug_awaitable > );
+}
+
+TEST_CASE_TEMPLATE_DEFINE(
+    "task - debug_parent links an awaited task exactly when both configurations set it",
+    Pair,
+    dp_link_test )
+{
+        using P                  = typename Pair::parent;
+        using C                  = typename Pair::child;
+        constexpr bool    linked = _task_cfg_debug_parent< P > && _task_cfg_debug_parent< C >;
+        nd_mem            mem;
+        task_ctx          ctx{ mem };
+        dp_source_t       src;
+        _captured_promise parent, child;
+        int               values = 0, stopped = 0, errors = 0;
+
+        auto op = dp_parent< P, C >( ctx, src, parent, child )
+                      .connect( _completion_counter{ &values, &stopped, &errors } );
+        op.start();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        REQUIRE( child.promise != nullptr );
+        CHECK( ( parent.link != nullptr ) == _task_cfg_debug_parent< P > );
+        CHECK( ( child.link != nullptr ) == _task_cfg_debug_parent< C > );
+        if constexpr ( _task_cfg_debug_parent< P > ) {
+                CHECK( static_cast< void* >( parent.link ) == parent.promise );
+                CHECK( parent.link->_debug_parent == nullptr );
+        }
+        if constexpr ( _task_cfg_debug_parent< C > ) {
+                CHECK( static_cast< void* >( child.link ) == child.promise );
+                CHECK( child.link->_debug_parent == ( linked ? parent.link : nullptr ) );
+        }
+
+        SUBCASE( "until it completes with a value" )
+        {
+                broadcast( src, []( auto& e ) {
+                        e.set_value();
+                } );
+                ctx.core.run_once();
+                CHECK( unlinked( child ) );
+                CHECK( values == 0 );
+                ctx.core.run_once();
+                CHECK( values == 1 );
+        }
+        SUBCASE( "until it completes with an error" )
+        {
+                broadcast( src, []( auto& e ) {
+                        e.set_error( task_error::task_missing );
+                } );
+                CHECK( unlinked( child ) );
+                CHECK( errors == 1 );
+        }
+        SUBCASE( "until it completes stopped" )
+        {
+                broadcast( src, []( auto& e ) {
+                        e.set_stopped();
+                } );
+                CHECK( unlinked( child ) );
+                CHECK( stopped == 1 );
+        }
+        CHECK( values + errors + stopped == 1 );
+}
+
+TEST_CASE_TEMPLATE_APPLY( dp_link_test, dp_cfg_pairs );
+
+TEST_CASE_TEMPLATE_DEFINE(
+    "task - a chain suspended in a child can be destroyed, whatever the two configurations",
+    Pair,
+    dp_destroy_test )
+{
+        using P = typename Pair::parent;
+        using C = typename Pair::child;
+        nd_mem            mem;
+        task_ctx          ctx{ mem };
+        dp_source_t       src;
+        _captured_promise parent, child;
+        int               values = 0, stopped = 0, errors = 0;
+        {
+                auto op = dp_parent< P, C >( ctx, src, parent, child )
+                              .connect( _completion_counter{ &values, &stopped, &errors } );
+                op.start();
+                ctx.core.run_once();
+                ctx.core.run_once();
+                CHECK( !src.empty() );
+        }
+        CHECK( values == 0 );
+        CHECK( errors == 0 );
+        CHECK( stopped == 1 );
+        CHECK( src.empty() );
+        CHECK( !ctx.core.run_once() );
+}
+
+TEST_CASE_TEMPLATE_APPLY( dp_destroy_test, dp_cfg_pairs );
+
+TEST_CASE_TEMPLATE(
+    "task - debug_parent links each task of a chain of three to the one above",
+    CFG,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg,
+    _debug_shared_suspend_cfg,
+    _owning_debug_shared_suspend_cfg )
+{
+        nd_mem            mem;
+        task_ctx          ctx{ mem };
+        dp_source_t       src;
+        _captured_promise grandparent, parent, child;
+        int               values = 0, stopped = 0;
+
+        auto op = dp_grandparent< CFG >( ctx, src, grandparent, parent, child )
+                      .connect( _completion_counter{ &values, &stopped } );
+        op.start();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        REQUIRE( child.link != nullptr );
+        CHECK( child.link->_debug_parent == parent.link );
+        CHECK( parent.link->_debug_parent == grandparent.link );
+        CHECK( grandparent.link->_debug_parent == nullptr );
+
+        broadcast( src, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_once();
+        CHECK( unlinked( child ) );
+        CHECK( parent.link->_debug_parent == grandparent.link );
+        ctx.core.run_once();
+        CHECK( unlinked( parent ) );
+        CHECK( values == 0 );
+        ctx.core.run_once();
+        CHECK( values == 1 );
+}
+
+TEST_CASE_TEMPLATE(
+    "task - debug_parent links each child a task awaits in turn",
+    CFG,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg,
+    _debug_shared_suspend_cfg,
+    _owning_debug_shared_suspend_cfg )
+{
+        nd_mem            mem;
+        task_ctx          ctx{ mem };
+        dp_source_t       src;
+        _captured_promise parent, first, second;
+        int               values = 0, stopped = 0;
+
+        auto op = dp_parent_of_two< CFG >( ctx, src, parent, first, second )
+                      .connect( _completion_counter{ &values, &stopped } );
+        op.start();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        REQUIRE( first.link != nullptr );
+        CHECK( first.link->_debug_parent == parent.link );
+        CHECK( second.link == nullptr );
+
+        broadcast( src, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_once();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        REQUIRE( second.link != nullptr );
+        CHECK( second.link->_debug_parent == parent.link );
+
+        broadcast( src, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_once();
+        CHECK( unlinked( second ) );
+        ctx.core.run_once();
+        CHECK( values == 1 );
 }
 
 TEST_CASE( "_bare_optional - trivially destructible exactly when its value type is" )
@@ -6808,6 +7165,62 @@ TEST_CASE( "task_holder - stateful functor factory" )
 
 // -------------------------------------------------------------------------------
 // ecor::wait_until_stopped tests
+
+TEST_CASE_TEMPLATE(
+    "task_holder - restarts a chain of two tasks with any configuration",
+    CFG,
+    task_default_cfg,
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg,
+    _debug_shared_suspend_cfg,
+    _owning_debug_shared_suspend_cfg )
+{
+        nd_mem            mem;
+        task_ctx          ctx{ mem };
+        dp_source_t       src;
+        _captured_promise parent, child;
+        auto              factory = [&]( task_ctx& c ) {
+                return dp_parent< CFG, CFG >( c, src, parent, child );
+        };
+        task_holder< CFG, task_ctx, decltype( factory ) > h{ ctx, factory };
+        auto const                                        linked_to_parent = [&] {
+                if constexpr ( _task_cfg_debug_parent< CFG > )
+                        return child.link->_debug_parent == parent.link;
+                else
+                        return child.link == nullptr;
+        };
+
+        h.start();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        CHECK( !src.empty() );
+        CHECK( linked_to_parent() );
+
+        broadcast( src, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_once();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        CHECK( !src.empty() );
+        CHECK( linked_to_parent() );
+
+        bool done = false;
+        auto d    = h.stop().connect( th_done_recv{ &done } );
+        d.start();
+        broadcast( src, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_once();
+        ctx.core.run_once();
+        ctx.core.run_once();
+        CHECK( done );
+        CHECK( !ctx.core.run_once() );
+}
 
 TEST_CASE( "wait_until_stopped - a receiver completed in start() may destroy the operation state" )
 {

@@ -127,11 +127,15 @@ struct capture_trace2 : ecor::task_default_trace
 struct test_cfg : ecor::task_default_cfg
 {
         using trace_type = capture_trace;
+
+        static constexpr bool debug_parent = true;
 };
 
 struct test_cfg2 : ecor::task_default_cfg
 {
         using trace_type = capture_trace2;
+
+        static constexpr bool debug_parent = true;
 };
 
 using test_task  = ecor::task< void, test_cfg >;
@@ -237,7 +241,6 @@ void run_tests( mode m, auto& st )
                 ctx.core.run_once();  // finish coroutine
         }
 
-#ifdef ECOR_DEBUG_PARENT
         // S3: inner promise while suspended inside outer — _debug_parent chain
         {
                 ecor::ll_source< ecor::unit, ecor::set_value_t() > src;
@@ -350,7 +353,6 @@ void run_tests( mode m, auto& st )
                 ctx.core.run_once();
                 g_inner_src = nullptr;
         }
-#endif
 }
 
 // ---------------------------------------------------------------------------

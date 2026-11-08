@@ -192,15 +192,22 @@ measured alternatives are in the code-size skill:
   a frame destroyed elsewhere leaves its node on the ready list. The "exactly once" test covers
   the paths that exist.
 - **A child's stop arrives after its frame is gone**, so the code it reaches must not look at the
-  child. Only the debug parent link does: with `ECOR_DEBUG_PARENT`, `_task_op` empties its handle
-  before `_destroy_frame()` and the link skips a `_task_op` without one; release builds keep the
-  store out, 4 bytes per destroy site. Scenarios S5 and S6 of `gdb_test.cpp` destroy suspended
-  chains in such a build; the unit tests do not define it, so run the gdb test binary's `gen`
-  mode from the asan preset after changing a destruction path.
-- **`_promise_base` must stay the first base of every promise.** `pprinter.py` finds the frame of
-  the task that `_debug_parent` points at from that address. The gdb tests run only on Linux
-  with GCC and gdb, so check a change of the promise's bases in a Linux container before it
-  lands; a run on macOS passes whatever the layout.
+  child. Only the debug parent link does: with `debug_parent`, `_task_op` empties its handle
+  before `_destroy_frame()` and the link skips a `_task_op` without one; configurations without
+  it keep the store out, 4 bytes per destroy site. The test "a chain suspended in a child can be
+  destroyed, whatever the two configurations" covers every pair of the six test configurations;
+  run it in the asan preset after changing a destruction path.
+- **`_promise_debug_link` must stay the first base of every promise that has it.** `pprinter.py`
+  finds the frame of the task that `_debug_parent` points at from that address, without knowing
+  that task's configuration, so the link cannot be a member, whose offset would depend on it. The
+  gdb tests run only on Linux with GCC and gdb, so check a change of the promise's bases in a
+  Linux container before it lands; a run on macOS passes whatever the layout.
+- **A test reaches a task's promise through an awaiter.** `_capture_promise` in `base_utest.cpp`
+  records `&h.promise()` in `await_suspend` and returns false, so the coroutine runs on.
+- **Test a parent and a child over every pair of configurations.** `dp_pairs_of< Cfgs... >`
+  builds the tuple of all pairs for `TEST_CASE_TEMPLATE_APPLY`; doctest names each case after its
+  pair. A new task configuration flag joins the six configurations of `dp_cfg_pairs` and the type
+  lists of the templated task tests.
 - **Check properties of release builds in `test/release_checks.cpp`.** It compiles without
   `ECOR_DEFAULT_ASSERT`, the only build in which the promise is trivially destructible.
 - **Pin a destruction order with a local that records what it sees when destroyed.** A watcher
@@ -209,11 +216,12 @@ measured alternatives are in the code-size skill:
 - **One parameter per optimization, members instead of mixins.** `_promise_cfg_base` takes
   `LazyNode`, `OwnsAwaitedOp` and `DestructorFree`, all derived from `promise_owns_operations` in
   `_promise_cfg_base_of`; each branch tests the one it serves. What a configuration leaves out is
-  an `_absent< N >` member or base: the ready-list node is the `_node` member with `LazyNode` and a
-  `_reschedulable` base without it, the awaited operation state is the `_awaited` member. The
-  raw-storage awaitable is a partial specialization of `_task_awaitable` chosen by
-  `PromiseBase::_owns_awaited_op`. Keep `_node` and `_awaited` the first members, in this order,
-  so the layout of either configuration does not move.
+  an `_absent< T >` member or base, with `T` the type left out, so that stand-ins never collide:
+  the ready-list node is the `_node` member with `LazyNode` and a `_reschedulable` base without
+  it, the awaited operation state is the `_awaited` member. The raw-storage awaitable is a partial
+  specialization of `_task_awaitable` chosen by `PromiseBase::_owns_awaited_op`. Keep `_node` and
+  `_awaited` the first members, in this order, so the layout of either configuration does not
+  move.
 - **The debug parent link is cleared in `_receiver::set_value`**, before an owned child's frame
   goes at the parent's resumption, where `await_resume` would read it after it was freed.
 - **`task_holder`'s deduction guide assumes `task_default_cfg`**, so a holder of tasks with

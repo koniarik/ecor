@@ -167,4 +167,15 @@ struct _owning_cfg : task_default_cfg
         static constexpr bool promise_owns_operations = true;
 };
 
+struct _debug_parent_cfg : task_default_cfg
+{
+        static constexpr bool debug_parent = true;
+};
+
+struct _owning_debug_parent_cfg : task_default_cfg
+{
+        static constexpr bool promise_owns_operations = true;
+        static constexpr bool debug_parent            = true;
+};
+
 }  // namespace ecor

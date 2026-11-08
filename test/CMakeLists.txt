@@ -36,8 +36,7 @@ add_executable(ecor_gdb_test ${CMAKE_CURRENT_SOURCE_DIR}/gdb_test.cpp)
 target_include_directories(ecor_gdb_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ecor_gdb_test PRIVATE ecor)
 target_compile_options(ecor_gdb_test PRIVATE -g -O0)
-target_compile_definitions(ecor_gdb_test PRIVATE ECOR_DEBUG_PARENT
-                                                 ECOR_DEFAULT_ASSERT)
+target_compile_definitions(ecor_gdb_test PRIVATE ECOR_DEFAULT_ASSERT)
 
 find_program(GDB_EXECUTABLE gdb)
 if(GDB_EXECUTABLE

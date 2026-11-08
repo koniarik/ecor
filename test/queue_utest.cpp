@@ -2554,7 +2554,9 @@ TEST_CASE_TEMPLATE(
     "push_and_wait - a destroyed task withdraws its call before destroying its locals",
     CFG,
     task_default_cfg,
-    _owning_cfg )
+    _owning_cfg,
+    _debug_parent_cfg,
+    _owning_debug_parent_cfg )
 {
         nd_mem                     mem;
         task_ctx                   ctx{ mem };

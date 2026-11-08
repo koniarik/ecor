@@ -1891,6 +1891,26 @@ Load it once per GDB session, or add it to your `.gdbinit`:
 source /path/to/ecor/pprinter.py
 ```
 
+With a task configuration that sets `debug_parent`, an awaited task's promise records the promise
+of the task that awaits it, and the printer follows that chain:
+
+```cpp
+struct debug_cfg : ecor::task_default_cfg
+{
+        static constexpr bool debug_parent = true;
+};
+
+ecor::task< void, debug_cfg > outer( ecor::task_ctx& ctx );
+```
+
+```
+$1 = ecor::_promise_type [inner()] @ src/inner.cpp:12
+    <- awaited by [outer()] @ src/outer.cpp:30
+```
+
+A link exists only between two tasks whose configurations both set `debug_parent`. It costs one
+pointer of RAM per coroutine frame and two per `co_await`; configurations without it pay nothing.
+
 
 ## Credits
 
