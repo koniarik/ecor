@@ -192,11 +192,9 @@ measured alternatives are in the code-size skill:
   a frame destroyed elsewhere leaves its node on the ready list. The "exactly once" test covers
   the paths that exist.
 - **A child's stop arrives after its frame is gone**, so the code it reaches must not look at the
-  child. Only the debug parent link does: with `debug_parent`, `_task_op` empties its handle
-  before `_destroy_frame()` and the link skips a `_task_op` without one; configurations without
-  it keep the store out, 4 bytes per destroy site. The test "a chain suspended in a child can be
-  destroyed, whatever the two configurations" covers every pair of the six test configurations;
-  run it in the asan preset after changing a destruction path.
+  child. The test "a chain suspended in a child can be destroyed, whatever the two
+  configurations" covers every pair of the six test configurations; run it in the asan preset
+  after changing a destruction path.
 - **`_promise_debug_link` must stay the first base of every promise that has it.** `pprinter.py`
   finds the frame of the task that `_debug_parent` points at from that address, without knowing
   that task's configuration, so the link cannot be a member, whose offset would depend on it. The
@@ -222,8 +220,12 @@ measured alternatives are in the code-size skill:
   specialization of `_task_awaitable` chosen by `PromiseCore::_owns_awaited_op`. Keep `_node` and
   `_awaited` the first members, in this order, so the layout of either configuration does not
   move.
-- **The debug parent link is cleared in `_receiver::set_value`**, before an owned child's frame
-  goes at the parent's resumption, where `await_resume` would read it after it was freed.
+- **The debug parent link travels in the environment.** A debug task's environment answers
+  `_get_debug_parent_t` with its promise and a debug child's `_task_op::start()` stores the
+  answer, so adaptors that forward their receiver's environment, such as `when_any` and `then`,
+  need no code for it. Nothing unlinks it: a child's frame is owned by an operation state nested
+  in the awaiting task's frame and goes first. An adaptor that passed the environment to an
+  operation it detaches would break that.
 - **`task_holder`'s deduction guide assumes `task_default_cfg`**, so a holder of tasks with
   another configuration is spelt out.
 

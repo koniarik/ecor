@@ -3103,9 +3103,9 @@ inline constexpr bool _task_cfg_debug_parent< CFG > = CFG::debug_parent;
 ///   with this configuration's promise base, instead of a copy per awaitable and task type: less
 ///   code when many task types await the same things, a little more for one awaited only once.
 /// - It may have a `static constexpr bool debug_parent`, false when absent. When true, a task
-///   awaited by another task whose configuration also sets it records that task's promise, so that
-///   `pprinter.py` prints the chain of awaiting tasks in GDB: one more pointer of RAM per coroutine
-///   frame and two per `co_await` in it.
+///   awaited by another task that sets it, directly or through adaptors such as `when_any`,
+///   records that task's promise, so that `pprinter.py` prints the chain of awaiting tasks: one
+///   more pointer of RAM per coroutine frame.
 template < typename T >
 concept task_config =
     requires() {
@@ -3276,12 +3276,42 @@ struct _promise_awaited_op
         }
 };
 
-/// The promise of the task that awaits this one, null while none does. Must stay the first base of
-/// every promise that has it: `pprinter.py` finds the frame of the promise `_debug_parent` points
-/// at from its address.
+/// The promise of the task awaiting this one, or null; it outlives this task's frame. Must stay the
+/// first base of every promise that has it: `pprinter.py` finds the frame of the promise
+/// `_debug_parent` points at from its address.
 struct _promise_debug_link
 {
-        _promise_debug_link* _debug_parent = nullptr;
+        _promise_debug_link const* _debug_parent = nullptr;
+};
+
+struct _get_debug_parent_t
+{
+        template < typename Env >
+        _promise_debug_link const* operator()( Env const& env ) const noexcept
+        {
+                if constexpr ( requires { env.query( _get_debug_parent_t{} ); } )
+                        return env.query( _get_debug_parent_t{} );
+                else
+                        return nullptr;
+        }
+};
+
+inline constexpr _get_debug_parent_t _get_debug_parent{};
+
+struct _debug_parent_env
+{
+        inplace_stop_token         _token;
+        _promise_debug_link const* _parent;
+
+        [[nodiscard]] inplace_stop_token query( get_stop_token_t /*tag*/ ) const noexcept
+        {
+                return _token;
+        }
+
+        [[nodiscard]] _promise_debug_link const* query( _get_debug_parent_t /*tag*/ ) const noexcept
+        {
+                return _parent;
+        }
 };
 
 template < bool DebugParent >
@@ -3373,15 +3403,10 @@ struct ECOR_EMPTY_BASES _promise_core : _promise_debug_base_t< DebugParent >,
         template < typename P >
         ECOR_FORCE_INLINE void _destroy_coroutine( std::coroutine_handle< P >& h ) noexcept
         {
-                if constexpr ( _destructor_free ) {
-                        // The awaiting task's debug link reads `h` after the frame is gone.
-                        if constexpr ( _has_debug_parent )
-                                _destroy_frame( std::exchange( h, nullptr ) );
-                        else
-                                _destroy_frame( h );
-                } else {
+                if constexpr ( _destructor_free )
+                        _destroy_frame( h );
+                else
                         h.destroy();
-                }
         }
 
         /// Destroys the pending operation state, the ready-list node and the frame, in this order,
@@ -3487,11 +3512,17 @@ public:
 
         inplace_stop_token token;
 
-        using _env = stop_token_env< inplace_stop_token >;
+        using _env = std::conditional_t<
+            _has_debug_parent,
+            _debug_parent_env,
+            stop_token_env< inplace_stop_token > >;
 
         [[nodiscard]] _env get_env() const noexcept
         {
-                return { token };
+                if constexpr ( _has_debug_parent )
+                        return { token, this };
+                else
+                        return { token };
         }
 
         ECOR_NO_UNIQUE_ADDRESS trace_type trace;
@@ -3583,7 +3614,6 @@ struct _task_awaitable_base
         /// operation completed with an error or was stopped.
         decltype( auto ) await_resume() noexcept
         {
-                _clear_debug_parent();
                 _promise->trace.on_await_resume( *this );
                 if constexpr ( std::same_as< value_type, void > )
                         return;
@@ -3610,8 +3640,6 @@ struct _task_awaitable_base
                     std::is_nothrow_constructible_v< value_type, Ts... > ||
                     std::same_as< value_type, void > )
                 {
-                        // An operation state that the promise owns goes before `await_resume()`.
-                        _self->_clear_debug_parent();
                         _self->_promise->trace.on_await_set_value( *_self, vals... );
                         _self->_exp.set_value( (Ts&&) vals... );
                         _self->_promise->_reschedule();
@@ -3620,14 +3648,12 @@ struct _task_awaitable_base
                 template < typename E >
                 void set_error( E&& err )
                 {
-                        _self->_clear_debug_parent();
                         _self->_promise->trace.on_await_set_error( *_self, err );
                         _self->_promise->invoke_set_error( (E&&) err );
                 }
 
                 void set_stopped()
                 {
-                        _self->_clear_debug_parent();
                         _self->_promise->trace.on_await_set_stopped( *_self );
                         _self->_promise->invoke_set_stopped();
                 }
@@ -3641,49 +3667,6 @@ struct _task_awaitable_base
 protected:
         PromiseCore*           _promise = nullptr;
         ECOR_NO_UNIQUE_ADDRESS _awaitable_expected< value_type > _exp;
-
-        /// Links the promise of a child task that `op` starts to this task's promise, when both
-        /// tasks' configurations set `debug_parent`.
-        template < typename Op >
-        void _bind_debug_parent( Op& op ) noexcept
-        {
-                if constexpr ( PromiseCore::_has_debug_parent && requires {
-                                       op._debug_promise();
-                               } ) {
-                        if ( auto* const p = op._debug_promise() )
-                                p->_debug_parent = _promise;
-                        _debug_child.op    = static_cast< void* >( &op );
-                        _debug_child.clear = +[]( void* child ) {
-                                if ( auto* const p = static_cast< Op* >( child )->_debug_promise() )
-                                        p->_debug_parent = nullptr;
-                        };
-                }
-        }
-
-        void _clear_debug_parent() noexcept
-        {
-                if constexpr ( PromiseCore::_has_debug_parent ) {
-                        if ( _debug_child.clear ) {
-                                _debug_child.clear( _debug_child.op );
-                                _debug_child = {};
-                        }
-                }
-        }
-
-        /// The child task operation state whose promise `_bind_debug_parent()` linked, and the
-        /// function that unlinks it; both null when there is none.
-        struct _debug_child_t
-        {
-                void* op                 = nullptr;
-                void ( *clear )( void* ) = nullptr;
-        };
-
-        ECOR_NO_UNIQUE_ADDRESS
-        std::conditional_t<
-            PromiseCore::_has_debug_parent,
-            _debug_child_t,
-            _absent< _debug_child_t > >
-            _debug_child;
 };
 
 /// Awaitable type for co_awaiting on senders. This is the type returned by the operator co_await of
@@ -3730,7 +3713,6 @@ struct _task_awaitable : _task_awaitable_base< PromiseCore, ValueType >
         void _suspend( Promise* p ) noexcept
         {
                 _base::_bind( p );
-                this->_bind_debug_parent( _op );
                 _op.start();
         }
 
@@ -3783,8 +3765,7 @@ struct _task_awaitable< PromiseCore, ValueType, Op >
         void _suspend( Promise* p ) noexcept
         {
                 _base::_bind( p );
-                Op* op = std::launder( reinterpret_cast< Op* >( _buf ) );
-                this->_bind_debug_parent( *op );
+                Op* op                           = std::launder( reinterpret_cast< Op* >( _buf ) );
                 this->_promise->_awaited.cleanup = &_destroy;
                 this->_promise->_awaited.op      = op;
                 op->start();
@@ -4080,6 +4061,10 @@ struct _task_op
                 if constexpr ( !unstoppable_token< _stop_token_of_t< env_type< R > > > )
                         if ( _h )
                                 _h.promise().token = ecor::get_stop_token( ecor::get_env( _recv ) );
+                if constexpr ( promise_type::_has_debug_parent )
+                        if ( _h )
+                                _h.promise()._debug_parent =
+                                    _get_debug_parent( ecor::get_env( _recv ) );
                 if ( promise_type::_base::template _start_op< CFG >(
                          _error,
                          _h,
@@ -4087,13 +4072,6 @@ struct _task_op
                          _vtable_of< R, R, typename promise_type::vtable >,
                          &_recv ) )
                         _h.promise().trace.on_op_start( *this );
-        }
-
-        /// Null while the operation holds no frame.
-        promise_type* _debug_promise() noexcept
-                requires( promise_type::_has_debug_parent )
-        {
-                return _h ? &_h.promise() : nullptr;
         }
 
         void clear()

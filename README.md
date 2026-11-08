@@ -1908,8 +1908,9 @@ $1 = ecor::_promise_type [inner()] @ src/inner.cpp:12
     <- awaited by [outer()] @ src/outer.cpp:30
 ```
 
-A link exists only between two tasks whose configurations both set `debug_parent`. It costs one
-pointer of RAM per coroutine frame and two per `co_await`; configurations without it pay nothing.
+A link exists between two tasks whose configurations both set `debug_parent`, also when the task
+is awaited through `ecor::when_any` or `ecor::then`. It costs one pointer of RAM per coroutine
+frame; configurations without it pay nothing.
 
 
 ## Credits
