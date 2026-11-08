@@ -2788,292 +2788,6 @@ struct _reschedulable : schedulable
         task_core& _core;
 };
 
-template < typename T >
-struct _awaitable_expected
-{
-        _bare_optional< T > val;
-
-        template < typename... Args >
-        void set_value( Args&&... args ) noexcept( std::is_nothrow_constructible_v< T, Args... > )
-        {
-                val.reset();
-                val.emplace( (Args&&) args... );
-        }
-};
-
-template <>
-struct _awaitable_expected< void >
-{
-        _awaitable_expected() noexcept = default;
-
-        void set_value() noexcept
-        {
-        }
-};
-
-/// Helper to extract the value type from the completion signatures of a sender, for use in the
-/// awaitable implementation. This is used to determine the type that the awaitable will return when
-/// co_awaited.
-template < typename T >
-struct _awaitable_extract_type;
-
-template < typename... U >
-struct _awaitable_extract_type< std::variant< std::tuple< U... > > >
-{
-        using type = std::tuple< U... >;
-};
-
-template < typename U >
-struct _awaitable_extract_type< std::variant< std::tuple< U > > >
-{
-        using type = U;
-};
-
-template <>
-struct _awaitable_extract_type< std::variant< std::tuple<> > >
-{
-        using type = void;
-};
-
-template <>
-struct _awaitable_extract_type< std::variant<> >
-{
-        using type = void;
-};
-
-template < typename PromiseBase, typename ValueType >
-struct _task_awaitable_base
-{
-        using value_type = ValueType;
-        using _env       = env_type< PromiseBase >;
-
-        /// Awaitable is never ready
-        [[nodiscard]] constexpr bool await_ready() const noexcept
-        {
-                return false;
-        }
-
-        /// Resumes the coroutine when the operation completes. This assumes that the operation
-        /// completed with a value, and returns the value if there is one. Undefined behavior if the
-        /// operation completed with an error or was stopped.
-        decltype( auto ) await_resume() noexcept
-        {
-#ifdef ECOR_DEBUG_PARENT
-                _clear_debug_parent();
-#endif
-                _promise->trace.on_await_resume( *this );
-                if constexpr ( std::same_as< value_type, void > )
-                        return;
-                else {
-                        ECOR_ASSERT( _exp.val );
-                        return std::move( *_exp.val );
-                }
-        }
-
-        void _bind( PromiseBase* p ) noexcept
-        {
-                this->_promise = p;
-                this->_promise->trace.on_await_suspend( *this );
-        }
-
-        struct _receiver
-        {
-                using receiver_concept = receiver_t;
-
-                _task_awaitable_base* _self;
-
-                template < typename... Ts >
-                void set_value( Ts&&... vals ) noexcept(
-                    std::is_nothrow_constructible_v< value_type, Ts... > ||
-                    std::same_as< value_type, void > )
-                {
-#ifdef ECOR_DEBUG_PARENT
-                        // An operation state that the promise owns goes before `await_resume()`.
-                        _self->_clear_debug_parent();
-#endif
-                        _self->_promise->trace.on_await_set_value( *_self, vals... );
-                        _self->_exp.set_value( (Ts&&) vals... );
-                        _self->_promise->_reschedule();
-                }
-
-                template < typename E >
-                void set_error( E&& err )
-                {
-#ifdef ECOR_DEBUG_PARENT
-                        _self->_clear_debug_parent();
-#endif
-                        _self->_promise->trace.on_await_set_error( *_self, err );
-                        _self->_promise->invoke_set_error( (E&&) err );
-                }
-
-                void set_stopped()
-                {
-#ifdef ECOR_DEBUG_PARENT
-                        _self->_clear_debug_parent();
-#endif
-                        _self->_promise->trace.on_await_set_stopped( *_self );
-                        _self->_promise->invoke_set_stopped();
-                }
-
-                [[nodiscard]] _env get_env() const noexcept
-                {
-                        return _self->_promise->get_env();
-                }
-        };
-
-protected:
-        PromiseBase*           _promise = nullptr;
-        ECOR_NO_UNIQUE_ADDRESS _awaitable_expected< value_type > _exp;
-
-#ifdef ECOR_DEBUG_PARENT
-        template < typename Op >
-        void _bind_debug_parent( Op& op ) noexcept
-        {
-                if constexpr ( requires { op._debug_promise(); } ) {
-                        if ( auto* const p = op._debug_promise() )
-                                p->_debug_parent = _promise;
-                        _debug_child           = static_cast< void* >( &op );
-                        _clear_debug_parent_fn = +[]( void* child ) {
-                                if ( auto* const p = static_cast< Op* >( child )->_debug_promise() )
-                                        p->_debug_parent = nullptr;
-                        };
-                } else {
-                        _debug_child           = nullptr;
-                        _clear_debug_parent_fn = nullptr;
-                }
-        }
-
-        void _clear_debug_parent() noexcept
-        {
-                if ( _clear_debug_parent_fn ) {
-                        _clear_debug_parent_fn( _debug_child );
-                        _debug_child           = nullptr;
-                        _clear_debug_parent_fn = nullptr;
-                }
-        }
-
-        void* _debug_child                        = nullptr;
-        void ( *_clear_debug_parent_fn )( void* ) = nullptr;
-#endif
-};
-
-/// Awaitable type for co_awaiting on senders. This is the type returned by the operator co_await of
-/// senders, and contains the state for the awaitable operation, including the expected result of
-/// the operation and the operation state for the sender.
-///
-/// Awaitable resumes coroutine only on on_value signal.
-///
-template < typename PromiseBase, typename ValueType, typename Op >
-struct _task_awaitable : _task_awaitable_base< PromiseBase, ValueType >
-{
-        using value_type = ValueType;
-        using _base      = _task_awaitable_base< PromiseBase, ValueType >;
-
-        template < typename S >
-        _task_awaitable( S&& sender )
-          : _base()
-          , _op( ( (S&&) sender ).connect( typename _base::_receiver{ ._self = this } ) )
-        {
-                static_assert(
-                    std::same_as< connect_type< S, typename _base::_receiver >, Op >,
-                    "Awaitable op type must match the connected sender op" );
-        }
-
-        using _base::await_ready;
-        using _base::await_resume;
-
-        /// Starts the operation state on awaiter suspension.
-        template < typename P >
-        void await_suspend( std::coroutine_handle< P > ch ) noexcept
-        {
-                if constexpr ( PromiseBase::_shared_await_suspend )
-                        _suspend_shared( &ch.promise() );
-                else
-                        _suspend( &ch.promise() );
-        }
-
-        ECOR_NOINLINE void _suspend_shared( PromiseBase* p ) noexcept
-        {
-                _suspend( p );
-        }
-
-        template < typename Promise >
-        void _suspend( Promise* p ) noexcept
-        {
-                _base::_bind( p );
-#ifdef ECOR_DEBUG_PARENT
-                this->_bind_debug_parent( _op );
-#endif
-                _op.start();
-        }
-
-        Op _op;
-};
-
-/// Awaitable of a task whose configuration sets `promise_owns_operations`. It keeps the operation
-/// state in raw storage, so that it is trivially destructible; `await_suspend` starts the
-/// operation state and leaves it to the promise, which destroys it when the coroutine resumes.
-template < typename PromiseBase, typename ValueType, typename Op >
-        requires( PromiseBase::_owns_awaited_op )
-struct _task_awaitable< PromiseBase, ValueType, Op >
-  : _task_awaitable_base< PromiseBase, ValueType >
-{
-        using value_type = ValueType;
-        using _base      = _task_awaitable_base< PromiseBase, ValueType >;
-
-        template < typename S >
-        _task_awaitable( S&& sender )
-        {
-                static_assert(
-                    std::same_as< connect_type< S, typename _base::_receiver >, Op >,
-                    "Awaitable op type must match the connected sender op" );
-                ::new ( (void*) _buf )
-                    Op( ( (S&&) sender ).connect( typename _base::_receiver{ ._self = this } ) );
-        }
-
-        // The operation state holds this object's address.
-        _task_awaitable( _task_awaitable const& ) = delete;
-
-        using _base::await_ready;
-        using _base::await_resume;
-
-        /// Starts the operation state on awaiter suspension.
-        template < typename P >
-        void await_suspend( std::coroutine_handle< P > ch ) noexcept
-        {
-                if constexpr ( PromiseBase::_shared_await_suspend )
-                        _suspend_shared( &ch.promise() );
-                else
-                        _suspend( &ch.promise() );
-        }
-
-        ECOR_NOINLINE void _suspend_shared( PromiseBase* p ) noexcept
-        {
-                _suspend( p );
-        }
-
-        template < typename Promise >
-        void _suspend( Promise* p ) noexcept
-        {
-                _base::_bind( p );
-                Op* op = std::launder( reinterpret_cast< Op* >( _buf ) );
-#ifdef ECOR_DEBUG_PARENT
-                this->_bind_debug_parent( *op );
-#endif
-                this->_promise->_awaited.cleanup = &_destroy;
-                this->_promise->_awaited.op      = op;
-                op->start();
-        }
-
-private:
-        static void _destroy( void* op ) noexcept
-        {
-                static_cast< Op* >( op )->~Op();
-        }
-
-        alignas( Op ) unsigned char _buf[sizeof( Op )];
-};
-
 template < class Alloc >
 concept simple_allocator = requires( Alloc alloc, size_t n ) {
         { *alloc.allocate( n ) } -> std::same_as< typename Alloc::value_type& >;
@@ -3761,6 +3475,333 @@ using _promise_cfg_base_of = _promise_cfg_base<
     _task_cfg_promise_owns_operations< CFG >,
     _task_cfg_promise_owns_operations< CFG >,
     _task_cfg_shared_await_suspend< CFG > >;
+
+template < typename T >
+struct _awaitable_expected
+{
+        _bare_optional< T > val;
+
+        template < typename... Args >
+        void set_value( Args&&... args ) noexcept( std::is_nothrow_constructible_v< T, Args... > )
+        {
+                val.reset();
+                val.emplace( (Args&&) args... );
+        }
+};
+
+template <>
+struct _awaitable_expected< void >
+{
+        _awaitable_expected() noexcept = default;
+
+        void set_value() noexcept
+        {
+        }
+};
+
+/// Helper to extract the value type from the completion signatures of a sender, for use in the
+/// awaitable implementation. This is used to determine the type that the awaitable will return when
+/// co_awaited.
+template < typename T >
+struct _awaitable_extract_type;
+
+template < typename... U >
+struct _awaitable_extract_type< std::variant< std::tuple< U... > > >
+{
+        using type = std::tuple< U... >;
+};
+
+template < typename U >
+struct _awaitable_extract_type< std::variant< std::tuple< U > > >
+{
+        using type = U;
+};
+
+template <>
+struct _awaitable_extract_type< std::variant< std::tuple<> > >
+{
+        using type = void;
+};
+
+template <>
+struct _awaitable_extract_type< std::variant<> >
+{
+        using type = void;
+};
+
+template < typename PromiseBase, typename ValueType >
+struct _task_awaitable_base
+{
+        using value_type = ValueType;
+        using _env       = env_type< PromiseBase >;
+
+        /// Awaitable is never ready
+        [[nodiscard]] constexpr bool await_ready() const noexcept
+        {
+                return false;
+        }
+
+        /// Resumes the coroutine when the operation completes. This assumes that the operation
+        /// completed with a value, and returns the value if there is one. Undefined behavior if the
+        /// operation completed with an error or was stopped.
+        decltype( auto ) await_resume() noexcept
+        {
+#ifdef ECOR_DEBUG_PARENT
+                _clear_debug_parent();
+#endif
+                _promise->trace.on_await_resume( *this );
+                if constexpr ( std::same_as< value_type, void > )
+                        return;
+                else {
+                        ECOR_ASSERT( _exp.val );
+                        return std::move( *_exp.val );
+                }
+        }
+
+        void _bind( PromiseBase* p ) noexcept
+        {
+                this->_promise = p;
+                this->_promise->trace.on_await_suspend( *this );
+        }
+
+        struct _receiver
+        {
+                using receiver_concept = receiver_t;
+
+                _task_awaitable_base* _self;
+
+                template < typename... Ts >
+                void set_value( Ts&&... vals ) noexcept(
+                    std::is_nothrow_constructible_v< value_type, Ts... > ||
+                    std::same_as< value_type, void > )
+                {
+#ifdef ECOR_DEBUG_PARENT
+                        // An operation state that the promise owns goes before `await_resume()`.
+                        _self->_clear_debug_parent();
+#endif
+                        _self->_promise->trace.on_await_set_value( *_self, vals... );
+                        _self->_exp.set_value( (Ts&&) vals... );
+                        _self->_promise->_reschedule();
+                }
+
+                template < typename E >
+                void set_error( E&& err )
+                {
+#ifdef ECOR_DEBUG_PARENT
+                        _self->_clear_debug_parent();
+#endif
+                        _self->_promise->trace.on_await_set_error( *_self, err );
+                        _self->_promise->invoke_set_error( (E&&) err );
+                }
+
+                void set_stopped()
+                {
+#ifdef ECOR_DEBUG_PARENT
+                        _self->_clear_debug_parent();
+#endif
+                        _self->_promise->trace.on_await_set_stopped( *_self );
+                        _self->_promise->invoke_set_stopped();
+                }
+
+                [[nodiscard]] _env get_env() const noexcept
+                {
+                        return _self->_promise->get_env();
+                }
+        };
+
+protected:
+        PromiseBase*           _promise = nullptr;
+        ECOR_NO_UNIQUE_ADDRESS _awaitable_expected< value_type > _exp;
+
+#ifdef ECOR_DEBUG_PARENT
+        template < typename Op >
+        void _bind_debug_parent( Op& op ) noexcept
+        {
+                if constexpr ( requires { op._debug_promise(); } ) {
+                        if ( auto* const p = op._debug_promise() )
+                                p->_debug_parent = _promise;
+                        _debug_child           = static_cast< void* >( &op );
+                        _clear_debug_parent_fn = +[]( void* child ) {
+                                if ( auto* const p = static_cast< Op* >( child )->_debug_promise() )
+                                        p->_debug_parent = nullptr;
+                        };
+                } else {
+                        _debug_child           = nullptr;
+                        _clear_debug_parent_fn = nullptr;
+                }
+        }
+
+        void _clear_debug_parent() noexcept
+        {
+                if ( _clear_debug_parent_fn ) {
+                        _clear_debug_parent_fn( _debug_child );
+                        _debug_child           = nullptr;
+                        _clear_debug_parent_fn = nullptr;
+                }
+        }
+
+        void* _debug_child                        = nullptr;
+        void ( *_clear_debug_parent_fn )( void* ) = nullptr;
+#endif
+};
+
+/// Awaitable type for co_awaiting on senders. This is the type returned by the operator co_await of
+/// senders, and contains the state for the awaitable operation, including the expected result of
+/// the operation and the operation state for the sender.
+///
+/// Awaitable resumes coroutine only on on_value signal.
+///
+template < typename PromiseBase, typename ValueType, typename Op >
+struct _task_awaitable : _task_awaitable_base< PromiseBase, ValueType >
+{
+        using value_type = ValueType;
+        using _base      = _task_awaitable_base< PromiseBase, ValueType >;
+
+        template < typename S >
+        _task_awaitable( S&& sender )
+          : _base()
+          , _op( ( (S&&) sender ).connect( typename _base::_receiver{ ._self = this } ) )
+        {
+                static_assert(
+                    std::same_as< connect_type< S, typename _base::_receiver >, Op >,
+                    "Awaitable op type must match the connected sender op" );
+        }
+
+        using _base::await_ready;
+        using _base::await_resume;
+
+        /// Starts the operation state on awaiter suspension.
+        template < typename P >
+        void await_suspend( std::coroutine_handle< P > ch ) noexcept
+        {
+                if constexpr ( PromiseBase::_shared_await_suspend )
+                        _suspend_shared( &ch.promise() );
+                else
+                        _suspend( &ch.promise() );
+        }
+
+        ECOR_NOINLINE void _suspend_shared( PromiseBase* p ) noexcept
+        {
+                _suspend( p );
+        }
+
+        template < typename Promise >
+        void _suspend( Promise* p ) noexcept
+        {
+                _base::_bind( p );
+#ifdef ECOR_DEBUG_PARENT
+                this->_bind_debug_parent( _op );
+#endif
+                _op.start();
+        }
+
+        Op _op;
+};
+
+/// Awaitable of a task whose configuration sets `promise_owns_operations`. It keeps the operation
+/// state in raw storage, so that it is trivially destructible; `await_suspend` starts the
+/// operation state and leaves it to the promise, which destroys it when the coroutine resumes.
+template < typename PromiseBase, typename ValueType, typename Op >
+        requires( PromiseBase::_owns_awaited_op )
+struct _task_awaitable< PromiseBase, ValueType, Op >
+  : _task_awaitable_base< PromiseBase, ValueType >
+{
+        using value_type = ValueType;
+        using _base      = _task_awaitable_base< PromiseBase, ValueType >;
+
+        template < typename S >
+        _task_awaitable( S&& sender )
+        {
+                static_assert(
+                    std::same_as< connect_type< S, typename _base::_receiver >, Op >,
+                    "Awaitable op type must match the connected sender op" );
+                ::new ( (void*) _buf )
+                    Op( ( (S&&) sender ).connect( typename _base::_receiver{ ._self = this } ) );
+        }
+
+        // The operation state holds this object's address.
+        _task_awaitable( _task_awaitable const& ) = delete;
+
+        using _base::await_ready;
+        using _base::await_resume;
+
+        /// Starts the operation state on awaiter suspension.
+        template < typename P >
+        void await_suspend( std::coroutine_handle< P > ch ) noexcept
+        {
+                if constexpr ( PromiseBase::_shared_await_suspend )
+                        _suspend_shared( &ch.promise() );
+                else
+                        _suspend( &ch.promise() );
+        }
+
+        ECOR_NOINLINE void _suspend_shared( PromiseBase* p ) noexcept
+        {
+                _suspend( p );
+        }
+
+        template < typename Promise >
+        void _suspend( Promise* p ) noexcept
+        {
+                _base::_bind( p );
+                Op* op = std::launder( reinterpret_cast< Op* >( _buf ) );
+#ifdef ECOR_DEBUG_PARENT
+                this->_bind_debug_parent( *op );
+#endif
+                this->_promise->_awaited.cleanup = &_destroy;
+                this->_promise->_awaited.op      = op;
+                op->start();
+        }
+
+private:
+        static void _destroy( void* op ) noexcept
+        {
+                static_cast< Op* >( op )->~Op();
+        }
+
+        alignas( Op ) unsigned char _buf[sizeof( Op )];
+};
+
+/// Awaiter used by ecor::suspend. Suspends the current task coroutine and re-queues it at the back
+/// of the task_core's ready list, allowing other ready tasks to run first.
+///
+/// If the stop token in the task promise is already triggered at suspension time, the task
+/// completes with set_stopped() and does not resume. No callbacks or allocations are involved;
+/// code that never uses this type incurs zero overhead.
+struct _suspend_awaiter
+{
+        [[nodiscard]] static bool await_ready() noexcept
+        {
+                return false;
+        }
+
+        template < typename Promise >
+        void await_suspend( std::coroutine_handle< Promise > h ) const noexcept
+        {
+                auto& p = h.promise();
+                if ( p.token.stop_requested() ) {
+                        p.invoke_set_stopped();
+                        return;
+                }
+                p._reschedule();
+        }
+
+        void await_resume() const noexcept
+        {
+        }
+};
+
+/// Yields the current task to the scheduler, placing it at the back of the ready queue so
+/// that other tasks get a chance to run before this one resumes.
+///
+/// If a stop has already been requested (via the stop token propagated from the receiver)
+/// at the point of suspension, the task completes with set_stopped() and does not resume.
+///
+/// Usage inside a task coroutine:
+///   co_await ecor::suspend;
+///
+/// Zero overhead when not used: no callbacks, no allocations, no extra per-task state.
+inline constexpr _suspend_awaiter suspend{};
 
 /// The `return_value` or `return_void` of `Promise`, whichever its value type `Val` calls for: a
 /// promise may declare only one of them.
@@ -5173,49 +5214,6 @@ struct _wait_until_stopped
 /// triggered. The sender completes with set_value_t() when the stop token is triggered. If the
 /// stop token is never triggered, the sender will never complete.
 inline constexpr _wait_until_stopped wait_until_stopped{};
-
-/// -------------------------------------------------------------------------------
-
-/// Awaiter used by ecor::suspend. Suspends the current task coroutine and re-queues it at the back
-/// of the task_core's ready list, allowing other ready tasks to run first.
-///
-/// If the stop token in the task promise is already triggered at suspension time, the task
-/// completes with set_stopped() and does not resume. No callbacks or allocations are involved;
-/// code that never uses this type incurs zero overhead.
-struct _suspend_awaiter
-{
-        [[nodiscard]] static bool await_ready() noexcept
-        {
-                return false;
-        }
-
-        template < typename Promise >
-        void await_suspend( std::coroutine_handle< Promise > h ) const noexcept
-        {
-                auto& p = h.promise();
-                if ( p.token.stop_requested() ) {
-                        p.invoke_set_stopped();
-                        return;
-                }
-                p._reschedule();
-        }
-
-        void await_resume() const noexcept
-        {
-        }
-};
-
-/// Yields the current task to the scheduler, placing it at the back of the ready queue so
-/// that other tasks get a chance to run before this one resumes.
-///
-/// If a stop has already been requested (via the stop token propagated from the receiver)
-/// at the point of suspension, the task completes with set_stopped() and does not resume.
-///
-/// Usage inside a task coroutine:
-///   co_await ecor::suspend;
-///
-/// Zero overhead when not used: no callbacks, no allocations, no extra per-task state.
-inline constexpr _suspend_awaiter suspend{};
 
 /// -------------------------------------------------------------------------------
 /// async_arena — asynchronous reference-counted lifetime management
