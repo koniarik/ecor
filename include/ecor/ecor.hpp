@@ -2953,14 +2953,14 @@ struct task_default_trace
         /// Called when the task is completing its continuation with `set_error`. This happens
         /// either because an awaited child sender errored and the error was propagated, or
         /// because the coroutine body threw (see `on_unhandled_exception`). `promise` is the
-        /// promise's `_promise_cfg_base`.
+        /// promise's `_promise_core`.
         ECOR_FORCE_INLINE void on_set_error( auto& /*promise*/, auto& /*error*/ ) noexcept
         {
         }
 
         /// Called when the task is completing its continuation with `set_stopped`, i.e. the
         /// task was cancelled (typically because an awaited child sender propagated stop).
-        /// `promise` is the promise's `_promise_cfg_base`.
+        /// `promise` is the promise's `_promise_core`.
         ECOR_FORCE_INLINE void on_set_stopped( auto& /*promise*/ ) noexcept
         {
         }
@@ -2982,7 +2982,7 @@ struct task_default_trace
         /// attached — meaning the task never delivered a completion to it. The promise will
         /// synthesize `set_stopped` for the continuation after this hook returns. Useful for
         /// spotting tasks abandoned by their op_state. `promise` is the promise's
-        /// `_promise_cfg_base`.
+        /// `_promise_core`.
         ECOR_FORCE_INLINE void on_destroy_with_continuation( auto& /*promise*/ ) noexcept
         {
         }
@@ -3307,9 +3307,9 @@ template <
     bool DestructorFree,
     bool SharedSuspend,
     bool DebugParent >
-struct ECOR_EMPTY_BASES _promise_cfg_base : _promise_debug_base_t< DebugParent >,
-                                            _promise_base,
-                                            _promise_node_base_t< LazyNode >
+struct ECOR_EMPTY_BASES _promise_core : _promise_debug_base_t< DebugParent >,
+                                        _promise_base,
+                                        _promise_node_base_t< LazyNode >
 {
         using trace_type     = Trace;
         using _cont_vtable_t = _task_cont_vtable_base< ErrSigs >;
@@ -3326,7 +3326,7 @@ struct ECOR_EMPTY_BASES _promise_cfg_base : _promise_debug_base_t< DebugParent >
 
         using _node_base = _promise_node_base_t< _lazy_node >;
 
-        _promise_cfg_base( task_core& core, schedulable::resume_fn resume ) noexcept
+        _promise_core( task_core& core, schedulable::resume_fn resume ) noexcept
           : _node_base( core, resume )
           , _node( core, resume )
         {
@@ -3396,7 +3396,7 @@ struct ECOR_EMPTY_BASES _promise_cfg_base : _promise_debug_base_t< DebugParent >
         ECOR_NOCLONE static bool _start_op(
             task_error              setup_error,
             std::coroutine_handle<> h,
-            _promise_cfg_base*      promise,
+            _promise_core*          promise,
             _cont_vtable_t const&   rows,
             void*                   cont )
         {
@@ -3439,7 +3439,7 @@ struct ECOR_EMPTY_BASES _promise_cfg_base : _promise_debug_base_t< DebugParent >
         }
 
         /// A promise destroyed with its continuation still attached completes it stopped.
-        ~_promise_cfg_base() noexcept
+        ~_promise_core() noexcept
                 requires( !_destructor_free )
         {
                 if ( _cont_vtable ) {
@@ -3450,13 +3450,13 @@ struct ECOR_EMPTY_BASES _promise_cfg_base : _promise_debug_base_t< DebugParent >
 
 #ifdef ECOR_DEFAULT_ASSERT
         // Every started frame is destroyed through `_destroy_frame()`.
-        ~_promise_cfg_base() noexcept
+        ~_promise_core() noexcept
                 requires( _destructor_free )
         {
                 ECOR_ASSERT( !_cont_vtable && !_awaited.cleanup );
         }
 #else
-        ~_promise_cfg_base()
+        ~_promise_core()
                 requires( _destructor_free )
         = default;
 #endif
@@ -3489,7 +3489,7 @@ protected:
 /// The `T`-independent promise of tasks with configuration `CFG`: `promise_owns_operations` turns
 /// on all three of its optimizations.
 template < typename CFG, typename ErrSigs >
-using _promise_cfg_base_of = _promise_cfg_base<
+using _promise_core_of = _promise_core<
     typename CFG::trace_type,
     ErrSigs,
     _task_cfg_promise_owns_operations< CFG >,
@@ -3551,11 +3551,11 @@ struct _awaitable_extract_type< std::variant<> >
         using type = void;
 };
 
-template < typename PromiseBase, typename ValueType >
+template < typename PromiseCore, typename ValueType >
 struct _task_awaitable_base
 {
         using value_type = ValueType;
-        using _env       = env_type< PromiseBase >;
+        using _env       = env_type< PromiseCore >;
 
         /// Awaitable is never ready
         [[nodiscard]] constexpr bool await_ready() const noexcept
@@ -3578,7 +3578,7 @@ struct _task_awaitable_base
                 }
         }
 
-        void _bind( PromiseBase* p ) noexcept
+        void _bind( PromiseCore* p ) noexcept
         {
                 this->_promise = p;
                 this->_promise->trace.on_await_suspend( *this );
@@ -3624,7 +3624,7 @@ struct _task_awaitable_base
         };
 
 protected:
-        PromiseBase*           _promise = nullptr;
+        PromiseCore*           _promise = nullptr;
         ECOR_NO_UNIQUE_ADDRESS _awaitable_expected< value_type > _exp;
 
         /// Links the promise of a child task that `op` starts to this task's promise, when both
@@ -3632,7 +3632,7 @@ protected:
         template < typename Op >
         void _bind_debug_parent( Op& op ) noexcept
         {
-                if constexpr ( PromiseBase::_has_debug_parent && requires {
+                if constexpr ( PromiseCore::_has_debug_parent && requires {
                                        op._debug_promise();
                                } ) {
                         if ( auto* const p = op._debug_promise() )
@@ -3647,7 +3647,7 @@ protected:
 
         void _clear_debug_parent() noexcept
         {
-                if constexpr ( PromiseBase::_has_debug_parent ) {
+                if constexpr ( PromiseCore::_has_debug_parent ) {
                         if ( _debug_child.clear ) {
                                 _debug_child.clear( _debug_child.op );
                                 _debug_child = {};
@@ -3665,7 +3665,7 @@ protected:
 
         ECOR_NO_UNIQUE_ADDRESS
         std::conditional_t<
-            PromiseBase::_has_debug_parent,
+            PromiseCore::_has_debug_parent,
             _debug_child_t,
             _absent< _debug_child_t > >
             _debug_child;
@@ -3677,11 +3677,11 @@ protected:
 ///
 /// Awaitable resumes coroutine only on on_value signal.
 ///
-template < typename PromiseBase, typename ValueType, typename Op >
-struct _task_awaitable : _task_awaitable_base< PromiseBase, ValueType >
+template < typename PromiseCore, typename ValueType, typename Op >
+struct _task_awaitable : _task_awaitable_base< PromiseCore, ValueType >
 {
         using value_type = ValueType;
-        using _base      = _task_awaitable_base< PromiseBase, ValueType >;
+        using _base      = _task_awaitable_base< PromiseCore, ValueType >;
 
         template < typename S >
         _task_awaitable( S&& sender )
@@ -3700,13 +3700,13 @@ struct _task_awaitable : _task_awaitable_base< PromiseBase, ValueType >
         template < typename P >
         void await_suspend( std::coroutine_handle< P > ch ) noexcept
         {
-                if constexpr ( PromiseBase::_shared_await_suspend )
+                if constexpr ( PromiseCore::_shared_await_suspend )
                         _suspend_shared( &ch.promise() );
                 else
                         _suspend( &ch.promise() );
         }
 
-        ECOR_NOINLINE void _suspend_shared( PromiseBase* p ) noexcept
+        ECOR_NOINLINE void _suspend_shared( PromiseCore* p ) noexcept
         {
                 _suspend( p );
         }
@@ -3725,13 +3725,13 @@ struct _task_awaitable : _task_awaitable_base< PromiseBase, ValueType >
 /// Awaitable of a task whose configuration sets `promise_owns_operations`. It keeps the operation
 /// state in raw storage, so that it is trivially destructible; `await_suspend` starts the
 /// operation state and leaves it to the promise, which destroys it when the coroutine resumes.
-template < typename PromiseBase, typename ValueType, typename Op >
-        requires( PromiseBase::_owns_awaited_op )
-struct _task_awaitable< PromiseBase, ValueType, Op >
-  : _task_awaitable_base< PromiseBase, ValueType >
+template < typename PromiseCore, typename ValueType, typename Op >
+        requires( PromiseCore::_owns_awaited_op )
+struct _task_awaitable< PromiseCore, ValueType, Op >
+  : _task_awaitable_base< PromiseCore, ValueType >
 {
         using value_type = ValueType;
-        using _base      = _task_awaitable_base< PromiseBase, ValueType >;
+        using _base      = _task_awaitable_base< PromiseCore, ValueType >;
 
         template < typename S >
         _task_awaitable( S&& sender )
@@ -3753,13 +3753,13 @@ struct _task_awaitable< PromiseBase, ValueType, Op >
         template < typename P >
         void await_suspend( std::coroutine_handle< P > ch ) noexcept
         {
-                if constexpr ( PromiseBase::_shared_await_suspend )
+                if constexpr ( PromiseCore::_shared_await_suspend )
                         _suspend_shared( &ch.promise() );
                 else
                         _suspend( &ch.promise() );
         }
 
-        ECOR_NOINLINE void _suspend_shared( PromiseBase* p ) noexcept
+        ECOR_NOINLINE void _suspend_shared( PromiseCore* p ) noexcept
         {
                 _suspend( p );
         }
@@ -3850,7 +3850,7 @@ struct _promise_return_mixin< Promise, void >
 };
 
 /// Promise type for the task. This implements the promise interface required for C++ coroutines,
-/// and inherits from `_promise_cfg_base` and the value mixin to provide the necessary
+/// and inherits from `_promise_core` and the value mixin to provide the necessary
 /// functionality for the task promise.
 ///
 /// - Suspends on initial_suspend, is expected to run after start() is called on the operation state
@@ -3864,13 +3864,13 @@ struct _promise_return_mixin< Promise, void >
 ///
 template < typename Task >
 struct _promise_type
-  : _promise_cfg_base_of< typename Task::config_type, typename Task::_error_completions >,
+  : _promise_core_of< typename Task::config_type, typename Task::_error_completions >,
     _promise_return_mixin< _promise_type< Task >, typename Task::value_type >
 {
         using value_type = typename Task::value_type;
         using cfg_type   = typename Task::config_type;
         using trace_type = typename cfg_type::trace_type;
-        using _base      = _promise_cfg_base_of< cfg_type, typename Task::_error_completions >;
+        using _base      = _promise_core_of< cfg_type, typename Task::_error_completions >;
         using vtable =
             _task_cont_vtable< typename Task::_error_completions, _value_setter_t< value_type > >;
 

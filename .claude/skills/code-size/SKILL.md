@@ -291,7 +291,7 @@ row with its own reschedule and frame (`doc/plans/push-and-wait.md`).
 ### Out of line pays only where the code is shared, and only the program knows where
 
 `_task_awaitable::await_suspend` is compiled per awaitable and task type. One out-of-line
-`_suspend( PromiseBase* )` per awaitable type, reached from a one-line template, saves 22 KB /
+`_suspend( PromiseCore* )` per awaitable type, reached from a one-line template, saves 22 KB /
 38 KB on the 1000-coroutine programs (default / owning, LTO off), but grows 375 small probes by up
 to 924 bytes: an awaitable type awaited once used to be inlined into its coroutine and now gets a
 function and a call. No compile-time rule separates the two cases. Keying on the operation state
@@ -568,7 +568,7 @@ task up to four (+128 to +522).
 `_promise_type< task< T, CFG > >`, though they read only the trace, `_reschedule()`, `get_env()`,
 `invoke_set_error()` and `invoke_set_stopped()`. `T` came in through the continuation vtable's
 type, whose value row sat between the error rows and the stopped row. With the value row last,
-behind a `_task_cont_vtable_base< ErrSigs >`, and `_promise_cfg_base< Trace, ErrSigs >` holding
+behind a `_task_cont_vtable_base< ErrSigs >`, and `_promise_core< Trace, ErrSigs >` holding
 the trace and a pointer to that base, the awaitable, its receiver, the operation state connected
 to it and that state's rows exist once per task configuration and awaited value type instead of
 once per awaiting task type: ±0 with one task value type, −234 / −198 (M0+ / M4) with two
@@ -589,7 +589,7 @@ any of this: `doc/plans/awaitable-cfg/scale/` sweeps 1 to 16 coroutines over 1 o
 with 4 to 32 awaits each, and the number of coroutines sharing an awaitable and the number of
 awaits per coroutine are dimensions of their own, next to the number of types. A non-template
 `await_suspend(
-std::coroutine_handle<> )` that recovers the base through `coroutine_handle< PromiseBase
+std::coroutine_handle<> )` that recovers the base through `coroutine_handle< PromiseCore
 >::from_address` shares the function across task types as well, 34 more bytes at four types and
 260 at sixteen coroutines of four types, but violates `from_address`'s precondition by the
 standard's letter and was declined. Handing the awaitable its promise at construction measured

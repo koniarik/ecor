@@ -183,7 +183,7 @@ measured alternatives are in the code-size skill:
 - **The promise destructor is the wrong place to destroy an operation state.** It runs after the
   coroutine's locals, and an operation state such as a `push_and_wait` call or a child task
   touches what it is connected to when destroyed. `_task_op` destroys a started frame through
-  `_promise_cfg_base::_destroy_frame()`: the pending operation state, the ready-list node, the
+  `_promise_core::_destroy_frame()`: the pending operation state, the ready-list node, the
   frame, then the continuation is completed stopped. The promise has a destructor only in builds
   with `ECOR_DEFAULT_ASSERT`, where it asserts that nothing is pending.
 - **A convention replaces the destructor's guarantee.** Every resumption goes through
@@ -213,13 +213,13 @@ measured alternatives are in the code-size skill:
 - **Pin a destruction order with a local that records what it sees when destroyed.** A watcher
   whose destructor records whether the source or queue still holds the entry fails the moment
   the order changes, where a sanitizer cannot help: the frame's memory is still allocated.
-- **One parameter per optimization, members instead of mixins.** `_promise_cfg_base` takes
+- **One parameter per optimization, members instead of mixins.** `_promise_core` takes
   `LazyNode`, `OwnsAwaitedOp` and `DestructorFree`, all derived from `promise_owns_operations` in
-  `_promise_cfg_base_of`; each branch tests the one it serves. What a configuration leaves out is
+  `_promise_core_of`; each branch tests the one it serves. What a configuration leaves out is
   an `_absent< T >` member or base, with `T` the type left out, so that stand-ins never collide:
   the ready-list node is the `_node` member with `LazyNode` and a `_reschedulable` base without
   it, the awaited operation state is the `_awaited` member. The raw-storage awaitable is a partial
-  specialization of `_task_awaitable` chosen by `PromiseBase::_owns_awaited_op`. Keep `_node` and
+  specialization of `_task_awaitable` chosen by `PromiseCore::_owns_awaited_op`. Keep `_node` and
   `_awaited` the first members, in this order, so the layout of either configuration does not
   move.
 - **The debug parent link is cleared in `_receiver::set_value`**, before an owned child's frame
