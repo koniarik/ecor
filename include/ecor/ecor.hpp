@@ -67,6 +67,16 @@
 #endif
 #endif
 
+/// Portable wrapper for `__declspec( empty_bases )`: without it, the MSVC ABI gives every empty
+/// base after the first its own byte. Expands to nothing elsewhere, where empty bases cost nothing.
+#ifndef ECOR_EMPTY_BASES
+#ifdef _MSC_VER
+#define ECOR_EMPTY_BASES __declspec( empty_bases )
+#else
+#define ECOR_EMPTY_BASES
+#endif
+#endif
+
 /// Portable force-inline hint. Expands to a vendor-specific attribute on Clang, GCC, and MSVC;
 /// expands to nothing on other compilers (the function is still implicitly inline because it is
 /// defined in a class body or marked `inline` by the user).
@@ -178,6 +188,16 @@ using _uint_for_t = std::conditional_t<
             Max <= std::numeric_limits< std::uint32_t >::max(),
             std::uint32_t,
             std::uint64_t > > >;
+
+/// Stand-in for a base or member that a configuration leaves out: empty, a distinct type per `N`
+/// so that several share one address, and constructible from any arguments, which it drops.
+template < std::size_t N >
+struct _absent
+{
+        constexpr explicit _absent( auto&&... /*args*/ ) noexcept
+        {
+        }
+};
 
 /// Typed view over a list of `Link` nodes that holds only `T`s, restoring `T` at the API
 /// boundary while every list over `Link` shares one instance of the list code. Each list is
@@ -2994,7 +3014,7 @@ struct _task_awaitable : _task_awaitable_base< PromiseBase, ValueType >
 /// state in raw storage, so that it is trivially destructible; `await_suspend` starts the
 /// operation state and leaves it to the promise, which destroys it when the coroutine resumes.
 template < typename PromiseBase, typename ValueType, typename Op >
-        requires( PromiseBase::_owns_operations )
+        requires( PromiseBase::_owns_awaited_op )
 struct _task_awaitable< PromiseBase, ValueType, Op >
   : _task_awaitable_base< PromiseBase, ValueType >
 {
@@ -3040,8 +3060,8 @@ struct _task_awaitable< PromiseBase, ValueType, Op >
 #ifdef ECOR_DEBUG_PARENT
                 this->_bind_debug_parent( *op );
 #endif
-                this->_promise->_await_cleanup = &_destroy;
-                this->_promise->_await_op      = op;
+                this->_promise->_awaited.cleanup = &_destroy;
+                this->_promise->_awaited.op      = op;
                 op->start();
         }
 
@@ -3473,26 +3493,11 @@ struct _promise_sched_node : _reschedulable
         std::coroutine_handle<> _coro;
 };
 
-/// A promise's node on its core's ready list. With `OwnsOps` it lives in raw storage built when
-/// the task starts, so that the promise is trivially destructible.
-template < bool OwnsOps >
-struct _promise_sched_slot : _reschedulable
+/// A promise's ready-list node in raw storage, built when the task starts, so that the promise
+/// is trivially destructible.
+struct _promise_lazy_node
 {
-        _promise_sched_slot( task_core& core, resume_fn resume ) noexcept
-          : _reschedulable( core, resume )
-        {
-        }
-
-        ECOR_FORCE_INLINE void _launch( std::coroutine_handle<> /*coro*/ ) noexcept
-        {
-                _reschedule();
-        }
-};
-
-template <>
-struct _promise_sched_slot< true >
-{
-        _promise_sched_slot( task_core& core, schedulable::resume_fn resume ) noexcept
+        _promise_lazy_node( task_core& core, schedulable::resume_fn resume ) noexcept
         {
                 ::new ( (void*) _node_buf ) _node_args{ &core, resume };
         }
@@ -3539,53 +3544,86 @@ private:
 };
 
 /// The operation state that a task's current `co_await` leaves to the promise, in tasks whose
-/// configuration sets `promise_owns_operations`. With `OwnsOps` false it holds nothing.
-template < bool OwnsOps >
-struct _promise_op_slot
+/// configuration sets `promise_owns_operations`.
+struct _promise_awaited_op
 {
-        static constexpr bool _owns_operations = true;
+        /// Destroys `op`, the operation state of the `co_await` the coroutine is suspended on; null
+        /// when there is none.
+        void ( *cleanup )( void* ) = nullptr;
+        void* op                   = nullptr;
 
-        /// Destroys `_await_op`, the operation state of the `co_await` the coroutine is suspended
-        /// on; null when there is none.
-        void ( *_await_cleanup )( void* ) = nullptr;
-        void* _await_op                   = nullptr;
-
-        void _destroy_await_op() noexcept
+        void _destroy() noexcept
         {
-                if ( _await_cleanup )
-                        std::exchange( _await_cleanup, nullptr )( _await_op );
+                if ( cleanup )
+                        std::exchange( cleanup, nullptr )( op );
         }
 };
 
-template <>
-struct _promise_op_slot< false >
-{
-        static constexpr bool _owns_operations = false;
+/// Without `LazyNode` the promise is its own ready-list node; with it, `_node` holds the node.
+template < bool LazyNode >
+using _promise_node_base_t = std::conditional_t< LazyNode, _absent< 0 >, _reschedulable >;
 
-        ECOR_FORCE_INLINE void _destroy_await_op() noexcept
-        {
-        }
-};
-
-template < typename Trace, typename ErrSigs, bool OwnsOps, bool SharedSuspend >
-struct _promise_cfg_base : _promise_base,
-                           _promise_sched_slot< OwnsOps >,
-                           _promise_op_slot< OwnsOps >
+/// One parameter per optimization:
+/// - `LazyNode`: the ready-list node is built in `_node` when the task starts.
+/// - `OwnsAwaitedOp`: the promise destroys the operation state of the current `co_await`.
+/// - `DestructorFree`: no promise destructor; a started frame goes through `_destroy_frame()`.
+/// - `SharedSuspend`: one out-of-line `await_suspend` per awaitable type.
+template <
+    typename Trace,
+    typename ErrSigs,
+    bool LazyNode,
+    bool OwnsAwaitedOp,
+    bool DestructorFree,
+    bool SharedSuspend >
+struct ECOR_EMPTY_BASES _promise_cfg_base : _promise_base, _promise_node_base_t< LazyNode >
 {
         using trace_type     = Trace;
         using _cont_vtable_t = _task_cont_vtable_base< ErrSigs >;
 
+        static constexpr bool _lazy_node            = LazyNode;
+        static constexpr bool _owns_awaited_op      = OwnsAwaitedOp;
+        static constexpr bool _destructor_free      = DestructorFree;
         static constexpr bool _shared_await_suspend = SharedSuspend;
 
+        static_assert(
+            _lazy_node == _owns_awaited_op && _lazy_node == _destructor_free,
+            "only all of LazyNode, OwnsAwaitedOp and DestructorFree, or none, are implemented" );
+
+        using _node_base = _promise_node_base_t< _lazy_node >;
+
         _promise_cfg_base( task_core& core, schedulable::resume_fn resume ) noexcept
-          : _promise_sched_slot< OwnsOps >( core, resume )
+          : _node_base( core, resume )
+          , _node( core, resume )
         {
+        }
+
+        /// Called once, when the task starts.
+        ECOR_FORCE_INLINE void _launch( std::coroutine_handle<> h ) noexcept
+        {
+                if constexpr ( _lazy_node )
+                        _node._launch( h );
+                else
+                        _node_base::_reschedule();
+        }
+
+        ECOR_FORCE_INLINE void _reschedule() noexcept
+        {
+                if constexpr ( _lazy_node )
+                        _node._reschedule();
+                else
+                        _node_base::_reschedule();
+        }
+
+        ECOR_FORCE_INLINE void _destroy_await_op() noexcept
+        {
+                if constexpr ( _owns_awaited_op )
+                        _awaited._destroy();
         }
 
         template < typename P >
         ECOR_FORCE_INLINE void _destroy_coroutine( std::coroutine_handle< P >& h ) noexcept
         {
-                if constexpr ( OwnsOps ) {
+                if constexpr ( _destructor_free ) {
 #ifdef ECOR_DEBUG_PARENT
                         // The awaiting task's debug link reads `h` after the frame is gone.
                         _destroy_frame( std::exchange( h, nullptr ) );
@@ -3600,13 +3638,14 @@ struct _promise_cfg_base : _promise_base,
         /// Destroys the pending operation state, the ready-list node and the frame, in this order,
         /// then completes a continuation still attached with `set_stopped`.
         ECOR_NOINLINE void _destroy_frame( std::coroutine_handle<> h ) noexcept
-                requires( OwnsOps )
+                requires( _destructor_free )
         {
                 auto* const vt  = std::exchange( _cont_vtable, nullptr );
                 void* const obj = _cont_obj;
                 this->_destroy_await_op();
-                if ( obj )
-                        this->_destroy_node();
+                if constexpr ( _lazy_node )
+                        if ( obj )
+                                _node._destroy_node();
                 if ( vt )
                         trace.on_destroy_with_continuation( *this );
                 h.destroy();
@@ -3655,8 +3694,9 @@ struct _promise_cfg_base : _promise_base,
         void invoke_set_stopped()
         {
                 trace.on_set_stopped( *this );
-                // With `OwnsOps`, `_destroy_frame()` takes the continuation before a child's stop.
-                if constexpr ( !OwnsOps )
+                // With `_destructor_free`, `_destroy_frame()` takes the continuation before a
+                // child's stop.
+                if constexpr ( !_destructor_free )
                         ECOR_ASSERT( _cont_vtable );
                 if ( _cont_vtable ) {
                         auto* r = std::exchange( _cont_vtable, nullptr );
@@ -3666,7 +3706,7 @@ struct _promise_cfg_base : _promise_base,
 
         /// A promise destroyed with its continuation still attached completes it stopped.
         ~_promise_cfg_base() noexcept
-                requires( !OwnsOps )
+                requires( !_destructor_free )
         {
                 if ( _cont_vtable ) {
                         trace.on_destroy_with_continuation( *this );
@@ -3677,15 +3717,23 @@ struct _promise_cfg_base : _promise_base,
 #ifdef ECOR_DEFAULT_ASSERT
         // Every started frame is destroyed through `_destroy_frame()`.
         ~_promise_cfg_base() noexcept
-                requires( OwnsOps )
+                requires( _destructor_free )
         {
-                ECOR_ASSERT( !_cont_vtable && !this->_await_cleanup );
+                ECOR_ASSERT( !_cont_vtable && !_awaited.cleanup );
         }
 #else
         ~_promise_cfg_base()
-                requires( OwnsOps )
+                requires( _destructor_free )
         = default;
 #endif
+
+private:
+        ECOR_NO_UNIQUE_ADDRESS std::conditional_t< _lazy_node, _promise_lazy_node, _absent< 1 > >
+                               _node;
+
+public:
+        ECOR_NO_UNIQUE_ADDRESS
+        std::conditional_t< _owns_awaited_op, _promise_awaited_op, _absent< 2 > > _awaited;
 
         inplace_stop_token token;
 
@@ -3705,6 +3753,17 @@ protected:
 
 template < typename Task >
 struct _promise_type;
+
+/// The `T`-independent promise of tasks with configuration `CFG`: `promise_owns_operations` turns
+/// on all three of its optimizations.
+template < typename CFG, typename ErrSigs >
+using _promise_cfg_base_of = _promise_cfg_base<
+    typename CFG::trace_type,
+    ErrSigs,
+    _task_cfg_promise_owns_operations< CFG >,
+    _task_cfg_promise_owns_operations< CFG >,
+    _task_cfg_promise_owns_operations< CFG >,
+    _task_cfg_shared_await_suspend< CFG > >;
 
 /// Promise type subset that implements value_type specific behavior of the task.
 template < typename Task, typename Val >
@@ -3743,21 +3802,14 @@ struct _promise_return_mixin< Task, void >
 ///   co_awaiting on senders from the task coroutine.
 ///
 template < typename Task >
-struct _promise_type : _promise_cfg_base<
-                           typename Task::config_type::trace_type,
-                           typename Task::_error_completions,
-                           _task_cfg_promise_owns_operations< typename Task::config_type >,
-                           _task_cfg_shared_await_suspend< typename Task::config_type > >,
-                       _promise_return_mixin< Task, typename Task::value_type >
+struct _promise_type
+  : _promise_cfg_base_of< typename Task::config_type, typename Task::_error_completions >,
+    _promise_return_mixin< Task, typename Task::value_type >
 {
         using value_type = typename Task::value_type;
         using cfg_type   = typename Task::config_type;
         using trace_type = typename cfg_type::trace_type;
-        using _base      = _promise_cfg_base<
-            trace_type,
-            typename Task::_error_completions,
-            _task_cfg_promise_owns_operations< cfg_type >,
-            _task_cfg_shared_await_suspend< cfg_type > >;
+        using _base      = _promise_cfg_base_of< cfg_type, typename Task::_error_completions >;
         using vtable =
             _task_cont_vtable< typename Task::_error_completions, _value_setter_t< value_type > >;
 
@@ -3791,7 +3843,7 @@ struct _promise_type : _promise_cfg_base<
 
         static constexpr schedulable::resume_fn _node_resume() noexcept
         {
-                if constexpr ( _base::_owns_operations )
+                if constexpr ( _base::_lazy_node )
                         return &_resume_from_node;
                 else
                         return &schedulable::_resume_of< _promise_type >;

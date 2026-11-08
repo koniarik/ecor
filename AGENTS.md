@@ -206,12 +206,14 @@ measured alternatives are in the code-size skill:
 - **Pin a destruction order with a local that records what it sees when destroyed.** A watcher
   whose destructor records whether the source or queue still holds the entry fails the moment
   the order changes, where a sanitizer cannot help: the frame's memory is still allocated.
-- **Select by the promise base and specialize a bool mixin.** The raw-storage awaitable is a
-  partial specialization of `_task_awaitable` chosen by `PromiseBase::_owns_operations`, and
-  `_promise_op_slot< false >` and `_promise_sched_slot< false >` supply the functions the owning
-  versions have, so callers need no `if constexpr` and the default configuration compiles
-  byte-identical to before. The default layout must not move either: the stop token stays the
-  first member of `_promise_cfg_base`, right after the ready-list node.
+- **One parameter per optimization, members instead of mixins.** `_promise_cfg_base` takes
+  `LazyNode`, `OwnsAwaitedOp` and `DestructorFree`, all derived from `promise_owns_operations` in
+  `_promise_cfg_base_of`; each branch tests the one it serves. What a configuration leaves out is
+  an `_absent< N >` member or base: the ready-list node is the `_node` member with `LazyNode` and a
+  `_reschedulable` base without it, the awaited operation state is the `_awaited` member. The
+  raw-storage awaitable is a partial specialization of `_task_awaitable` chosen by
+  `PromiseBase::_owns_awaited_op`. Keep `_node` and `_awaited` the first members, in this order,
+  so the layout of either configuration does not move.
 - **The debug parent link is cleared in `_receiver::set_value`**, before an owned child's frame
   goes at the parent's resumption, where `await_resume` would read it after it was freed.
 - **`task_holder`'s deduction guide assumes `task_default_cfg`**, so a holder of tasks with

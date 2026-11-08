@@ -764,6 +764,36 @@ TEST_CASE( "operator|| - takes senders only" )
         static_assert( !or_combinable< unit, or_source_t::sender_type > );
 }
 
+namespace
+{
+        struct _two_absent
+        {
+                ECOR_NO_UNIQUE_ADDRESS _absent< 0 > a;
+                ECOR_NO_UNIQUE_ADDRESS _absent< 1 > b;
+                int                                 x;
+        };
+
+        struct _other_empty
+        {
+        };
+
+        struct ECOR_EMPTY_BASES _absent_beside_empty_base : _other_empty, _absent< 0 >
+        {
+                int x;
+        };
+}  // namespace
+
+TEST_CASE( "_absent - empty, distinct per index, constructible from anything" )
+{
+        static_assert( std::is_empty_v< _absent< 0 > > );
+        static_assert( !std::same_as< _absent< 0 >, _absent< 1 > > );
+        static_assert( std::is_constructible_v< _absent< 0 >, int, double& > );
+        static_assert( std::is_nothrow_constructible_v< _absent< 0 > > );
+        static_assert( std::is_trivially_destructible_v< _absent< 0 > > );
+        static_assert( sizeof( _two_absent ) == sizeof( int ) );
+        static_assert( sizeof( _absent_beside_empty_base ) == sizeof( int ) );
+}
+
 TEST_CASE( "_uint_for_t - the smallest unsigned type that holds a value" )
 {
         static_assert( std::same_as< _uint_for_t< 0 >, std::uint8_t > );
