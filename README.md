@@ -1193,6 +1193,25 @@ ecor::task<int, shared_cfg> next_reading(ecor::task_ctx& ctx)
 }
 ```
 
+### Sharing `co_return` code across coroutines — `shared_return_value`
+
+`co_return v` in a non-void task hands `v` to the task's receiver, and that code is inlined at
+every `co_return`. With `shared_return_value` set, it is one out-of-line function per task type,
+shared by every coroutine of that type: on generated programs of 100 to 1000 coroutines, 0.2% to
+0.3% less flash without LTO and 0.3% to 1.1% with it. A task type with a single coroutine costs a
+few bytes more.
+
+```cpp
+struct shared_return_cfg : ecor::task_default_cfg {
+    static constexpr bool shared_return_value = true;
+};
+
+ecor::task<int, shared_return_cfg> answer(ecor::task_ctx& ctx)
+{
+    co_return 42;
+}
+```
+
 ## Async Arena - Managed Async Lifetimes
 
 `async_arena` provides reference-counted smart pointers (`async_ptr`) with

@@ -169,11 +169,12 @@ def cfg_dims(cfg):
 
 def ptask_alias(cfg):
     """Declares `ptask< T >`, the task type of a probe whose task configuration is `cfg`: the
-    default one, `owning`, or `owning_shared`, which also sets `shared_await_suspend`. Both
-    non-default configurations are named `owning_cfg`."""
+    default one, `owning`, or `owning_shared`, which also sets `shared_await_suspend` and
+    `shared_return_value`. Both non-default configurations are named `owning_cfg`."""
     if cfg == 'default':
         return 'template < typename T >\nusing ptask = task< T >;\n'
     shared = ('        static constexpr bool shared_await_suspend    = true;\n'
+              '        static constexpr bool shared_return_value     = true;\n'
               if cfg == 'owning_shared' else '')
     return ('struct owning_cfg : task_default_cfg\n{\n'
             '        static constexpr bool promise_owns_operations = true;\n' + shared + '};\n'

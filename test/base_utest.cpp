@@ -1944,6 +1944,121 @@ TEST_CASE_TEMPLATE(
         CHECK( values == 1 );
 }
 
+struct _shared_return_cfg : task_default_cfg
+{
+        static constexpr bool shared_return_value = true;
+};
+
+struct _owning_shared_return_cfg : task_default_cfg
+{
+        static constexpr bool promise_owns_operations = true;
+        static constexpr bool shared_return_value     = true;
+};
+
+struct sr_ptr_recv
+{
+        using receiver_concept = receiver_t;
+
+        std::unique_ptr< int >* out;
+
+        void set_value( std::unique_ptr< int > p ) noexcept
+        {
+                *out = std::move( p );
+        }
+
+        void set_error( task_error /*e*/ ) noexcept
+        {
+        }
+
+        void set_stopped() noexcept
+        {
+        }
+
+        [[nodiscard]] empty_env get_env() const noexcept
+        {
+                return {};
+        }
+};
+
+template < typename Cfg >
+static task< int, Cfg > sr_value( task_ctx& )
+{
+        co_return 42;
+}
+
+template < typename Cfg >
+static task< std::unique_ptr< int >, Cfg > sr_move_only( task_ctx& )
+{
+        co_return std::make_unique< int >( 7 );
+}
+
+template < typename Cfg >
+static task< int, Cfg > sr_parent( task_ctx& ctx )
+{
+        co_return co_await sr_value< Cfg >( ctx ) + 1;
+}
+
+template < typename Cfg >
+static task< void, Cfg > sr_void( task_ctx& )
+{
+        co_return;
+}
+
+TEST_CASE( "_task_cfg_shared_return_value - false unless the configuration sets it" )
+{
+        static_assert( !_task_cfg_shared_return_value< task_default_cfg > );
+        static_assert( !_task_cfg_shared_return_value< _undeclared_flag_cfg > );
+        static_assert( _task_cfg_shared_return_value< _shared_return_cfg > );
+        static_assert( _task_cfg_shared_return_value< _owning_shared_return_cfg > );
+}
+
+TEST_CASE_TEMPLATE(
+    "shared_return_value - co_return delivers as without it",
+    Cfg,
+    _shared_return_cfg,
+    _owning_shared_return_cfg )
+{
+        nd_mem   mem;
+        task_ctx ctx{ mem };
+
+        SUBCASE( "a value" )
+        {
+                int  out = -1;
+                auto op  = sr_value< Cfg >( ctx ).connect( ss_int_recv{ &out } );
+                op.start();
+                ctx.core.run_once();
+                CHECK( out == 42 );
+        }
+        SUBCASE( "a move-only value" )
+        {
+                std::unique_ptr< int > out;
+                auto op = sr_move_only< Cfg >( ctx ).connect( sr_ptr_recv{ &out } );
+                op.start();
+                ctx.core.run_once();
+                REQUIRE( out );
+                CHECK( *out == 7 );
+        }
+        SUBCASE( "a child's value" )
+        {
+                int  out = -1;
+                auto op  = sr_parent< Cfg >( ctx ).connect( ss_int_recv{ &out } );
+                op.start();
+                ctx.core.run_once();  // the parent starts the child
+                ctx.core.run_once();  // the child returns 42
+                CHECK( out == -1 );
+                ctx.core.run_once();  // the parent returns 43
+                CHECK( out == 43 );
+        }
+        SUBCASE( "a task< void >" )
+        {
+                int  values = 0, errors = 0, stops = 0;
+                auto op = sr_void< Cfg >( ctx ).connect( ss_recv{ &values, &errors, &stops } );
+                op.start();
+                ctx.core.run_once();
+                CHECK( values == 1 );
+        }
+}
+
 TEST_CASE( "_align_idx" )
 {
         // Create a test buffer with known alignment
@@ -3522,6 +3637,10 @@ namespace
                 }
         };
         static_assert( !ecor::task_context< _wrong_ctx > );
+        // Negative: no query at all — unsatisfied, not a hard error.
+        static_assert( !ecor::task_context< int > );
+        static_assert( !ecor::task_context< ecor::task_core > );
+        static_assert( !ecor::task_context< ecor::_tag< ecor::task_core > > );
 }  // namespace
 
 static ecor::task< int > _custom_ctx_task( _custom_ctx& ctx )

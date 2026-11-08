@@ -2831,8 +2831,10 @@ struct task_memory_resource
 
 struct get_task_core_t
 {
+        /// Not callable on a `T` without the query, so that `task_context< T >` is false for it.
         template < typename T >
-        decltype( auto ) operator()( T& t ) const noexcept
+        auto operator()( T& t ) const noexcept
+            -> decltype( t.query( std::declval< get_task_core_t >() ) )
         {
                 return t.query( get_task_core_t{} );
         }
@@ -2842,8 +2844,10 @@ inline constexpr get_task_core_t get_task_core{};
 
 struct get_memory_resource_t
 {
+        /// Not callable on a `T` without the query, so that `task_context< T >` is false for it.
         template < typename T >
-        decltype( auto ) operator()( T& t ) const noexcept
+        auto operator()( T& t ) const noexcept
+            -> decltype( t.query( std::declval< get_memory_resource_t >() ) )
         {
                 return t.query( get_memory_resource_t{} );
         }
@@ -3055,6 +3059,7 @@ struct task_default_cfg
 
         static constexpr bool promise_owns_operations = false;
         static constexpr bool shared_await_suspend    = false;
+        static constexpr bool shared_return_value     = false;
         static constexpr bool debug_parent            = false;
 
         ECOR_FORCE_INLINE static task_error convert_error( task_error err ) noexcept
@@ -3081,6 +3086,13 @@ template < typename CFG >
 inline constexpr bool _task_cfg_shared_await_suspend< CFG > = CFG::shared_await_suspend;
 
 template < typename CFG >
+inline constexpr bool _task_cfg_shared_return_value = false;
+
+template < typename CFG >
+        requires( requires { CFG::shared_return_value; } )
+inline constexpr bool _task_cfg_shared_return_value< CFG > = CFG::shared_return_value;
+
+template < typename CFG >
 inline constexpr bool _task_cfg_debug_parent = false;
 
 template < typename CFG >
@@ -3102,6 +3114,10 @@ inline constexpr bool _task_cfg_debug_parent< CFG > = CFG::debug_parent;
 ///   a `co_await` reaches one out-of-line function per awaitable type, shared by every task type
 ///   with this configuration's promise base, instead of a copy per awaitable and task type: less
 ///   code when many task types await the same things, a little more for one awaited only once.
+/// - It may have a `static constexpr bool shared_return_value`, false when absent. When true,
+///   `co_return v` delivers `v` through one out-of-line function per task type instead of at every
+///   `co_return`: less code when several coroutines share a non-void task type, a little more for
+///   a type with a single one.
 /// - It may have a `static constexpr bool debug_parent`, false when absent. When true, a task
 ///   awaited by another task that sets it, directly or through adaptors such as `when_any`,
 ///   records that task's promise, so that `pprinter.py` prints the chain of awaiting tasks: one
@@ -3343,6 +3359,7 @@ using _promise_node_base_t =
 /// - `OwnsAwaitedOp`: the promise destroys the operation state of the current `co_await`.
 /// - `DestructorFree`: no promise destructor; a started frame goes through `_destroy_frame()`.
 /// - `SharedSuspend`: one out-of-line `await_suspend` per awaitable type.
+/// - `SharedReturn`: one out-of-line delivery of `co_return`'s value per task type.
 /// - `DebugParent`: the promise records the promise of the task that awaits it.
 template <
     typename Trace,
@@ -3351,6 +3368,7 @@ template <
     bool OwnsAwaitedOp,
     bool DestructorFree,
     bool SharedSuspend,
+    bool SharedReturn,
     bool DebugParent >
 struct ECOR_EMPTY_BASES _promise_core : _promise_debug_base_t< DebugParent >,
                                         _promise_base,
@@ -3363,6 +3381,7 @@ struct ECOR_EMPTY_BASES _promise_core : _promise_debug_base_t< DebugParent >,
         static constexpr bool _owns_awaited_op      = OwnsAwaitedOp;
         static constexpr bool _destructor_free      = DestructorFree;
         static constexpr bool _shared_await_suspend = SharedSuspend;
+        static constexpr bool _shared_return_value  = SharedReturn;
         static constexpr bool _has_debug_parent     = DebugParent;
 
         static_assert(
@@ -3434,15 +3453,18 @@ struct ECOR_EMPTY_BASES _promise_core : _promise_debug_base_t< DebugParent >,
         /// promise's value type.
         template < typename CFG >
         ECOR_NOCLONE static bool _start_op(
-            task_error              setup_error,
+            unsigned char           null_error,
             std::coroutine_handle<> h,
             _promise_core*          promise,
             _cont_vtable_t const&   rows,
             void*                   cont )
         {
-                if ( setup_error == task_error::none && !h )
-                        setup_error = task_error::task_missing;
-                else if ( setup_error == task_error::none && h.done() )
+                auto setup_error = task_error::none;
+                if ( !h )
+                        setup_error = null_error == (unsigned char) task_error::none ?
+                                          task_error::task_missing :
+                                          task_error( null_error );
+                else if ( h.done() )
                         setup_error = task_error::task_already_started;
                 if ( setup_error != task_error::none ) {
                         rows.invoke( set_error_t{}, cont, CFG::convert_error( setup_error ) );
@@ -3542,6 +3564,7 @@ using _promise_core_of = _promise_core<
     _task_cfg_promise_owns_operations< CFG >,
     _task_cfg_promise_owns_operations< CFG >,
     _task_cfg_shared_await_suspend< CFG >,
+    _task_cfg_shared_return_value< CFG >,
     _task_cfg_debug_parent< CFG > >;
 
 template < typename T >
@@ -3830,7 +3853,17 @@ struct _promise_return_mixin
         {
                 auto* p = static_cast< Promise* >( this );
                 p->trace.on_return( *p, v );
-                p->invoke_set_value( std::move( v ) );
+                if constexpr ( Promise::_shared_return_value )
+                        _return_shared( std::move( v ) );
+                else
+                        p->invoke_set_value( std::move( v ) );
+        }
+
+        /// Must stay out of line: every `co_return` calls it, and the coroutines of one task type
+        /// share one copy.
+        ECOR_NOINLINE void _return_shared( Val v )
+        {
+                static_cast< Promise* >( this )->invoke_set_value( std::move( v ) );
         }
 };
 
@@ -3900,7 +3933,7 @@ struct _promise_type
 
         /// Must stay out of line and apart from the coroutine's parameters: every coroutine's ramp
         /// calls it, and the coroutines of one task type share one copy.
-        ECOR_NOINLINE _promise_type( _tag< task_core >, task_core& core )
+        ECOR_NOINLINE _promise_type( _tag< task_core > /*tag*/, task_core& core )
           : _base( core, _node_resume() )
         {
         }
@@ -3923,8 +3956,7 @@ struct _promise_type
 
         static Task get_return_object_on_allocation_failure()
         {
-                return {
-                    std::coroutine_handle< _promise_type >{}, task_error::task_allocation_failure };
+                return { nullptr, task_error::task_allocation_failure };
         }
 
         Task get_return_object()
@@ -4019,7 +4051,7 @@ struct _task_op
         using operation_state_concept = operation_state_t;
 
         _task_op() noexcept = default;
-        _task_op( task_error err, std::coroutine_handle< promise_type > h, R r ) noexcept(
+        _task_op( unsigned char err, std::coroutine_handle< promise_type > h, R r ) noexcept(
             std::is_nothrow_move_constructible_v< R > )
           : _h( h )
           , _recv( std::move( r ) )
@@ -4032,7 +4064,7 @@ struct _task_op
         _task_op( _task_op&& other ) noexcept
           : _h( std::exchange( other._h, nullptr ) )
           , _recv( std::move( other._recv ) )
-          , _error( std::exchange( other._error, task_error::none ) )
+          , _error( std::exchange( other._error, (unsigned char) task_error::none ) )
         {
         }
 
@@ -4082,7 +4114,7 @@ struct _task_op
                         _h.promise()._destroy_coroutine( _h );
                 _h     = {};
                 _recv  = {};
-                _error = task_error::none;
+                _error = (unsigned char) task_error::none;
         }
 
         operator bool()
@@ -4103,7 +4135,9 @@ struct _task_op
 
         std::coroutine_handle< promise_type > _h;
         R                                     _recv;
-        task_error                            _error = task_error::none;
+        /// Meaningful only while `_h` is null, indeterminate otherwise: an `unsigned char`, the one
+        /// type whose indeterminate value may be copied.
+        unsigned char _error = (unsigned char) task_error::none;
 };
 
 /// Task type that represents an asynchronous operation that is implemented as a coroutine and is a
@@ -4164,11 +4198,13 @@ struct task
             "Unsupported alignment" );
 
         /// Constructor used by promise_type for coroutine creation.
-        task(
-            std::coroutine_handle< promise_type > handle,
-            task_error                            error = task_error::none ) noexcept
+        task( std::coroutine_handle< promise_type > handle ) noexcept
           : _h( handle )
-          , _error( error )
+        {
+        }
+
+        task( std::nullptr_t /*handle*/, task_error error ) noexcept
+          : _error( (unsigned char) error )
         {
         }
 
@@ -4176,7 +4212,7 @@ struct task
         task& operator=( task const& ) = delete;
         task( task&& other ) noexcept
           : _h( std::exchange( other._h, nullptr ) )
-          , _error( std::exchange( other._error, task_error::none ) )
+          , _error( std::exchange( other._error, (unsigned char) task_error::none ) )
         {
         }
 
@@ -4215,7 +4251,9 @@ struct task
 
 private:
         std::coroutine_handle< promise_type > _h;
-        task_error                            _error = task_error::none;
+        /// Meaningful only while `_h` is null, indeterminate otherwise: an `unsigned char`, the one
+        /// type whose indeterminate value may be copied.
+        unsigned char _error;
 };
 
 /// -------------------------------------------------------------------------------

@@ -441,6 +441,20 @@ the suite with no probe larger, −0.6% to −1.2% on every program. The same ch
 out-of-line function per configuration kept only −3858 and grew 535 probes
 (`doc/plans/final_suspend.md`).
 
+### Write a field only on the path that gives it a meaning
+
+Every ramp built its `task` with the handle and `task_error::none`, yet the error matters only
+while the handle is null: an allocation failure or a moved-from task. Written only on those
+paths, and read by `_start_op()` only with a null handle, the store left every ramp: −64788 over
+the suite, no probe larger, about 8 bytes per coroutine in the default configuration. The byte is
+an `unsigned char`, the one type whose indeterminate value the move constructor may copy.
+`co_return v` delivering through one `ECOR_NOINLINE` member per task type instead of inline at
+every `co_return` is the out-of-line trade-off again: −21820, every program −0.2% to −1.1%, but
+101 probes with few coroutines per non-void task type larger by up to 76, so it became the
+opt-in flag `shared_return_value`. Measured together the two show only 8 probes larger:
+`lazyerr`'s saving hides the other's cost, so measure each change on its own
+(`doc/plans/ramps.md`).
+
 ### Key the erased part on the core, not on the queue
 
 `_queue_pop_op` was compiled whole per queue, receiver type and sender: 125 bytes per extra
