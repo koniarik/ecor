@@ -12,7 +12,9 @@ The probe's key is its population:
             with a fifth of the picks going to ten popular ones, 10% with 60 to 140 awaits,
             5% recursive, 5% producers calling `push_and_wait()` on a queue. No two functions
             have the same statements, except one coroutine in twenty, a leaf, that repeats the
-            one before it
+            one before it. After the context, a function takes one of `PARAMS`, a quarter of
+            them nothing more, picked per function, so that the functions of one value type
+            have several parameter lists, as in a real program
   types     distinct `task< T >` value types the functions cycle through
   queues    queues of `qtypes` element types each, drained by a pump with task handlers
   ll, seq   `ll_source` and `seq_source` instances of distinct payload types
@@ -43,6 +45,20 @@ VT = ['void', 'int', 'bool', 'uint8_t', 'uint16_t', 'uint32_t', 'int8_t', 'int16
 SIGS = (('set_value_t()', ''), ('set_value_t( int )', '1'), ('set_value_t( uint8_t )', 'uint8_t( 2 )'),
         ('set_value_t( uint32_t )', '3u'))
 KEYS = ('uint32_t', 'uint64_t', 'uint16_t')
+
+# The parameters a function takes after the context, each with the argument its callers pass.
+PARAMS = (
+    (), (), (),
+    (('int', '1'),),
+    (('uint8_t', 'uint8_t( 2 )'),),
+    (('uint32_t', '3u'),),
+    (('bool', 'true'),),
+    (('int', '1'), ('int', '2')),
+    (('uint8_t', 'uint8_t( 2 )'), ('uint16_t', 'uint16_t( 4 )')),
+    (('uint32_t', '3u'), ('bool', 'false')),
+    (('vs1', 'vs1{}'),),
+    (('vs2', 'vs2{}'), ('int', '5')),
+)
 
 BUCKETS = [
     ('coroutines', re.compile(r'^(c\d+|root\d+|rec\d+|on\d+_\d+)\(')),
@@ -94,8 +110,13 @@ def ret(t):
     return 'co_return 1;'
 
 
-def await_child(j, t):
-    return f'co_await c{j}( ctx );' if t == 'void' else f'{{ auto v = co_await c{j}( ctx ); sink( &v ); }}'
+def param_list(params):
+    return ''.join(f', {t}' for t, _ in params)
+
+
+def await_child(j, t, params=()):
+    call = f'c{j}( ctx{"".join(f", {a}" for _, a in params)} )'
+    return f'co_await {call};' if t == 'void' else f'{{ auto v = co_await {call}; sink( &v ); }}'
 
 
 def pick(n, *key):
@@ -205,9 +226,13 @@ task_ctx& the_ctx();
     def vtype(k):
         return vts[k]
 
+    params = [PARAMS[pick(len(PARAMS), 'params', k)] for k in range(others)]
+    for k, original in copied.items():
+        params[k] = params[original]
+
     L = ['#pragma once', '#include "types.hpp"', '']
     for k in range(others):
-        L.append(f'ptask< {vtype(k)} > c{k}( task_ctx& ctx );')
+        L.append(f'ptask< {vtype(k)} > c{k}( task_ctx& ctx{param_list(params[k])} );')
         if k % 20 == 18:
             L.append(f'ptask< int > rec{k}( task_ctx& ctx, int d );')
     for h in range(holders):
@@ -253,7 +278,7 @@ task_ctx& the_ctx();
                     pick(others, 'child', k, a, i)
                 if j == k:
                     j = (k + 1) % others
-                B.append(await_child(j, vtype(j)))
+                B.append(await_child(j, vtype(j), params[j]))
         elif shape < 18:
             B = []
             for i in range(60 + (k % 3) * 40):
@@ -288,7 +313,7 @@ task_ctx& the_ctx();
     for tu, start in enumerate(range(0, others, PER_TU)):
         L = ['#include "coros.hpp"', '']
         for k in range(start, min(others, start + PER_TU)):
-            L.append(f'ptask< {vtype(k)} > c{k}( task_ctx& ctx )')
+            L.append(f'ptask< {vtype(k)} > c{k}( task_ctx& ctx{param_list(params[k])} )')
             L.append('{')
             L.append('        (void) ctx;')
             L += ['        ' + s for s in bodies[k]]
@@ -309,7 +334,7 @@ task_ctx& the_ctx();
         L.append(f'ptask< void > root{h}( task_ctx& ctx )')
         L.append('{')
         for k in range(h, others, holders):
-            L.append('        ' + await_child(k, vtype(k)))
+            L.append('        ' + await_child(k, vtype(k), params[k]))
         L.append('        co_return;')
         L.append('}')
     files.append(('roots.cpp', '\n'.join(L) + '\n'))

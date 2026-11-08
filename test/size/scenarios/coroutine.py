@@ -14,6 +14,9 @@ Dimensions:
             defines, as in `common.USER_AWAITABLES`) | mixed (one await of each: `ll_source`,
             `seq_source`, child task, user awaiter, user source)
   coros     1 | 16 coroutine functions
+  params    distinct gives coroutine k a parameter of its own type, `tag< k >`, after the
+            context, so that no two share a promise constructor instantiation; absent when every
+            coroutine takes only the context
   cfg       owning for tasks with `promise_owns_operations`, absent for the default configuration
 """
 from .common import CFGS, USER_AWAITABLES, Probe, cell, cfg_dims, flash_of, key_of, ptask_alias
@@ -22,6 +25,11 @@ NAME = 'coroutine'
 
 VALUES = ('void', 'int')
 COROS = (1, 16)
+PARAMS = ('same', 'distinct')
+
+
+def params_dims(params):
+    return {} if params == 'same' else {'params': params}
 
 # The body of each coroutine before its co_return, in report order.
 BODIES = {
@@ -39,15 +47,17 @@ BODIES = {
 
 
 def probes(tier):
-    return [Probe(NAME, key_of(value=v, awaiting=a, coros=n, **cfg_dims(cfg)),
-                  lambda v=v, a=a, n=n, cfg=cfg: source(v, a, n, cfg))
-            for cfg in CFGS for v in VALUES for a in BODIES for n in COROS]
+    return [Probe(NAME, key_of(value=v, awaiting=a, coros=n, **params_dims(p), **cfg_dims(cfg)),
+                  lambda v=v, a=a, n=n, p=p, cfg=cfg: source(v, a, n, cfg, p))
+            for cfg in CFGS for v in VALUES for a in BODIES for n in COROS for p in PARAMS]
 
 
-def source(value, awaiting, coros, cfg):
+def source(value, awaiting, coros, cfg, params='same'):
     L = []
     w = L.append
-    w(f'// coroutine probe: {key_of(value=value, awaiting=awaiting, coros=coros, **cfg_dims(cfg))}')
+    key = key_of(value=value, awaiting=awaiting, coros=coros, **params_dims(params),
+                 **cfg_dims(cfg))
+    w(f'// coroutine probe: {key}')
     w('#include <ecor/ecor.hpp>')
     w('')
     w('#include <cstdint>')
@@ -65,6 +75,12 @@ def source(value, awaiting, coros, cfg):
     w('extern uint32_t         now();')
     w('')
     w(USER_AWAITABLES)
+    w('template < int N >')
+    w('struct tag')
+    w('{')
+    w('        int v;')
+    w('};')
+    w('')
     w('struct dr')
     w('{')
     w('        using receiver_concept = receiver_t;')
@@ -78,7 +94,8 @@ def source(value, awaiting, coros, cfg):
     w('};')
     w('')
     for k in range(coros):
-        w(f'ptask< {value} > coro{k}( task_ctx& ctx )')
+        arg = f', tag< {k} > /*arg*/' if params == 'distinct' else ''
+        w(f'ptask< {value} > coro{k}( task_ctx& ctx{arg} )')
         w('{')
         w('        (void) ctx;')
         if BODIES[awaiting]:
@@ -88,7 +105,8 @@ def source(value, awaiting, coros, cfg):
         w('')
     w('void probe()')
     w('{')
-    w('        auto o = coro0( the_ctx() ).connect( dr{} );')
+    w('        auto o = coro0( the_ctx(){} ).connect( dr{{}} );'.format(
+        ', tag< 0 >{ 0 }' if params == 'distinct' else ''))
     w('        o.start();')
     w('        sink( &o );')
     w('}')
@@ -96,40 +114,46 @@ def source(value, awaiting, coros, cfg):
 
 
 def report(results, headers, w):
-    def get(h='cur', **kw):
-        return flash_of(results, key_of(**kw), h)
+    def get(h, value, awaiting, coros, params, cfg):
+        key = key_of(value=value, awaiting=awaiting, coros=coros, **params_dims(params),
+                     **cfg_dims(cfg))
+        return flash_of(results, key, h)
+
+    def per_coroutine(h, cfg, **kw):
+        a = get(h, **kw, coros=1, cfg=cfg)
+        b = get(h, **kw, coros=16, cfg=cfg)
+        return None if a is None or b is None else (b - a) / 15
 
     w('### the fixed cost of one coroutine function: the slope between 1 and 16 coroutines')
     w('')
-    def per_coroutine(h, cfg, **kw):
-        a = get(h, **kw, coros=1, **cfg_dims(cfg))
-        b = get(h, **kw, coros=16, **cfg_dims(cfg))
-        return None if a is None or b is None else (b - a) / 15
-
     w('The owning column is the slope with `promise_owns_operations`, its delta against the default'
       ' configuration in parentheses. A bracket is the per-coroutine delta of `cur` against another'
       ' header variant.')
     w('')
-    w('| value | awaiting | 1 coroutine | 16 coroutines | per coroutine | per coroutine, owning |')
-    w('|---|---|---:|---:|---:|---:|')
+    w('| value | awaiting | params | 1 coroutine | 16 coroutines | per coroutine |'
+      ' per coroutine, owning |')
+    w('|---|---|---|---:|---:|---:|---:|')
     for value in VALUES:
         for awaiting in BODIES:
-            kw = dict(value=value, awaiting=awaiting)
-            a, b = get(**kw, coros=1), get(**kw, coros=16)
-            cells = []
-            for cfg in CFGS:
-                p = per_coroutine('cur', cfg, **kw)
-                if p is None:
-                    cells.append('-')
-                    continue
-                c = f'{p:.1f}'
-                d = per_coroutine('cur', 'default', **kw)
-                if cfg != 'default' and d is not None:
-                    c += f' ({p - d:+.1f})'
-                for h in headers[1:]:
-                    o = per_coroutine(h, cfg, **kw)
-                    if o is not None:
-                        c += f' [{h}: {p - o:+.1f}]'
-                cells.append(c)
-            w(f'| {value} | {awaiting} | {cell(a)} | {cell(b)} | {cells[0]} | {cells[1]} |')
+            for params in PARAMS:
+                kw = dict(value=value, awaiting=awaiting, params=params)
+                a = get('cur', **kw, coros=1, cfg='default')
+                b = get('cur', **kw, coros=16, cfg='default')
+                cells = []
+                for cfg in CFGS:
+                    p = per_coroutine('cur', cfg, **kw)
+                    if p is None:
+                        cells.append('-')
+                        continue
+                    c = f'{p:.1f}'
+                    d = per_coroutine('cur', 'default', **kw)
+                    if cfg != 'default' and d is not None:
+                        c += f' ({p - d:+.1f})'
+                    for h in headers[1:]:
+                        o = per_coroutine(h, cfg, **kw)
+                        if o is not None:
+                            c += f' [{h}: {p - o:+.1f}]'
+                    cells.append(c)
+                w(f'| {value} | {awaiting} | {params} | {cell(a)} | {cell(b)} | {cells[0]} |'
+                  f' {cells[1]} |')
     w('')

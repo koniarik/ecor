@@ -3893,9 +3893,16 @@ struct _promise_type
         /// Construct the promise base by extracting the task core from the context argument and
         /// initializing the token.
         _promise_type( task_context auto&& ctx, auto&&... s )
-          : _base( get_task_core( ctx ), _node_resume() )
+          : _promise_type( _tag< task_core >{}, get_task_core( ctx ) )
         {
                 this->trace.on_promise_construct( *this, ctx, s... );
+        }
+
+        /// Must stay out of line and apart from the coroutine's parameters: every coroutine's ramp
+        /// calls it, and the coroutines of one task type share one copy.
+        ECOR_NOINLINE _promise_type( _tag< task_core >, task_core& core )
+          : _base( core, _node_resume() )
+        {
         }
 
         static constexpr schedulable::resume_fn _node_resume() noexcept

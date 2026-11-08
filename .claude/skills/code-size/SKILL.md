@@ -303,6 +303,22 @@ Two side lessons: an `ECOR_NOINLINE` function with an unused parameter is cloned
 LTO (`.isra`), and passing a pointer at frame+8 costs a 4-byte `add.w` where the frame pointer
 itself was a 2-byte `mov`.
 
+### The promise constructor stays out of line, apart from the coroutine's parameters
+
+Every coroutine's ramp constructs its promise, and the promise constructor is a template on the
+coroutine's parameter types. Out of line as that template it is one copy per task type and
+parameter list, and GCC keeps byte-identical copies apart, weak instantiations with no folding
+without LTO: once the suite's coroutines took varied parameter lists, the programs without LTO
+grew by up to 0.59%. The template stays inline, takes the core from the context, and delegates to
+a non-template `ECOR_NOINLINE` constructor, one copy per task type: −27664 over the suite, every
+program −0.2% to −0.7%, a task type with a single coroutine +12 to +20 bytes, up to +4%. Out of
+line in `_promise_core` instead, one copy per configuration, gains less (−18326), since every ramp
+then passes the resume function. A suite whose coroutines all take only the context hides the
+parameter lists' cost: −32020 for the template out of line there. Making the owning constructor
+independent of the task type, by moving the awaited operation into the ready-list node, made GCC
+inline it into every ramp, 92 → 104 bytes each, +8134 (`doc/plans/promise_ctor.md`,
+`doc/plans/awaited_node.md`).
+
 ### One out-of-line reschedule for every schedulable
 
 The promise, the task holder, the arena core and the pump each held a `task_core&` and called
