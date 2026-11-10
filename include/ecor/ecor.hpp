@@ -1192,7 +1192,7 @@ struct _sig_vtable_row< set_value_t( Args... ) >
         template < typename D, typename B >
         constexpr _sig_vtable_row( _tag< D > /*derived*/, _tag< B > /*base*/ ) noexcept
           : _set_value{ +[]( void* self, Args... args ) {
-                  static_cast< D* >( static_cast< B* >( self ) )->set_value( (Args&&) args... );
+                  static_cast< D& >( *static_cast< B* >( self ) ).set_value( (Args&&) args... );
           } }
         {
         }
@@ -1212,7 +1212,7 @@ struct _sig_vtable_row< set_error_t( Args... ) >
         template < typename D, typename B >
         constexpr _sig_vtable_row( _tag< D > /*derived*/, _tag< B > /*base*/ ) noexcept
           : _set_error{ +[]( void* self, Args... args ) {
-                  static_cast< D* >( static_cast< B* >( self ) )->set_error( (Args&&) args... );
+                  static_cast< D& >( *static_cast< B* >( self ) ).set_error( (Args&&) args... );
           } }
         {
         }
@@ -1232,7 +1232,7 @@ struct _sig_vtable_row< set_stopped_t() >
         template < typename D, typename B >
         constexpr _sig_vtable_row( _tag< D > /*derived*/, _tag< B > /*base*/ ) noexcept
           : _set_stopped{ +[]( void* self ) {
-                  static_cast< D* >( static_cast< B* >( self ) )->set_stopped();
+                  static_cast< D& >( *static_cast< B* >( self ) ).set_stopped();
           } }
         {
         }
@@ -1252,7 +1252,7 @@ struct _sig_vtable_row< get_stopped_t() >
         template < typename D, typename B >
         constexpr _sig_vtable_row( _tag< D > /*derived*/, _tag< B > /*base*/ ) noexcept
           : _get_stopped{ +[]( void* self ) {
-                  return static_cast< D* >( static_cast< B* >( self ) )->get_stopped();
+                  return static_cast< D& >( *static_cast< B* >( self ) ).get_stopped();
           } }
         {
         }
@@ -2070,7 +2070,7 @@ template < typename K, typename D, typename Sigs >
 struct _sh_entry;
 
 template < typename K, typename D, _op_signature... S >
-struct _sh_entry< K, D, completion_signatures< S... > > : _vtable_mixin< S... >, _sh_link< K >
+struct _sh_entry< K, D, completion_signatures< S... > > : _sh_link< K >, _vtable_mixin< S... >
 {
         static constexpr bool has_get_stopped = _contains_type< get_stopped_t(), S... >::value;
         using completion_signatures =
@@ -2081,8 +2081,8 @@ struct _sh_entry< K, D, completion_signatures< S... > > : _vtable_mixin< S... >,
         template < typename Derived, typename KK, typename DD >
         _sh_entry( KK&& k, DD&& d, _tag< Derived > /*derived*/ ) noexcept(
             std::is_nothrow_constructible_v< K, KK > && std::is_nothrow_constructible_v< D, DD > )
-          : _vtable_mixin< S... >{ _tag< Derived >{} }
-          , _sh_link< K >( (KK&&) k )
+          : _sh_link< K >( (KK&&) k )
+          , _vtable_mixin< S... >{ _tag< Derived >{} }
           , data( (DD&&) d )
         {
         }
