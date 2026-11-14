@@ -1340,12 +1340,12 @@ TEST_CASE( "async_queue - layout is pinned, so the README size table cannot drif
         // target.
         constexpr std::size_t ptr = sizeof( void* );
 
-        // The descriptor head is four bytes of narrowed scalars, padded to the pointer, and the
-        // pointer to the vtable; an allocated node's descriptor adds the node's size, alignment
-        // and payload offset, padded again. The vtable is three function pointers.
-        static_assert( sizeof( _queue_desc_head ) == 2 * ptr );
-        static_assert( sizeof( _queue_node_desc ) == 3 * ptr );
-        static_assert( sizeof( _queue_node_vtable ) == 3 * ptr );
+        // The descriptor head is four bytes of narrowed scalars; an allocated node's descriptor
+        // adds four more, the node's size, alignment and payload offset, and the pointer to the
+        // vtable. The vtable is two function pointers.
+        static_assert( sizeof( _queue_desc_head ) == 4 );
+        static_assert( sizeof( _queue_node_desc ) == 8 + ptr );
+        static_assert( sizeof( _queue_node_vtable ) == 2 * ptr );
 
         // One shared link node for the whole queue: just the zll header.
         static_assert( sizeof( _queue_link ) == 2 * ptr );
@@ -1826,8 +1826,7 @@ namespace
         };
         using pump_t = event_pump< pump_cfg, q_t, rec_handler& >;
 
-        /// A plain queue — trivially copyable elements and no `pop()` — from which the pump takes
-        /// its events byte-wise.
+        /// A plain queue: trivially copyable elements and no `pop()`.
         using plain_pump_q = async_queue< minimal_cfg, int, blob >;
 
         struct plain_handler
@@ -1885,9 +1884,10 @@ TEST_CASE( "event_pump - drains events one handler at a time" )
         auto stop_op = p.stop().connect( _dummy_receiver{} );
         stop_op.start();
         ctx.core.run_n( 16 );
+        CHECK( mem.live == 0 );
 }
 
-TEST_CASE( "event_pump - drains a plain queue, taking its events byte-wise" )
+TEST_CASE( "event_pump - drains a plain queue" )
 {
         static_assert( plain_pump_q::_plain );
 
@@ -2021,6 +2021,7 @@ TEST_CASE( "event_pump - stop() while a handler is mid-flight" )
 
         CHECK( log == std::vector< std::string >{ "int:5", "int-done:5" } );
         CHECK( done == std::vector< std::string >{ "stop:value" } );
+        CHECK( mem.live == 0 );
 }
 
 
@@ -2096,7 +2097,7 @@ TEST_CASE( "event_pump - an item taken before stop() is handled under the stop r
         p.start();
         ctx.core.run_once();
 
-        CHECK( q.try_push( 7 ) );  // taken into the pump's slot; the handler has not started
+        CHECK( q.try_push( 7 ) );  // taken by the pump; the handler has not started
         CHECK( q.empty() );
 
         auto st = p.stop().connect( sig_recv{ &slog, "stop" } );
@@ -2108,6 +2109,7 @@ TEST_CASE( "event_pump - an item taken before stop() is handled under the stop r
         CHECK( log == std::vector< std::string >{ "int:7" } );
         CHECK( h.stopped == 1 );
         CHECK( slog == std::vector< std::string >{ "stop:value" } );
+        CHECK( mem.live == 0 );
 }
 
 namespace
@@ -2223,6 +2225,7 @@ TEST_CASE( "event_pump - an on_error() hook runs next to a hook-less pump with t
 
         CHECK( log == std::vector< std::string >{ "fail:1", "plain:2", "fail:3" } );
         CHECK( ha.errors == 2 );
+        CHECK( mem.live == 0 );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2688,14 +2691,13 @@ TEST_CASE( "push_and_wait - layout is pinned alongside the rest of the queue" )
         // set has no stopped row.
         static_assert( sizeof( _queue_call_op_of< done_q, done_recv > ) == 8 * ptr );
 
-        // A call descriptor shares index and vtable with the item descriptor of the same type.
-        // The vtables are checked at run time: they are weak symbols, and GCC under
-        // -fsanitize=undefined declines to fold `&weak != nullptr` into a constant expression.
+        // A call descriptor shares its index with the item descriptor of the same type.
         static_assert( call_q::_call_desc_of< req >.kind == _queue_node_kind::call );
         static_assert( call_q::_desc_of< req >.kind == _queue_node_kind::item );
         static_assert( call_q::_call_desc_of< req >.index == call_q::_desc_of< req >.index );
-        CHECK( typed_call_q::_call_desc_of< counted >.vt != nullptr );
-        CHECK( typed_call_q::_call_desc_of< counted >.vt == typed_call_q::_desc_of< counted >.vt );
+        static_assert(
+            typed_call_q::_call_desc_of< counted >.index ==
+            typed_call_q::_desc_of< counted >.index );
 
         // A set with a stopped signature has it sorted to the front of its vtable, whose
         // single-signature instantiation is then a base of the vtable: the call's operation
@@ -3198,6 +3200,7 @@ TEST_CASE( "event_pump - interleaves calls and items in queue order" )
                        "int:3 start",
                        "int:3 done" } );
         CHECK( q.empty() );
+        CHECK( mem.live == 0 );
 }
 
 TEST_CASE( "event_pump - a call taken before stop() is handled under the stop request" )
@@ -3930,6 +3933,1367 @@ TEST_CASE( "async_queue - pop operations of queues over one core share their bas
                           .pop_value()
                           .connect( std::declval< pop_recv >() ) );
         static_assert( std::same_as< one_type_pop::_base, two_types_pop_value::_base > );
+}
+
+namespace
+{
+        /// Counts the nodes it has handed out and not taken back, and refuses beyond `limit`.
+        struct de_mem
+        {
+                int live  = 0;
+                int limit = 100;
+
+                void* allocate( std::size_t bytes, std::size_t align )
+                {
+                        if ( live == limit )
+                                return nullptr;
+                        ++live;
+                        return ::operator new( bytes, std::align_val_t( align ) );
+                }
+
+                void deallocate( void* p, std::size_t /*bytes*/, std::size_t align )
+                {
+                        --live;
+                        ::operator delete( p, std::align_val_t( align ) );
+                }
+        };
+
+        struct de_cfg : queue_default_cfg< de_mem >
+        {
+                static constexpr async_queue_api pop_api                 = async_queue_api::parking;
+                static constexpr async_queue_api push_api                = async_queue_api::parking;
+                static constexpr bool            trivially_copyable_only = false;
+                static constexpr bool            derived_elements        = true;
+        };
+
+        /// Its destructor is not virtual: the queue destroys a derived object as what it is.
+        struct de_base
+        {
+                de_base() = default;
+                explicit de_base( int xx ) noexcept
+                  : x( xx )
+                {
+                }
+                de_base( de_base&& ) noexcept = default;
+                ~de_base()                    = default;
+
+                [[nodiscard]] virtual int id() const noexcept
+                {
+                        return 0;
+                }
+
+                int x = 0;
+        };
+
+        /// Counts its destructions, but not those of moved-from objects.
+        struct de_derived : de_base
+        {
+                de_derived( int* destroyed, int xx, int yy ) noexcept
+                  : de_base( xx )
+                  , destroyed( destroyed )
+                  , y( yy )
+                {
+                }
+                de_derived( de_derived&& o ) noexcept
+                  : de_base( std::move( o ) )
+                  , destroyed( std::exchange( o.destroyed, nullptr ) )
+                  , y( o.y )
+                {
+                }
+                ~de_derived()
+                {
+                        if ( destroyed )
+                                ++*destroyed;
+                }
+
+                [[nodiscard]] int id() const noexcept override
+                {
+                        return 1;
+                }
+
+                int* destroyed;
+                int  y;
+        };
+
+        struct de_other
+        {
+        };
+
+        struct de_both : de_base, de_other
+        {
+        };
+
+        struct de_unrelated
+        {
+        };
+
+        struct de_traced_base
+        {
+                virtual void trace()
+                {
+                }
+        };
+
+        /// Its `de_base` part does not lie at its start.
+        struct de_misplaced : de_traced_base, de_base
+        {
+        };
+
+        struct de_throwing_move : de_base
+        {
+                de_throwing_move() = default;
+                de_throwing_move( de_throwing_move&& o )
+                  : de_base( std::move( o ) )
+                {
+                }
+        };
+
+        using de_q = async_queue< de_cfg, de_base, int >;
+
+        std::string de_describe( de_base& b )
+        {
+                if ( b.id() == 1 )
+                        return "derived:" + std::to_string( b.x ) + ":" +
+                               std::to_string( static_cast< de_derived& >( b ).y );
+                return "base:" + std::to_string( b.x );
+        }
+
+        struct de_pop_recv
+        {
+                using receiver_concept = receiver_t;
+
+                std::vector< std::string >* log;
+
+                void set_value( de_base& b )
+                {
+                        log->push_back( de_describe( b ) );
+                }
+
+                void set_value( int& v )
+                {
+                        log->push_back( "int:" + std::to_string( v ) );
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        struct de_push_recv
+        {
+                using receiver_concept = receiver_t;
+
+                int* done;
+
+                void set_value() noexcept
+                {
+                        ++*done;
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        struct de_handler
+        {
+                ll_source< unit, set_value_t() >* gate;
+                std::vector< std::string >*       log;
+        };
+
+        task< void > handle( task_ctx& ctx, de_handler& h, de_base& ev )
+        {
+                h.log->push_back( "start:" + de_describe( ev ) );
+                co_await h.gate->schedule();
+                h.log->push_back( "done:" + de_describe( ev ) );
+                std::ignore = ctx;
+        }
+
+        task< void > handle( task_ctx& ctx, de_handler& h, int& ev )
+        {
+                h.log->push_back( "int:" + std::to_string( ev ) );
+                std::ignore = ctx;
+                co_return;
+        }
+
+        using de_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, de_q, de_handler& >;
+
+        struct de_call_cfg : de_cfg
+        {
+                using push_and_wait_signatures = completion_signatures<
+                    set_value_t(),
+                    set_error_t( task_error ),
+                    set_stopped_t() >;
+        };
+
+        using de_call_q = async_queue< de_call_cfg, de_base >;
+
+        using de_call_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, de_call_q, de_handler& >;
+
+        template < typename Q, typename U >
+        concept _can_try_push = requires( Q& q, U u ) { q.try_push( std::move( u ) ); };
+
+        template < typename Q, typename U >
+        concept _can_push = requires( Q& q, U u ) { q.push( std::move( u ) ); };
+
+        template < typename Q >
+        concept _has_value_type = requires { typename Q::value_type; };
+
+        template < typename P >
+        concept _has_event_type = requires { typename P::event_type; };
+
+        struct de_cfg_plain : de_cfg
+        {
+                static constexpr bool derived_elements = false;
+        };
+
+        void de_open( std::vector< std::string >& log, de_q& q )
+        {
+                auto op = q.pop().connect( de_pop_recv{ &log } );
+                op.start();
+        }
+}  // namespace
+
+namespace
+{
+        struct de_command
+        {
+                [[nodiscard]] virtual int run() const noexcept = 0;
+        };
+
+        struct de_blink : de_command
+        {
+                explicit de_blink( int t ) noexcept
+                  : times( t )
+                {
+                }
+
+                [[nodiscard]] int run() const noexcept override
+                {
+                        return times;
+                }
+
+                int times;
+        };
+
+        using de_command_q = async_queue< de_cfg, de_command >;
+
+        struct de_command_recv
+        {
+                using receiver_concept = receiver_t;
+
+                int* out;
+
+                void set_value( de_command& c )
+                {
+                        *out = c.run();
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        struct de_runner
+        {
+                int* out;
+        };
+
+        task< void > handle( task_ctx& ctx, de_runner& r, de_command& c )
+        {
+                *r.out      = c.run();
+                std::ignore = ctx;
+                co_return;
+        }
+
+        using de_command_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, de_command_q, de_runner >;
+}  // namespace
+
+TEST_CASE( "async_queue - derived_elements takes an abstract element type" )
+{
+        nd_mem       tmem;
+        task_ctx     ctx{ tmem };
+        de_mem       mem;
+        de_command_q q{ mem };
+        int          out = 0;
+
+        CHECK( q.try_push( de_blink{ 3 } ) );
+        auto op = q.pop().connect( de_command_recv{ &out } );
+        op.start();
+        CHECK( out == 3 );
+
+        de_command_pump_t p{ ctx, q, de_runner{ &out } };
+        p.start();
+        ctx.core.run_n( 4 );
+        CHECK( q.try_push( de_blink{ 5 } ) );
+        ctx.core.run_n( 8 );
+        CHECK( out == 5 );
+        CHECK( mem.live == 0 );
+}
+
+static task< void > de_call_task( task_ctx&, de_call_q& q, de_derived& d, int& done )
+{
+        co_await q.push_and_wait( d );
+        ++done;
+}
+
+TEST_CASE( "async_queue - derived_elements admits a type derived from exactly one element type" )
+{
+        using two_bases_q = async_queue< de_cfg, de_base, de_other >;
+        static_assert( _can_try_push< de_q, de_derived > );
+        static_assert( _can_push< de_q, de_derived > );
+        static_assert( _can_try_push< de_q, de_base > );
+        static_assert( _can_try_push< de_q, int > );
+        static_assert( !_can_try_push< de_q, de_unrelated > );
+        static_assert( !_can_try_push< two_bases_q, de_both > );
+        static_assert( _can_try_push< two_bases_q, de_base > );
+        static_assert( _has_pop< de_q > );
+        static_assert( !_has_try_pop< de_q > );
+        static_assert( !_has_pop_value< de_q > );
+        static_assert( !_can_try_push< async_queue< pop_only_cfg, de_base >, de_derived > );
+        static_assert( !_can_try_push< de_q, de_misplaced > );
+        static_assert( !_can_push< de_q, de_misplaced > );
+        static_assert( !_can_try_push< de_q, de_throwing_move > );
+        static_assert( !std::constructible_from< de_q::push_bundle, de_misplaced&& > );
+        static_assert( !_has_value_type< de_q > );
+        static_assert( _has_value_type< async_queue< de_cfg_plain, de_base > > );
+        static_assert( !_has_event_type< de_pump_t > );
+}
+
+TEST_CASE( "async_queue - derived_elements delivers the derived object and destroys it as such" )
+{
+        de_mem                     mem;
+        std::vector< std::string > log;
+        int                        destroyed = 0;
+        {
+                de_q q{ mem };
+                CHECK( q.try_push( de_derived{ &destroyed, 3, 7 } ) );
+                CHECK( mem.live == 1 );
+                de_open( log, q );
+                CHECK( log == std::vector< std::string >{ "derived:3:7" } );
+                CHECK( destroyed == 1 );
+                CHECK( mem.live == 0 );
+
+                CHECK( q.try_push( de_derived{ &destroyed, 1, 1 } ) );
+                CHECK( q.try_push( de_derived{ &destroyed, 2, 2 } ) );
+                CHECK( destroyed == 1 );
+        }
+        CHECK( destroyed == 3 );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE( "async_queue - derived_elements keeps FIFO order across derived, base and other types" )
+{
+        de_mem                     mem;
+        de_q                       q{ mem };
+        std::vector< std::string > log;
+        int                        destroyed = 0;
+
+        CHECK( q.try_push( de_derived{ &destroyed, 1, 5 } ) );
+        CHECK( q.try_push( 7 ) );
+        CHECK( q.try_push( de_base{ 2 } ) );
+        de_open( log, q );
+        de_open( log, q );
+        de_open( log, q );
+        CHECK( log == std::vector< std::string >{ "derived:1:5", "int:7", "base:2" } );
+        CHECK( destroyed == 1 );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE(
+    "event_pump - with derived_elements an item stays in its node until its handler finishes" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        de_q                             q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log;
+        int                              destroyed = 0;
+        de_handler                       h{ &gate, &log };
+        de_pump_t                        p{ ctx, q, h };
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( de_derived{ &destroyed, 3, 7 } ) );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:derived:3:7" } );
+        CHECK( destroyed == 0 );
+        CHECK( mem.live == 1 );
+
+        broadcast( gate, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:derived:3:7", "done:derived:3:7" } );
+        CHECK( destroyed == 1 );
+        CHECK( mem.live == 0 );
+
+        CHECK( q.try_push( 5 ) );
+        ctx.core.run_n( 8 );
+        CHECK( log.back() == "int:5" );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE(
+    "event_pump - with derived_elements releasing a kept node serves a producer waiting for memory" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        de_q                             q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log;
+        int                              destroyed = 0, pushed = 0;
+        de_handler                       h{ &gate, &log };
+        de_pump_t                        p{ ctx, q, h };
+        mem.limit = 1;
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( de_derived{ &destroyed, 1, 1 } ) );
+        ctx.core.run_n( 8 );
+        auto op = q.push( de_derived{ &destroyed, 2, 2 } ).connect( de_push_recv{ &pushed } );
+        op.start();
+        CHECK( pushed == 0 );
+
+        broadcast( gate, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_n( 8 );
+        CHECK( pushed == 1 );
+        CHECK( destroyed == 1 );
+        CHECK(
+            log == std::vector< std::string >{
+                       "start:derived:1:1", "done:derived:1:1", "start:derived:2:2" } );
+        CHECK( mem.live == 1 );
+
+        broadcast( gate, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_n( 8 );
+        CHECK( destroyed == 2 );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE(
+    "event_pump - with derived_elements push_and_wait() hands the caller's derived object over" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        de_call_q                        q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log;
+        int                              destroyed = 0, done = 0;
+        de_handler                       h{ &gate, &log };
+        de_call_pump_t                   p{ ctx, q, h };
+        de_derived                       d{ &destroyed, 3, 7 };
+        p.start();
+        ctx.core.run_n( 4 );
+
+        auto t = de_call_task( ctx, q, d, done ).connect( _dummy_receiver{} );
+        t.start();
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:derived:3:7" } );
+        CHECK( done == 0 );
+
+        broadcast( gate, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:derived:3:7", "done:derived:3:7" } );
+        CHECK( done == 1 );
+        CHECK( destroyed == 0 );
+        CHECK( mem.live == 0 );
+}
+
+
+namespace
+{
+        struct de_grand : de_derived
+        {
+                using de_derived::de_derived;
+        };
+
+        template < typename Q >
+        concept _accepts_const_derived_call =
+            requires( Q& q, de_derived const& v ) { q.push_and_wait( v ); };
+
+        /// Its unary `operator&` must not be what the queue takes the address of.
+        struct de_amp
+        {
+                de_amp* operator&() noexcept
+                {
+                        return nullptr;
+                }
+
+                int v;
+        };
+
+        using de_command_call_q = async_queue< de_call_cfg, de_command >;
+
+        using de_command_call_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, de_command_call_q, de_runner >;
+
+        struct de_close_cfg : de_cfg
+        {
+                static constexpr bool is_closeable = true;
+        };
+
+        using de_close_q = async_queue< de_close_cfg, de_base >;
+
+        struct de_stop_pump_cfg : pump_default_cfg< task_ctx, task< void > >
+        {
+                static constexpr bool is_stoppable = true;
+        };
+
+        using de_close_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, de_close_q, de_handler& >;
+
+        using de_stop_pump_t = event_pump< de_stop_pump_cfg, de_q, de_handler& >;
+}  // namespace
+
+static task< void > de_command_call_task( task_ctx&, de_command_call_q& q, de_blink& b, int& done )
+{
+        co_await q.push_and_wait( b );
+        ++done;
+}
+
+TEST_CASE( "async_queue - derived_elements admits a type derived through another" )
+{
+        de_mem                     mem;
+        de_q                       q{ mem };
+        std::vector< std::string > log;
+        int                        destroyed = 0;
+        static_assert( de_q::_slot_index< de_grand > == 0 );
+        CHECK( q.try_push( de_grand{ &destroyed, 5, 6 } ) );
+        de_open( log, q );
+        CHECK( log == std::vector< std::string >{ "derived:5:6" } );
+        CHECK( destroyed == 1 );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE( "async_queue - derived_elements refuses a const object" )
+{
+        static_assert( de_q::_slot_index< de_derived const > == 2 );
+        static_assert( !std::constructible_from< de_q::push_bundle, de_derived const&& > );
+        static_assert( std::constructible_from< de_q::push_bundle, de_derived&& > );
+        static_assert( !_accepts_const_derived_call< de_call_q > );
+}
+
+TEST_CASE( "async_queue - an element type with its own unary operator& is pushed" )
+{
+        de_mem                                             mem;
+        async_queue< queue_default_cfg< de_mem >, de_amp > q{ mem };
+        CHECK( q.try_push( de_amp{ 7 } ) );
+        auto v = q.try_pop();
+        REQUIRE( v.holds< de_amp >() );
+        CHECK( v.get_if< de_amp >()->v == 7 );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE( "async_queue - derived_elements hands an explicitly built push_bundle over" )
+{
+        de_mem                     mem;
+        de_q                       q{ mem };
+        std::vector< std::string > log;
+        int                        destroyed = 0;
+        CHECK( q.try_push( de_q::push_bundle( de_derived{ &destroyed, 4, 9 } ) ) );
+        de_open( log, q );
+        CHECK( log == std::vector< std::string >{ "derived:4:9" } );
+        CHECK( destroyed == 1 );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE( "event_pump - with derived_elements push_and_wait() of an abstract element type" )
+{
+        nd_mem                 tmem;
+        task_ctx               ctx{ tmem };
+        de_mem                 mem;
+        de_command_call_q      q{ mem };
+        int                    out = 0, done = 0;
+        de_blink               b{ 6 };
+        de_command_call_pump_t p{ ctx, q, de_runner{ &out } };
+        p.start();
+        ctx.core.run_n( 4 );
+
+        auto t = de_command_call_task( ctx, q, b, done ).connect( _dummy_receiver{} );
+        t.start();
+        ctx.core.run_n( 8 );
+        CHECK( out == 6 );
+        CHECK( done == 1 );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE( "async_queue - with derived_elements pop() completes a push_and_wait() call" )
+{
+        nd_mem                     tmem;
+        task_ctx                   ctx{ tmem };
+        de_mem                     mem;
+        de_call_q                  q{ mem };
+        std::vector< std::string > log;
+        int                        destroyed = 0, done = 0;
+        de_derived                 d{ &destroyed, 2, 8 };
+
+        auto t = de_call_task( ctx, q, d, done ).connect( _dummy_receiver{} );
+        t.start();
+        ctx.core.run_n( 4 );
+        CHECK( done == 0 );
+
+        auto op = q.pop().connect( de_pop_recv{ &log } );
+        op.start();
+        ctx.core.run_n( 4 );
+        CHECK( log == std::vector< std::string >{ "derived:2:8" } );
+        CHECK( done == 1 );
+        CHECK( destroyed == 0 );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE( "event_pump - with derived_elements a pump destroyed before handling releases the node" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        de_q                             q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log;
+        int                              destroyed = 0;
+        de_handler                       h{ &gate, &log };
+        {
+                de_pump_t p{ ctx, q, h };
+                p.start();
+                ctx.core.run_n( 4 );
+                CHECK( q.try_push( de_derived{ &destroyed, 3, 7 } ) );
+                CHECK( mem.live == 1 );
+                CHECK( log.empty() );
+        }
+        CHECK( destroyed == 1 );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE( "event_pump - with derived_elements close() completes while an item is kept" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        de_close_q                       q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log, close_log;
+        int                              destroyed = 0;
+        de_handler                       h{ &gate, &log };
+        de_close_pump_t                  p{ ctx, q, h };
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( de_derived{ &destroyed, 3, 7 } ) );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:derived:3:7" } );
+
+        auto close_op = q.close().connect( sig_recv{ &close_log, "c" } );
+        close_op.start();
+        ctx.core.run_n( 8 );
+        CHECK( close_log == std::vector< std::string >{ "c:value" } );
+        CHECK( mem.live == 1 );
+
+        broadcast( gate, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:derived:3:7", "done:derived:3:7" } );
+        CHECK( destroyed == 1 );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE( "event_pump - with derived_elements stop() lets a kept item's handler finish" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        de_q                             q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log, stop_log;
+        int                              destroyed = 0;
+        de_handler                       h{ &gate, &log };
+        de_stop_pump_t                   p{ ctx, q, h };
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( de_derived{ &destroyed, 3, 7 } ) );
+        ctx.core.run_n( 8 );
+        auto stop_op = p.stop().connect( sig_recv{ &stop_log, "s" } );
+        stop_op.start();
+        ctx.core.run_n( 8 );
+        CHECK( stop_log.empty() );
+        CHECK( mem.live == 1 );
+
+        broadcast( gate, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:derived:3:7", "done:derived:3:7" } );
+        CHECK( stop_log == std::vector< std::string >{ "s:value" } );
+        CHECK( destroyed == 1 );
+        CHECK( mem.live == 0 );
+}
+
+
+namespace
+{
+        struct kept_cfg : queue_default_cfg< de_mem >
+        {
+                static constexpr async_queue_api push_api = async_queue_api::parking;
+        };
+
+        using kept_q = async_queue< kept_cfg, int >;
+
+        struct kept_handler
+        {
+                ll_source< unit, set_value_t() >* gate;
+                std::vector< std::string >*       log;
+        };
+
+        task< void > handle( task_ctx& ctx, kept_handler& h, int& ev )
+        {
+                h.log->push_back( "start:" + std::to_string( ev ) );
+                co_await h.gate->schedule();
+                h.log->push_back( "done:" + std::to_string( ev ) );
+                std::ignore = ctx;
+        }
+
+        using kept_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, kept_q, kept_handler& >;
+}  // namespace
+
+TEST_CASE( "event_pump - an item stays in its node until its handler finishes" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        kept_q                           q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log;
+        int                              pushed = 0;
+        kept_handler                     h{ &gate, &log };
+        kept_pump_t                      p{ ctx, q, h };
+        mem.limit = 1;
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( 1 ) );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:1" } );
+        CHECK( mem.live == 1 );
+        CHECK( !q.try_push( 2 ) );
+        auto op = q.push( 2 ).connect( de_push_recv{ &pushed } );
+        op.start();
+        CHECK( pushed == 0 );
+
+        broadcast( gate, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_n( 8 );
+        CHECK( pushed == 1 );
+        CHECK( log == std::vector< std::string >{ "start:1", "done:1", "start:2" } );
+        CHECK( mem.live == 1 );
+
+        broadcast( gate, []( auto& e ) {
+                e.set_value();
+        } );
+        ctx.core.run_n( 8 );
+        CHECK( log.back() == "done:2" );
+        CHECK( mem.live == 0 );
+}
+
+
+namespace
+{
+        struct self_push_handler
+        {
+                kept_q* q;
+                bool*   pushed;
+        };
+
+        task< void > handle( task_ctx& ctx, self_push_handler& h, int& /*ev*/ )
+        {
+                *h.pushed   = h.q->try_push( 9 );
+                std::ignore = ctx;
+                co_return;
+        }
+
+        using self_push_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, kept_q, self_push_handler >;
+
+        /// Counts its moves.
+        struct kept_counted
+        {
+                explicit kept_counted( int* moves ) noexcept
+                  : moves( moves )
+                {
+                }
+                kept_counted( kept_counted&& o ) noexcept
+                  : moves( o.moves )
+                {
+                        ++*moves;
+                }
+                ~kept_counted() = default;
+
+                int* moves;
+        };
+
+        struct kept_owning_cfg : kept_cfg
+        {
+                static constexpr bool trivially_copyable_only = false;
+        };
+
+        using kept_owning_q = async_queue< kept_owning_cfg, kept_counted >;
+
+        struct kept_counted_handler
+        {
+                std::vector< int >* seen;
+        };
+
+        task< void > handle( task_ctx& ctx, kept_counted_handler& h, kept_counted& ev )
+        {
+                h.seen->push_back( *ev.moves );
+                std::ignore = ctx;
+                co_return;
+        }
+
+        using kept_owning_pump_t = event_pump<
+            pump_default_cfg< task_ctx, task< void > >,
+            kept_owning_q,
+            kept_counted_handler >;
+
+        using kept_big_q = async_queue< kept_cfg, std::array< char, 64 > >;
+}  // namespace
+
+TEST_CASE( "event_pump - its size does not depend on the queue's element types" )
+{
+        static_assert(
+            sizeof( kept_pump_t ) == sizeof( event_pump<
+                                             pump_default_cfg< task_ctx, task< void > >,
+                                             kept_big_q,
+                                             kept_handler& > ) );
+}
+
+TEST_CASE( "event_pump - a handler's try_push() competes with its own event for memory" )
+{
+        nd_mem           tmem;
+        task_ctx         ctx{ tmem };
+        de_mem           mem;
+        kept_q           q{ mem };
+        bool             pushed = true;
+        self_push_pump_t p{ ctx, q, self_push_handler{ &q, &pushed } };
+        mem.limit = 1;
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( 1 ) );
+        ctx.core.run_n( 8 );
+        CHECK( !pushed );
+        CHECK( mem.live == 0 );
+        CHECK( q.empty() );
+}
+
+TEST_CASE( "event_pump - a destroyed pump releases its item and serves a producer waiting for it" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        kept_q                           q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log;
+        int                              pushed = 0;
+        kept_handler                     h{ &gate, &log };
+        mem.limit = 1;
+        auto op   = q.push( 2 ).connect( de_push_recv{ &pushed } );
+        {
+                kept_pump_t p{ ctx, q, h };
+                p.start();
+                ctx.core.run_n( 4 );
+                CHECK( q.try_push( 1 ) );
+                op.start();
+                CHECK( pushed == 0 );
+                CHECK( log.empty() );
+        }
+        CHECK( pushed == 1 );
+        CHECK( mem.live == 1 );
+        CHECK( q.size() == 1 );
+}
+
+TEST_CASE( "event_pump - hands an owning item to its handler without moving it" )
+{
+        nd_mem             tmem;
+        task_ctx           ctx{ tmem };
+        de_mem             mem;
+        kept_owning_q      q{ mem };
+        std::vector< int > seen;
+        int                moves = 0;
+        kept_owning_pump_t p{ ctx, q, kept_counted_handler{ &seen } };
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( kept_counted{ &moves } ) );
+        CHECK( moves == 1 );
+        ctx.core.run_n( 8 );
+        CHECK( seen == std::vector< int >{ 1 } );
+        CHECK( moves == 1 );
+        CHECK( mem.live == 0 );
+}
+
+
+namespace
+{
+        struct de_call_recv
+        {
+                using receiver_concept = receiver_t;
+
+                std::string* out;
+
+                void set_value() noexcept
+                {
+                        *out = "value";
+                }
+
+                void set_error( auto&& /*err*/ ) noexcept
+                {
+                        *out = "error";
+                }
+
+                void set_stopped() noexcept
+                {
+                        *out = "stopped";
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        /// Completes at once; its operation state records, when destroyed, the event it was
+        /// given and how many nodes the memory resource still holds.
+        struct lt_sender
+        {
+                using sender_concept        = sender_t;
+                using completion_signatures = ecor::completion_signatures< set_value_t() >;
+
+                int const*                  ev;
+                de_mem*                     mem;
+                std::vector< std::string >* log;
+
+                template < typename R >
+                struct op
+                {
+                        using operation_state_concept = operation_state_t;
+
+                        R                           r;
+                        int const*                  ev;
+                        de_mem*                     mem;
+                        std::vector< std::string >* log;
+
+                        op( R rr, int const* e, de_mem* m, std::vector< std::string >* l ) noexcept
+                          : r( std::move( rr ) )
+                          , ev( e )
+                          , mem( m )
+                          , log( l )
+                        {
+                        }
+                        op( op const& )            = delete;
+                        op& operator=( op const& ) = delete;
+                        ~op()
+                        {
+                                log->push_back(
+                                    "op-dtor:" + std::to_string( *ev ) +
+                                    ":live=" + std::to_string( mem->live ) );
+                        }
+
+                        void start() noexcept
+                        {
+                                r.set_value();
+                        }
+                };
+
+                template < typename R >
+                op< R > connect( R r ) noexcept
+                {
+                        return { std::move( r ), ev, mem, log };
+                }
+        };
+
+        struct lt_handler
+        {
+                de_mem*                     mem;
+                std::vector< std::string >* log;
+        };
+
+        lt_sender handle( task_ctx& /*ctx*/, lt_handler& h, int& ev )
+        {
+                return { &ev, h.mem, h.log };
+        }
+
+        using lt_pump_t = event_pump< pump_default_cfg< task_ctx, lt_sender >, kept_q, lt_handler >;
+}  // namespace
+
+TEST_CASE( "event_pump - an item is released only after its handler's operation state is gone" )
+{
+        nd_mem                     tmem;
+        task_ctx                   ctx{ tmem };
+        de_mem                     mem;
+        kept_q                     q{ mem };
+        std::vector< std::string > log;
+        lt_pump_t                  p{ ctx, q, lt_handler{ &mem, &log } };
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( 5 ) );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "op-dtor:5:live=1" } );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE( "event_pump - a destroyed pump completes a call it took but did not handle stopped" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        de_call_q                        q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log;
+        std::string                      out;
+        int                              destroyed = 0;
+        de_handler                       h{ &gate, &log };
+        de_derived                       d{ &destroyed, 1, 2 };
+        auto                             op = q.push_and_wait( d ).connect( de_call_recv{ &out } );
+        {
+                de_call_pump_t p{ ctx, q, h };
+                p.start();
+                ctx.core.run_n( 4 );
+                op.start();
+                CHECK( out.empty() );
+                CHECK( log.empty() );
+        }
+        CHECK( out == "stopped" );
+        CHECK( mem.live == 0 );
+}
+
+
+namespace
+{
+        struct empty_owning
+        {
+                empty_owning() noexcept = default;
+                empty_owning( empty_owning&& /*o*/ ) noexcept
+                {
+                }
+                ~empty_owning()
+                {
+                }
+        };
+
+        struct empty_plain
+        {
+        };
+
+        template < typename T >
+        bool payload_is_value()
+        {
+                using N = _queue_node_of< T >;
+                alignas( N ) unsigned char raw[sizeof( N )];
+                auto*                      n = ::new ( raw ) N( _queue_node_desc_of< T, 0 >, T{} );
+                bool ok = _queue_payload< false >( *n ) == static_cast< void* >( &n->_val );
+                n->~N();
+                return ok;
+        }
+}  // namespace
+
+TEST_CASE( "async_queue - the payload of a node is where its value lives, empty or not" )
+{
+        CHECK( payload_is_value< empty_owning >() );
+        CHECK( payload_is_value< empty_plain >() );
+        CHECK( payload_is_value< int >() );
+        CHECK( payload_is_value< std::string >() );
+}
+
+
+namespace
+{
+        using ring_mem = circular_buffer_memory< uint16_t >;
+
+        struct ring_kept_cfg : queue_default_cfg< ring_mem >
+        {
+                static constexpr async_queue_api push_api = async_queue_api::parking;
+        };
+
+        using ring_kept_q = async_queue< ring_kept_cfg, int >;
+
+        using ring_kept_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, ring_kept_q, kept_handler& >;
+
+        struct kept_close_cfg : kept_cfg
+        {
+                static constexpr bool is_closeable = true;
+        };
+
+        using kept_close_q = async_queue< kept_close_cfg, int >;
+
+        using kept_close_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, kept_close_q, kept_handler& >;
+
+        struct kept_stop_pump_cfg : pump_default_cfg< task_ctx, task< void > >
+        {
+                static constexpr bool is_stoppable = true;
+        };
+
+        using kept_stop_pump_t = event_pump< kept_stop_pump_cfg, kept_q, kept_handler& >;
+
+        /// Records how many nodes the memory resource holds when it completes.
+        struct live_recv
+        {
+                using receiver_concept = receiver_t;
+
+                de_mem* mem;
+                int*    live_at_completion;
+
+                void set_value() noexcept
+                {
+                        *live_at_completion = mem->live;
+                }
+
+                void set_stopped() noexcept
+                {
+                        *live_at_completion = -1;
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        /// Records the order in which parked pushes complete.
+        struct order_recv
+        {
+                using receiver_concept = receiver_t;
+
+                std::vector< int >* order;
+                int                 id;
+
+                void set_value() noexcept
+                {
+                        order->push_back( id );
+                }
+
+                [[nodiscard]] empty_env get_env() const noexcept
+                {
+                        return {};
+                }
+        };
+
+        struct fwd_handler
+        {
+                kept_q*                     to;
+                std::vector< std::string >* log;
+        };
+
+        task< void > handle( task_ctx& ctx, fwd_handler& h, int& ev )
+        {
+                h.log->push_back( "fwd-start:" + std::to_string( ev ) );
+                co_await h.to->push( ev );
+                h.log->push_back( "fwd-done:" + std::to_string( ev ) );
+                std::ignore = ctx;
+        }
+
+        using fwd_pump_t =
+            event_pump< pump_default_cfg< task_ctx, task< void > >, kept_q, fwd_handler >;
+
+        void open_gate( ll_source< unit, set_value_t() >& gate )
+        {
+                broadcast( gate, []( auto& e ) {
+                        e.set_value();
+                } );
+        }
+}  // namespace
+
+TEST_CASE( "event_pump - two pumps on a ring free their nodes as their handlers finish" )
+{
+        constexpr std::size_t node = sizeof( _queue_node_of< int > );
+        static_assert( node % 8 == 0 && alignof( _queue_node_of< int > ) == 8 );
+
+        nd_mem                                            tmem;
+        task_ctx                                          ctx{ tmem };
+        alignas( 8 ) std::array< uint8_t, 3 * node + 24 > buffer;
+        ring_mem                                          mem{ std::span{ buffer } };
+        ring_kept_q                                       q{ mem };
+        ll_source< unit, set_value_t() >                  gate_a, gate_b;
+        std::vector< std::string >                        log;
+        int                                               pushed = 0;
+        kept_handler                                      ha{ &gate_a, &log }, hb{ &gate_b, &log };
+        ring_kept_pump_t                                  pa{ ctx, q, ha };
+        ring_kept_pump_t                                  pb{ ctx, q, hb };
+        pa.start();
+        ctx.core.run_n( 4 );
+        pb.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( 1 ) );
+        CHECK( q.try_push( 2 ) );
+        CHECK( q.try_push( 3 ) );
+        REQUIRE( !q.try_push( 9 ) );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:1", "start:2" } );
+        auto op = q.push( 4 ).connect( de_push_recv{ &pushed } );
+        op.start();
+
+        // The newer node goes first and leaves a hole the ring cannot reuse.
+        open_gate( gate_b );
+        ctx.core.run_n( 8 );
+        CHECK( log.back() == "start:3" );
+        CHECK( pushed == 0 );
+
+        // The oldest node goes, and the producer fits in front of the one still held.
+        open_gate( gate_a );
+        ctx.core.run_n( 8 );
+        CHECK( pushed == 1 );
+        CHECK( log.back() == "start:4" );
+
+        open_gate( gate_a );
+        open_gate( gate_b );
+        ctx.core.run_n( 8 );
+        CHECK( q.empty() );
+        CHECK( mem.used_bytes() == 0 );
+}
+
+TEST_CASE( "event_pump - close() completes while an item of a plain queue is kept" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        kept_close_q                     q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log, close_log;
+        kept_handler                     h{ &gate, &log };
+        kept_close_pump_t                p{ ctx, q, h };
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( 1 ) );
+        ctx.core.run_n( 8 );
+        auto close_op = q.close().connect( sig_recv{ &close_log, "c" } );
+        close_op.start();
+        ctx.core.run_n( 8 );
+        CHECK( close_log == std::vector< std::string >{ "c:value" } );
+        CHECK( mem.live == 1 );
+
+        open_gate( gate );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:1", "done:1" } );
+        CHECK( mem.live == 0 );
+        CHECK( !ctx.core.run_once() );
+}
+
+TEST_CASE( "event_pump - stop() completes after the kept item of a plain queue is released" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        kept_q                           q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log;
+        int                              live_at_stop = -2;
+        kept_handler                     h{ &gate, &log };
+        kept_stop_pump_t                 p{ ctx, q, h };
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( 1 ) );
+        ctx.core.run_n( 8 );
+        auto stop_op = p.stop().connect( live_recv{ &mem, &live_at_stop } );
+        stop_op.start();
+        ctx.core.run_n( 8 );
+        CHECK( live_at_stop == -2 );
+        CHECK( mem.live == 1 );
+
+        open_gate( gate );
+        ctx.core.run_n( 8 );
+        CHECK( log == std::vector< std::string >{ "start:1", "done:1" } );
+        CHECK( live_at_stop == 0 );
+}
+
+TEST_CASE(
+    "event_pump - producers waiting for memory are admitted in order, one per released node" )
+{
+        nd_mem                           tmem;
+        task_ctx                         ctx{ tmem };
+        de_mem                           mem;
+        kept_q                           q{ mem };
+        ll_source< unit, set_value_t() > gate;
+        std::vector< std::string >       log;
+        std::vector< int >               order;
+        kept_handler                     h{ &gate, &log };
+        kept_pump_t                      p{ ctx, q, h };
+        mem.limit = 1;
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( q.try_push( 1 ) );
+        ctx.core.run_n( 8 );
+        auto op2 = q.push( 2 ).connect( order_recv{ &order, 2 } );
+        auto op3 = q.push( 3 ).connect( order_recv{ &order, 3 } );
+        op2.start();
+        op3.start();
+        CHECK( order.empty() );
+
+        open_gate( gate );
+        ctx.core.run_n( 8 );
+        CHECK( order == std::vector< int >{ 2 } );
+        CHECK( !q.try_push( 9 ) );
+
+        open_gate( gate );
+        ctx.core.run_n( 8 );
+        CHECK( order == std::vector< int >{ 2, 3 } );
+
+        open_gate( gate );
+        ctx.core.run_n( 8 );
+        CHECK(
+            log == std::vector< std::string >{
+                       "start:1", "done:1", "start:2", "done:2", "start:3", "done:3" } );
+        CHECK( mem.live == 0 );
+}
+
+TEST_CASE( "event_pump - a handler pushing into another queue over the same full memory waits" )
+{
+        nd_mem                     tmem;
+        task_ctx                   ctx{ tmem };
+        de_mem                     mem;
+        kept_q                     qa{ mem }, qb{ mem };
+        std::vector< std::string > log;
+        fwd_pump_t                 p{ ctx, qa, fwd_handler{ &qb, &log } };
+        mem.limit = 2;
+        p.start();
+        ctx.core.run_n( 4 );
+
+        CHECK( qa.try_push( 1 ) );
+        CHECK( qa.try_push( 2 ) );
+        ctx.core.run_n( 32 );
+        CHECK( log == std::vector< std::string >{ "fwd-start:1" } );
+        CHECK( mem.live == 2 );
+        CHECK( !ctx.core.run_once() );
+
+        // Only the other queue's own service retries its parked producer.
+        mem.limit = 4;
+        CHECK( qb.try_push( 0 ) );
+        ctx.core.run_n( 32 );
+        CHECK(
+            log == std::vector< std::string >{
+                       "fwd-start:1", "fwd-done:1", "fwd-start:2", "fwd-done:2" } );
 }
 
 }  // namespace ecor

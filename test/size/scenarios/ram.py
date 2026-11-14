@@ -169,6 +169,7 @@ TYPES = [
                 ' std::declval< e0& >() ) ), dr >'),
     ('pump', 'event_pump< pump_default_cfg< task_ctx, imm_t >, q_default, h >'),
     ('pump_stoppable', 'event_pump< pcfg_stop, q_default, h >'),
+    ('pump_call', 'event_pump< pump_default_cfg< task_ctx, imm_t >, q_call, h >'),
     ('task_holder', 'task_holder< task_default_cfg, task_ctx, factory_t >'),
     ('async_arena', 'async_arena< task_ctx, sys_mem >'),
     ('async_ptr', 'async_ptr< obj, task_ctx, sys_mem >'),

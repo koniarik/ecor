@@ -794,6 +794,130 @@ TEST_CASE( "_absent - empty, distinct per type, constructible from anything" )
         static_assert( sizeof( _absent_beside_empty_base ) == sizeof( int ) );
 }
 
+namespace
+{
+        struct bi_a
+        {
+        };
+        struct bi_b
+        {
+        };
+        struct bi_ab : bi_a, bi_b
+        {
+        };
+        struct bi_a2 : bi_a
+        {
+        };
+        struct bi_private : private bi_a
+        {
+        };
+}  // namespace
+
+namespace
+{
+        struct ba_command
+        {
+                virtual void run() = 0;
+        };
+        struct ba_traced
+        {
+                virtual void trace()
+                {
+                }
+        };
+        struct ba_blink : ba_command
+        {
+                int pin;
+                ~ba_blink()
+                {
+                }
+                void run() override
+                {
+                }
+        };
+        struct ba_traced_blink : ba_traced, ba_command
+        {
+                int  pin;
+                void run() override
+                {
+                }
+        };
+        struct ba_x
+        {
+                int x;
+        };
+        struct ba_y
+        {
+                int y;
+        };
+        struct ba_xy : ba_x, ba_y
+        {
+        };
+        struct ba_virtual : virtual ba_traced
+        {
+                int pin;
+        };
+        /// Its unary `operator&` must not be what the check takes the address of.
+        struct ba_amp : ba_command
+        {
+                ba_amp* operator&() noexcept
+                {
+                        return nullptr;
+                }
+                void run() override
+                {
+                }
+        };
+}  // namespace
+
+TEST_CASE( "_base_at_start - whether a base lies at the address of the derived object" )
+{
+        static_assert( _base_at_start< ba_command, ba_blink > );
+        static_assert( !_base_at_start< ba_command, ba_traced_blink > );
+        static_assert( _base_at_start< ba_traced, ba_traced_blink > );
+        static_assert( _base_at_start< ba_x, ba_xy > );
+        static_assert( !_base_at_start< ba_y, ba_xy > );
+        static_assert( _base_at_start< ba_blink, ba_blink > );
+        static_assert( !_base_at_start< ba_traced, ba_virtual > );
+        static_assert( _base_at_start< ba_command, ba_amp > );
+}
+
+TEST_CASE( "_base_index - the one type in a pack that a type is or derives from" )
+{
+        static_assert( _base_index< bi_a, bi_a, bi_b >::value == 0 );
+        static_assert( _base_index< bi_a2, bi_b, bi_a >::value == 1 );
+        static_assert( _base_index< bi_ab, bi_a, int >::value == 0 );
+        static_assert( _base_index< bi_ab, bi_a, bi_b >::value == 2 );
+        static_assert( _base_index< bi_private, bi_a >::value == 1 );
+        static_assert( _base_index< int, int, bi_a >::value == 2 );
+        static_assert( _base_index< bi_a >::value == 0 );
+}
+
+TEST_CASE( "_match_index - a type's position in a pack, exactly or by its one base" )
+{
+        static_assert( _match_index< false, bi_a, bi_a, bi_b > == 0 );
+        static_assert( _match_index< false, bi_a2, bi_b, bi_a > == 2 );
+        static_assert( _match_index< true, bi_a2, bi_b, bi_a > == 1 );
+        static_assert( _match_index< true, bi_a, bi_b, bi_a > == 1 );
+        static_assert( _match_index< true, bi_a2 const, bi_b, bi_a > == 2 );
+        static_assert( _match_index< true, bi_ab, bi_a, bi_b > == 2 );
+        static_assert( _match_index< true, int, bi_a, int > == 1 );
+        static_assert( _match_index< true, bi_private, bi_a > == 1 );
+}
+
+TEST_CASE( "_none_derived_from_another - no type in a pack derives from another" )
+{
+        static_assert( _base_count< bi_ab, bi_a, bi_b, int > == 2 );
+        static_assert( _base_count< bi_a, bi_a > == 1 );
+        static_assert( _base_count< int, int > == 0 );
+        static_assert( _none_derived_from_another< bi_a, bi_b, int > );
+        static_assert( _none_derived_from_another< bi_private, bi_a > );
+        static_assert( _none_derived_from_another<> );
+        static_assert( !_none_derived_from_another< bi_a, bi_a2 > );
+        static_assert( !_none_derived_from_another< bi_a2, bi_b, bi_a > );
+        static_assert( !_none_derived_from_another< bi_b, bi_ab > );
+}
+
 TEST_CASE( "_uint_for_t - the smallest unsigned type that holds a value" )
 {
         static_assert( std::same_as< _uint_for_t< 0 >, std::uint8_t > );
@@ -2235,6 +2359,78 @@ TEST_CASE( "circular_buffer_memory_wraparound" )
 
         // Clean up
         mem.deallocate( wrap_ptr, 16, 1 );
+}
+
+TEST_CASE( "circular_buffer_memory - a wrapped block that ends at the oldest one fills the ring" )
+{
+        std::array< uint8_t, 60 >         buffer;
+        circular_buffer_memory< uint8_t > mem{ std::span{ buffer } };
+
+        void* a = mem.allocate( 18, 1 );
+        void* b = mem.allocate( 18, 1 );
+        void* c = mem.allocate( 18, 1 );
+        REQUIRE( ( a && b && c ) );
+        mem.deallocate( a, 18, 1 );
+        void* d = mem.allocate( 18, 1 );
+        REQUIRE( d );
+        CHECK( mem.allocate( 18, 1 ) == nullptr );
+        CHECK( mem.allocate( 1, 1 ) == nullptr );
+        CHECK( mem.used_bytes() == mem.capacity() );
+
+        mem.deallocate( b, 18, 1 );
+        void* e = mem.allocate( 18, 1 );
+        CHECK( e == b );
+}
+
+TEST_CASE(
+    "circular_buffer_memory - used_bytes() after the newest block of a wrapped ring goes first" )
+{
+        std::array< uint8_t, 64 >         buffer;
+        circular_buffer_memory< uint8_t > mem{ std::span{ buffer } };
+
+        void* a = mem.allocate( 18, 1 );
+        void* b = mem.allocate( 18, 1 );
+        void* c = mem.allocate( 18, 1 );
+        REQUIRE( ( a && b && c ) );
+        mem.deallocate( a, 18, 1 );
+        void* d = mem.allocate( 8, 1 );
+        REQUIRE( d );
+        mem.deallocate( d, 8, 1 );
+        CHECK( mem.used_bytes() >= 40 );
+        CHECK( mem.used_bytes() <= mem.capacity() );
+
+        mem.deallocate( b, 18, 1 );
+        mem.deallocate( c, 18, 1 );
+        CHECK( mem.used_bytes() == 0 );
+}
+
+TEST_CASE( "circular_buffer_memory - an index near the index type's maximum stays in the buffer" )
+{
+        alignas( 8 ) std::array< uint8_t, 250 >              buffer;
+        circular_buffer_memory< smallest_index_type< 250 > > mem{ std::span{ buffer } };
+        static_assert( std::same_as< smallest_index_type< 250 >, uint8_t > );
+
+        REQUIRE( mem.allocate( 230, 8 ) );
+        REQUIRE( mem.allocate( 1, 8 ) );
+        void* p = mem.allocate( 1, 8 );
+        void* q = mem.allocate( 1, 8 );
+        for ( void* r : { p, q } )
+                if ( r )
+                        CHECK( static_cast< uint8_t* >( r ) + 1 <= buffer.data() + buffer.size() );
+}
+
+TEST_CASE( "circular_buffer_memory - a request larger than an int refuses rather than wraps" )
+{
+        alignas( 8 ) std::array< uint8_t, 64 > buffer;
+        circular_buffer_memory< uint8_t >      mem{ std::span{ buffer } };
+
+        CHECK( mem.allocate( ( std::size_t{ 1 } << 31 ) + 16, 1 ) == nullptr );
+        if constexpr ( sizeof( std::size_t ) > 4 )
+                CHECK( mem.allocate( ( std::size_t{ 1 } << 32 ) + 16, 1 ) == nullptr );
+        void* p = mem.allocate( 16, 1 );
+        REQUIRE( p );
+        CHECK( mem.allocate( ( std::size_t{ 1 } << 31 ) + 16, 1 ) == nullptr );
+        mem.deallocate( p, 16, 1 );
 }
 
 TEST_CASE( "circular_buffer_memory_wraparound_partial" )

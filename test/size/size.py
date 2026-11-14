@@ -30,6 +30,7 @@ tolerance or when the build fails.
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -125,7 +126,27 @@ def build_all(build, args):
     if local_zll:
         cmd.append(f'-DFETCHCONTENT_SOURCE_DIR_ZLL={local_zll[0].parent.parent}')
     run(cmd)
-    run(['cmake', '--build', build])
+    return build_targets(build)
+
+
+def build_targets(build):
+    """Builds every target, keeping going past failures; returns the targets that failed. A
+    probe that only another header cannot compile, such as one of a feature the reference commit
+    lacks, is left out of the comparison with that header."""
+    cmd = ['cmake', '--build', build, '--', '-k', '0']
+    print('+', ' '.join(str(c) for c in cmd), flush=True)
+    proc = subprocess.Popen([str(c) for c in cmd], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    failed = set()
+    for line in proc.stdout:
+        print(line, end='')
+        m = line.startswith('FAILED:') and re.search(
+            r'(?:CMakeFiles/(\w+)\.dir/|programs/(\w+)\.elf)', line)
+        if m:
+            failed.add(m.group(1) or m.group(2))
+    if proc.wait() != 0 and not failed:
+        sys.exit('the build failed without naming a target')
+    return failed
 
 
 def sections(path):
@@ -147,9 +168,11 @@ def objects_of(build, target):
     return [o for o in d.rglob('*') if o.suffix in ('.o', '.obj')]
 
 
-def measure(build, manifest):
+def measure(build, manifest, failed):
     results = {}
     for m in manifest:
+        if m['target'] in failed:
+            continue
         if m['artifact']:
             paths = [Path(m['artifact'])]
         else:
@@ -196,7 +219,7 @@ def against_as_baseline(results, header):
                         for (h, fam, key), m in results.items() if h == header}}
 
 
-def write_report(build, results, hdrs, args, tid, base):
+def write_report(build, results, hdrs, args, tid, base, unbuilt):
     L = []
     w = L.append
     w('# ecor size report')
@@ -204,6 +227,10 @@ def write_report(build, results, hdrs, args, tid, base):
     w(f'{CPU}, toolchain {tid}, tier {args.tier}, header variants {", ".join(hdrs)}.'
       + (f' Baseline {baseline_path(tid).name}.' if base else ' No baseline for this toolchain.'))
     w('')
+    for h, labels in sorted(unbuilt.items()):
+        w(f'{len(labels)} probes do not compile with header {h} and are compared without it: '
+          + ', '.join(sorted(labels)) + '.')
+        w('')
     headers = list(hdrs)
     for fam in FAMILIES:
         fam_results = {(h, k): m for (h, f, k), m in results.items() if f == fam.NAME}
@@ -316,13 +343,22 @@ def main():
         if len(hdrs) == 1:
             sys.exit('explain needs --against REF or --variant FILE:NAME')
     manifest = generate(probes, hdrs, build)
-    build_all(build, args)
+    failed = build_all(build, args)
+    unbuilt = {}
+    for m in manifest:
+        if m['target'] in failed:
+            unbuilt.setdefault(m['header'], []).append(f'{m["family"]}/{m["key"]}')
+    if 'cur' in unbuilt:
+        sys.exit('probes that do not compile with the working tree: '
+                 + ', '.join(sorted(unbuilt['cur'])))
     if args.command == 'explain':
+        if unbuilt:
+            sys.exit(f'{args.probe} does not compile with header {", ".join(sorted(unbuilt))}')
         explain(args, build, manifest)
         return
-    results = measure(build, manifest)
+    results = measure(build, manifest, failed)
     base = None if args.no_baseline else load_baseline(tid)
-    text = write_report(build, results, hdrs, args, tid, base)
+    text = write_report(build, results, hdrs, args, tid, base, unbuilt)
     data = save_results(build, results, tid, args)
     if args.command == 'update-baseline':
         p = baseline_path(tid)

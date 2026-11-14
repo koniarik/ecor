@@ -1040,7 +1040,8 @@ the previous header: ±0 on the README rows and the thread firmware, −18 / −
 firmware, with `_take()` forced inline. Without that, the two statements that replaced one
 helper call made GCC stop inlining `_take()` into the pump's `_receive()`: a 24-byte copy per
 queue, +54 on the coroutine firmware (`doc/plans/push-and-wait.md`, "The variant's type-less
-base").
+base"). The pump no longer calls `_take()`, whose only caller is now `try_pop()`; the attribute
+has not been re-measured since.
 
 ### A hand-rolled optional: clear the flag inline, destroy out of line, skip both for trivial types
 
@@ -1070,6 +1071,33 @@ kind, about 8 bytes, +34 / +24 on a five-pump firmware. Keeping the release in t
 kind test instead saved the per-pump bytes but cost the shared core +10 to +22 on every README
 row (`doc/plans/push-and-wait.md`, "The release belongs to the queue"). When an erased layer must
 know something only the typed layer knows, move the operation up rather than the knowledge down.
+The converse holds once the knowledge is gone: a pump's kept node is always an item, so its
+release, `_queue_core::_release_kept()`, has no kind test and lives in the core.
+
+### Handle in place, then delete what moving out needed
+
+`event_pump` moved each item into an `inplace_variant` of its own and released the node at once.
+Keeping the node until the handler finishes removed the variant from the pump, and with it the
+only reason for most of the moving-out machinery, which then went in the same change: `take` from
+the node vtable (only `try_pop()` moves out by type erasure, through an index fold over
+`value_type` that only its users instantiate), the vtable pointer from call descriptors (moved
+into `_queue_node_desc`, so a call descriptor is four bytes), the pump's separate held-call
+pointer (one `_kept` node for items and calls), a `_service()` after a kept release on queues
+whose `push()` cannot park, and the pump's closed flag on queues that cannot close. Against the
+header before, across the 756 probes: 203 smaller, 7 larger by 4 to 8 (closeable queues with
+calls, which pay for a destroyed pump completing an unhandled call stopped). Families: pump
+−4818 over 39 probes, queue −7270 over 149, linked programs −120 to −1004 each; one pump over
+four types 876 → 828, over a call queue 2720 → 2676, eight pumps 10572 → 9996; pump RAM 72 → 52
+and stoppable 92 → 72. The destructor's call completion and its `_op.reset()` before the release
+cost the single call pump 24 of those bytes, and the plain single pump 8. The kept node alone,
+before the deletions, was −14 per pump but +10 to +22 on call queues, because the kept release
+went through the call-aware `_release()` and always serviced the core. A change that removes a
+structure's last user is worth a review pass for everything that structure's users needed.
+
+`circular_buffer_memory::_pick_index` widens `_next` with `std::size_t{ _next } + sizeof( _node )`
+before adding, where `_next + sizeof( _node )` has the same value: the explicit widening is 22
+bytes smaller on the two arena probes over several memory resources. Integer promotion order can
+move bytes; measure a "redundant" cast before removing it.
 
 ### Measure the shape of a lifetime fix too
 

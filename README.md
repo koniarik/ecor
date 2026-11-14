@@ -1365,8 +1365,10 @@ void basic_queue()
 }
 ```
 
-A `circular_buffer_memory` is the natural resource to pair it with: the queue allocates at the
-tail and frees at the head, the access order that resource handles without fragmenting.
+A `circular_buffer_memory` suits a queue drained by `pop()` or by one pump: the queue allocates at
+the tail and frees at the head, the order that resource reclaims without fragmenting. With several
+pumps, or a pump beside `pop()`, nodes are freed as each handler finishes, and the ring reclaims
+space only up to the oldest node still held.
 
 ### Configuration
 
@@ -1381,6 +1383,7 @@ The first template parameter is a compile-time configuration satisfying `ecor::q
 | `push_api` | how much of `push()` exists | `async_queue_api::try_only` |
 | `is_closeable` | the queue supports `close()` and `closed()` | `false` |
 | `trivially_copyable_only` | element types must be trivially copyable, checked at compile time | `true` |
+| `derived_elements` | a type derived from an element type may be pushed, and is delivered as that type | `false` |
 | `push_and_wait_signatures` | completion signatures of `push_and_wait()`; empty removes it | `ecor::completion_signatures<>` |
 
 Each direction is set independently. The levels are cumulative — `cancellable` provides
@@ -1441,6 +1444,10 @@ receiver dispatches by overload without materialising a variant.
 queue, which is what a coroutine needs. A task awaits it directly on a single-type queue, and
 through `ecor::as_variant` on a multi-type one, since a task awaits one `set_value` signature.
 
+On a multi-type queue, `pop() | ecor::then(f)` is the smaller task consumer: `f` handles each
+element by reference, in its node, without a variant, and the task awaits what `f` returns. When
+the task is parked, `f` runs inside the producer's `try_push()` or `push()`, so keep it short.
+
 ```cpp
 struct qmem {
     void* allocate(std::size_t bytes, std::size_t align) {
@@ -1467,6 +1474,12 @@ ecor::task<void> consume_ints(ecor::task_ctx& ctx, ecor::async_queue<qcfg, int>&
 {
     for (;;)
         process_message(co_await q.pop_value());
+}
+
+ecor::task<void> consume_in_place(ecor::task_ctx& ctx, ecor::async_queue<qcfg, int, char>& q)
+{
+    for (;;)
+        co_await (q.pop() | ecor::then([](auto& v) { process_message(v); }));
 }
 ```
 
@@ -1608,8 +1621,11 @@ A queue whose set is empty carries none of it.
 
 `close()` stops accepting new values and returns a sender that completes once the queue has
 drained. Parked producers are stopped immediately, items and calls already accepted are still
-delivered, and parked consumers are stopped once nothing is left. A call counts as delivered once
-a consumer has taken it, so a call a pump is still handling completes after `close()` does:
+delivered, and parked consumers are stopped once nothing is left. An item or call counts as
+delivered once a consumer has taken it, so `close()` can complete while a pump is still handling
+one: the call completes after `close()` does, and the item's node returns to the memory resource
+when its handler finishes. Destroy the queue, or destroy or reuse its memory resource, only once
+the pumps are idle:
 
 ```cpp
 struct cmem {
@@ -1628,9 +1644,76 @@ struct ccfg : ecor::queue_default_cfg<cmem> {
 ecor::task<void> shutdown_queue(ecor::task_ctx& ctx, ecor::async_queue<ccfg, int>& q)
 {
     co_await q.close();
-    // everything queued has been handed to a consumer; parked waiters have completed
+    // everything queued has been handed to a consumer; parked waiters have completed,
+    // and a pump may still hold the item it is handling
 }
 ```
+
+### Derived element types — `derived_elements`
+
+With `derived_elements` set, a queue of `command` accepts any type derived from it: the node holds
+the whole object, consumers receive it as `command&`, and its own destructor runs when it leaves,
+so `command` may be abstract and needs no virtual destructor.
+
+```cpp
+struct cmd_mem {
+    void* allocate(std::size_t bytes, std::size_t align) {
+        return ::operator new(bytes, std::align_val_t(align));
+    }
+    void deallocate(void* p, std::size_t, std::size_t align) {
+        ::operator delete(p, std::align_val_t(align));
+    }
+};
+
+struct cmd_cfg : ecor::queue_default_cfg<cmd_mem> {
+    static constexpr bool trivially_copyable_only = false;
+    static constexpr bool derived_elements        = true;
+};
+
+struct command {
+    virtual int run() = 0;
+};
+
+struct blink : command {
+    int times;
+    explicit blink(int t) : times(t) {}
+    int run() override { return times; }
+};
+
+using command_queue = ecor::async_queue<cmd_cfg, command>;
+
+struct runner { };
+
+ecor::task<void> handle(ecor::task_ctx& ctx, runner& r, command& c)
+{
+    c.run();
+    co_return;
+}
+
+bool submit(command_queue& q)
+{
+    return q.try_push(blink{3});
+}
+
+using command_pump = ecor::event_pump<
+    ecor::pump_default_cfg<ecor::task_ctx, ecor::task<void>>,
+    command_queue,
+    runner>;
+
+void run_commands(ecor::task_ctx& ctx, command_queue& q)
+{
+    command_pump p{ctx, q, runner{}};
+    p.start();
+    while (ctx.core.run_once()) { }
+}
+```
+
+Such a queue has no `pop_value()` or `try_pop()`, which would slice the object, so a task consumes
+it through an `event_pump` or `pop() | ecor::then`. No element type may derive from another, and a
+pushed type must derive from exactly one of them, which it is delivered as. That element type must
+lie at the start of the pushed type, as with single inheritance from a polymorphic base, or the push
+does not compile. A `pop()` receiver that takes the element type by value, and
+`pop() | ecor::as_variant`, still copy only its base part; take the element by reference.
 
 ### Wrapping the queue — `push_bundle`
 
@@ -1686,7 +1769,8 @@ expression that created it.
 - **Single-threaded, not interrupt-safe** — completing a parked waiter runs receiver code
   inside `push()`, so pushing from an ISR is not supported.
 - **Waiters cost nothing** — parked producers and consumers live in their own operation
-  states; only queued items consume the memory resource.
+  states; only queued items, and the item each `event_pump` is handling, consume the memory
+  resource.
 - **Eager cancellation** — a parked waiter whose receiver carries a live stop token unlinks
   and completes with `set_stopped()` as soon as stop is requested. Receivers without a stop
   token pay nothing for this.
@@ -1828,18 +1912,30 @@ be after that handler finishes. Events left in the queue stay there; draining or
 them belongs to whoever owns the queue. Calls left there keep their callers waiting until another
 consumer takes them or their stop tokens cancel them.
 
+Destroy a pump before its queue and before the operation states of the `push_and_wait()` calls
+it may hold: the destructor returns a taken item's node through the queue and completes a taken
+call with `set_stopped()`.
+
 ### Key Properties
 
 - **Event driven** — the pump parks on the queue while idle and is woken by a push. No timer,
   no polling.
 - **One handler at a time**, in queue order.
-- **A pushed event is moved out of the queue node before the handler starts**, into storage
-  inside the pump, so a slow handler pins no queue memory. The handler receives it by reference.
+- **A pushed event stays in its queue node until the handler finishes**, and the handler
+  receives it there by reference. A running handler therefore holds that node's memory: size the
+  memory resource for one node per pump beyond what the queue itself should hold, plus the
+  handler's coroutine frames when they come from the same resource. A handler's own
+  `try_push()` competes with its event for that memory, and on a `circular_buffer_memory` a slow
+  handler holds back the ring.
 - **Several pumps may share one queue**, which gives work-sharing: each event goes to the
   longest-waiting pump.
 - **A handler must not `co_await push()` or `push_and_wait()` on the queue it is draining** — it
   is the consumer, so it would wait for room, or for a consumer, that only it can provide. Use
-  `try_push()` there.
+  `try_push()` there. The same holds for `push()` on another queue over the same memory
+  resource: the memory it waits for may be what the handler's own event holds, and a queue's
+  releases retry only its own parked producers. A coroutine frame allocated from that resource
+  does not wait: it may fail to allocate, and the handler then completes with
+  `task_allocation_failure`, which drops an item and completes a call with the error.
 - **A call is answered by the handler's completion** — for an element queued with
   `push_and_wait()` the pump hands the handler the caller's own object and forwards the
   handler's value, error or stop to the caller once the handler's sender completes.

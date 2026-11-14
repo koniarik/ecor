@@ -62,17 +62,18 @@ struct _dummy_receiver
 
 struct nd_mem
 {
+        /// Allocations not yet deallocated.
+        int live = 0;
+
         void* allocate( std::size_t bytes, std::size_t align )
         {
-                //      std::cout << "alloc " << bytes << " align " << align << " this: " << this <<
-                //      "\n";
+                ++live;
                 return ::operator new( bytes, std::align_val_t( align ) );
         }
 
         void deallocate( void* p, std::size_t /*bytes*/, std::size_t align )
         {
-                //   std::cout << "dealloc " << bytes << " align " << align << " this: " << this <<
-                //   "\n";
+                --live;
                 ::operator delete( p, std::align_val_t( align ) );
         }
 };

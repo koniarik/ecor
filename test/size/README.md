@@ -21,7 +21,7 @@ Each module in `scenarios/` is a family with its dimensions in its docstring:
 | family | sweeps |
 |---|---|
 | `queue` | every `async_queue` configuration; element types, owning types, queues on one memory |
-| `pump` | pumps per program, stoppability, handler kinds, element types, queue flags |
+| `pump` | pumps per program, stoppability, handler kinds, element types, owning and derived element types, queue flags |
 | `task` | task configurations, value types, coroutines, awaits per coroutine, what is awaited |
 | `coroutine` | the fixed cost of one coroutine function, as the slope between 1 and 16 coroutines |
 | `awaited` | one coroutine awaiting 1 to 8 sources or child tasks of one or of distinct value types |
@@ -44,9 +44,11 @@ zero for the `ram` family. Toolchains without a file report only. `update-baseli
 the file from the current run; commit it with the change that moved the numbers.
 
 `--against REF --fail-on-growth` judges the working tree's header against REF's with the same
-tolerance, both built in the same run, so it needs no baseline for the toolchain at hand. The
-`size` workflow runs it on every push and pull request against the commit before, with the
-Arm GNU toolchain release it downloads, and uploads the report as an artifact.
+tolerance, both built in the same run, so it needs no baseline for the toolchain at hand. The `size`
+workflow runs it on every push and pull request against the commit before, with the Arm GNU
+toolchain release it downloads, and uploads the report as an artifact. A probe that only REF's
+header cannot compile, such as one of a feature REF lacks, is listed in the report and compared
+without it; a probe the working tree cannot compile fails the run.
 
 ## Reading a report
 

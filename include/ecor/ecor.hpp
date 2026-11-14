@@ -158,6 +158,72 @@ struct _type_index< T, U, Ts... >
             std::same_as< T, U > ? 0 : 1 + _type_index< T, Ts... >::value;
 };
 
+/// Position of the one class in `Ts...` that `U` is or derives from publicly, `sizeof...(Ts)`
+/// when none or several are.
+template < typename U, typename... Ts >
+struct _base_index
+{
+        static constexpr std::size_t value = [] {
+                constexpr bool is_base[] = { std::derived_from< U, Ts >..., false };
+                std::size_t    found     = sizeof...( Ts );
+                for ( std::size_t i = 0; i < sizeof...( Ts ); ++i ) {
+                        if ( !is_base[i] )
+                                continue;
+                        if ( found != sizeof...( Ts ) )
+                                return sizeof...( Ts );
+                        found = i;
+                }
+                return found;
+        }();
+};
+
+/// How many of `Us...` `T` is or derives from publicly.
+template < typename T, typename... Us >
+inline constexpr std::size_t _base_count =
+    ( static_cast< std::size_t >( std::derived_from< T, Us > ) + ... + 0 );
+
+/// No type in `Ts...` derives publicly from another of them.
+template < typename... Ts >
+concept _none_derived_from_another = ( ( _base_count< Ts, Ts... > <= 1 ) && ... );
+
+/// Position of `U` in `Ts...`, or with `ByBase` of the one class in `Ts...` that a cv-unqualified
+/// `U` is or derives from publicly; `sizeof...(Ts)` when there is none.
+template < bool ByBase, typename U, typename... Ts >
+inline constexpr std::size_t _match_index = [] {
+        if constexpr ( _contains_type< U, Ts... >::value )
+                return _type_index< U, Ts... >::value;
+        else if constexpr ( ByBase && std::same_as< U, std::remove_cv_t< U > > )
+                return _base_index< U, Ts... >::value;
+        else
+                return sizeof...( Ts );
+}();
+
+template < typename B, typename D >
+consteval bool _base_at_start_impl() noexcept
+{
+        union storage
+        {
+                char none;
+                D    d;
+                constexpr storage() noexcept
+                  : none()
+                {
+                }
+                constexpr ~storage() noexcept
+                {
+                }
+        } s;
+        D* const d = std::addressof( s.d );
+        B* const b = d;
+        return static_cast< void const* >( b ) == static_cast< void const* >( d );
+}
+
+/// The `B` part of a `D` lies at the address of the `D`, for a public base `B` of a non-abstract
+/// `D`; false for a virtual base. No `D` is constructed.
+template < typename B, typename D >
+concept _base_at_start =
+    requires( B* b ) { static_cast< D* >( b ); } && _base_at_start_impl< B, D >();
+
 /// True when no type occurs twice in `Ts...`.
 template < typename... Ts >
 struct _all_distinct : std::true_type
@@ -765,7 +831,7 @@ struct circular_buffer_memory : Base
         {
                 if ( _first == npos )
                         return 0;
-                if ( _first <= _last )
+                if ( _first < _next )
                         return ( _next - _first );
                 return ( _buff.size() - _first ) + _next;
         }
@@ -796,35 +862,32 @@ private:
             std::size_t          bytes,
             std::size_t          align ) const noexcept
         {
-                index_type idx      = npos;
-                int        capacity = 0;
+                std::size_t idx = npos;
+                std::size_t end = 0;  // One past the free region that starts at `idx`.
                 if ( _last == npos ) {
                         // Empty buffer
                         ECOR_ASSERT( _first == npos && _last == npos );
-                        idx      = _align_idx( buff.data(), sizeof( _node ), align );
-                        capacity = buff.size() - idx;
-                } else if ( _first <= _next ) {
+                        idx = _align_idx( buff.data(), sizeof( _node ), align );
+                        end = buff.size();
+                } else if ( _first < _next ) {
                         // Non-overflow state: [ ][x][x][x][ ][ ]
-                        {
-                                idx = _align_idx( buff.data(), _next + sizeof( _node ), align );
-                                capacity = buff.size() - idx;
-                                if ( idx < buff.size() && capacity >= (int) bytes )
-                                        return idx - sizeof( _node );
-                        }
+                        idx = _align_idx(
+                            buff.data(), std::size_t{ _next } + sizeof( _node ), align );
+                        end = buff.size();
+                        if ( idx <= end && end - idx >= bytes )
+                                return static_cast< index_type >( idx - sizeof( _node ) );
                         // Non-overflow state, but overflow triggered: [ ][ ][ ][x][x][x]
                         // The free region is the span in front of the oldest block, [idx, _first).
-                        {
-                                idx      = _align_idx( buff.data(), sizeof( _node ), align );
-                                capacity = _first - idx;
-                        }
-
-                } else {  // _first > _next
+                        idx = _align_idx( buff.data(), sizeof( _node ), align );
+                        end = _first;
+                } else {  // _first >= _next
                           // Overflow state: [x][x][ ][ ][x][x]
-                        idx      = _align_idx( buff.data(), _next + sizeof( _node ), align );
-                        capacity = _first - idx;
+                        idx = _align_idx(
+                            buff.data(), std::size_t{ _next } + sizeof( _node ), align );
+                        end = _first;
                 }
-                if ( idx < buff.size() && capacity >= (int) bytes )
-                        return idx - sizeof( _node );
+                if ( idx <= end && end - idx >= bytes )
+                        return static_cast< index_type >( idx - sizeof( _node ) );
                 return npos;
         }
 
@@ -3072,32 +3135,16 @@ template < typename CFG >
 using _task_cfg_convert_error_t = decltype( CFG::convert_error( task_error{} ) );
 
 template < typename CFG >
-inline constexpr bool _task_cfg_promise_owns_operations = false;
+concept _task_cfg_promise_owns_operations = requires { requires CFG::promise_owns_operations; };
 
 template < typename CFG >
-        requires( requires { CFG::promise_owns_operations; } )
-inline constexpr bool _task_cfg_promise_owns_operations< CFG > = CFG::promise_owns_operations;
+concept _task_cfg_shared_await_suspend = requires { requires CFG::shared_await_suspend; };
 
 template < typename CFG >
-inline constexpr bool _task_cfg_shared_await_suspend = false;
+concept _task_cfg_shared_return_value = requires { requires CFG::shared_return_value; };
 
 template < typename CFG >
-        requires( requires { CFG::shared_await_suspend; } )
-inline constexpr bool _task_cfg_shared_await_suspend< CFG > = CFG::shared_await_suspend;
-
-template < typename CFG >
-inline constexpr bool _task_cfg_shared_return_value = false;
-
-template < typename CFG >
-        requires( requires { CFG::shared_return_value; } )
-inline constexpr bool _task_cfg_shared_return_value< CFG > = CFG::shared_return_value;
-
-template < typename CFG >
-inline constexpr bool _task_cfg_debug_parent = false;
-
-template < typename CFG >
-        requires( requires { CFG::debug_parent; } )
-inline constexpr bool _task_cfg_debug_parent< CFG > = CFG::debug_parent;
+concept _task_cfg_debug_parent = requires { requires CFG::debug_parent; };
 
 /// Concept for the task configuration. A type is task configuration if:
 /// - It has a nested type `error_signatures` that is a `completion_signatures` type specifying the
@@ -6148,8 +6195,7 @@ enum class async_queue_api : uint8_t
 /// Default `async_queue` configuration over the memory resource `Mem`.
 ///
 /// Every optional facility is off: the default queue is the smallest one that compiles, and
-/// each is opted into by a configuration that derives from this and pays for it. See the size
-/// table in the README for what each one costs.
+/// each is opted into by a configuration that derives from this and pays for it.
 ///
 /// ```
 /// struct my_cfg : ecor::queue_default_cfg< my_mem >
@@ -6181,6 +6227,13 @@ struct queue_default_cfg
         /// it off to queue types such as `std::string`.
         static constexpr bool trivially_copyable_only = true;
 
+        /// Admit a type derived from exactly one element type `T`: the node holds the whole object,
+        /// which consumers receive as `T&`, and its own destructor runs. The queue then has no
+        /// `pop_value()` or `try_pop()`, which would slice it. No element type may derive from
+        /// another, and `T` must lie at the start of each pushed type, as with single inheritance
+        /// from a polymorphic `T`.
+        static constexpr bool derived_elements = false;
+
         /// Completion signatures of `push_and_wait()`, which exists only when the set is non-empty.
         /// Such a set must hold exactly one `set_value_t` row, taking at most one argument
         /// (the reply), and may hold any `set_error_t` rows and at most one `set_stopped_t()` row.
@@ -6201,8 +6254,11 @@ concept queue_config = memory_resource< typename T::mem_type > && requires {
 /// True when the configuration admits every element type in `Ts...`: with
 /// `trivially_copyable_only` set, only trivially copyable ones.
 template < typename CFG, typename... Ts >
-inline constexpr bool _queue_admits =
+concept _queue_admits =
     !CFG::trivially_copyable_only || ( std::is_trivially_copyable_v< Ts > && ... );
+
+template < typename CFG >
+concept _queue_cfg_derived_elements = requires { requires CFG::derived_elements; };
 
 template < typename Sigs >
 struct _queue_call_sigs;
@@ -6235,24 +6291,22 @@ enum class _queue_node_kind : uint8_t
         call
 };
 
-/// Describes one element type of a queue to the code that handles its nodes without knowing the
+/// Describes one pushed type of a queue to the code that handles its nodes without knowing the
 /// type. This head is the whole descriptor of a call node; an allocated node's descriptor is a
 /// `_queue_node_desc`.
 struct _queue_desc_head
 {
         /// Byte size of the payload; zero for an empty type.
         uint16_t payload;
-        /// Position of the payload type among the queue's element types.
+        /// Position of the element type the payload is delivered as.
         uint8_t index;
         /// `call` for a `_queue_call_node`, whose payload is the caller's element and whose memory
         /// the queue does not own.
         _queue_node_kind kind;
-        /// The element type's operations; null for a trivially copyable element type, which needs
-        /// none.
-        _queue_node_vtable const* vt;
 };
 
-/// Descriptor of an allocated node: the head, and what allocation and the byte-wise copy need.
+/// Descriptor of an allocated node: the head, and what allocation, construction and destruction
+/// need.
 struct _queue_node_desc : _queue_desc_head
 {
         /// Byte size of the node, for allocation and deallocation.
@@ -6261,15 +6315,14 @@ struct _queue_node_desc : _queue_desc_head
         uint8_t align;
         /// Offset of the payload within the node.
         uint8_t offset;
+        /// The pushed type's operations; null for a trivially copyable type, which needs none.
+        _queue_node_vtable const* vt;
 };
 
-/// The operations of an element type that is not trivially copyable. A trivially copyable one is
-/// pushed and taken byte-wise, and delivered by its descriptor's `index`, so it has none.
+/// The operations of a pushed type that is not trivially copyable. A trivially copyable one is
+/// pushed and released byte-wise, so it has none.
 struct _queue_node_vtable
 {
-        /// Move the payload at `src` into the variant storage at `dst`; the caller then marks
-        /// the alternative.
-        void ( *take )( void* src, void* dst );
         /// Destroy the node and its payload, without releasing the memory. Never null: a
         /// trivially destructible payload gets the shared `_queue_node_no_destroy` instead of a
         /// thunk of its own.
@@ -6311,8 +6364,21 @@ struct _queue_node_of : _queue_node
         {
         }
 
-        ECOR_NO_UNIQUE_ADDRESS T _val;
+        /// Never overlaps the header, so that the descriptor's `offset` holds for an empty `T`.
+        T _val;
 };
+
+/// With `derived_elements` an element type need not be constructible, so the node of each pushed
+/// type is checked instead.
+template < typename CFG, typename T >
+concept _queue_node_size_fits =
+    _queue_cfg_derived_elements< CFG > ||
+    ( sizeof( _queue_node_of< T > ) <= std::numeric_limits< uint16_t >::max() );
+
+template < typename CFG, typename T >
+concept _queue_node_align_fits =
+    _queue_cfg_derived_elements< CFG > ||
+    ( alignof( _queue_node_of< T > ) <= std::numeric_limits< uint8_t >::max() );
 
 struct _queue_call_node;
 
@@ -6365,14 +6431,13 @@ struct _queue_waiter : _queue_link
         }
 
         /// Take delivery of `n`, detached from the queue, and release it through the queue's
-        /// `_release()`, unless the waiter keeps it: a pump keeps a call until its handler
-        /// completes it.
+        /// `_release()`, unless the waiter keeps it: a pump keeps the node until its handler
+        /// finishes.
         ///
         /// The waiter chooses *how*, which is what keeps the typed delivery path out of
         /// programs that do not use it: a `pop()` operation picks its per-element-type
-        /// `set_value` row by the node's `index`, while a consumer that just wants the value
-        /// somewhere — a pump — takes it straight into its own storage, and never instantiates
-        /// those rows at all.
+        /// `set_value` row by the node's `index`, while a pump hands the node's payload to its
+        /// handler and never instantiates those rows at all.
         ///
         /// Producers and the `close()` waiter are never delivered to.
         void _receive( _queue_node& n )
@@ -6403,13 +6468,6 @@ struct _queue_node_ops
 {
         using node_type = _queue_node_of< T >;
 
-        /// `dst` is the storage of the variant that receives the element; the caller marks the
-        /// alternative.
-        static void take( void* src, void* dst )
-        {
-                ::new ( dst ) T( std::move( *static_cast< T* >( src ) ) );
-        }
-
         static void destroy( _queue_node& n ) noexcept
         {
                 static_cast< node_type& >( n ).~node_type();
@@ -6435,12 +6493,11 @@ struct _queue_node_ops
 };
 
 template < typename T >
-inline constexpr bool _queue_needs_vtable = !std::is_trivially_copyable_v< T >;
+concept _queue_needs_vtable = !std::is_trivially_copyable_v< T >;
 
 /// Vtable of the node that carries a `T`, shared by every queue over `T`.
 template < typename T >
 inline constexpr _queue_node_vtable _queue_node_vtable_of{
-    .take      = &_queue_node_ops< T >::take,
     .destroy   = _queue_node_ops< T >::destroy_fn(),
     .construct = &_queue_node_ops< T >::construct };
 
@@ -6454,17 +6511,17 @@ template < typename T >
                 return nullptr;
 }
 
-/// Descriptor of the node that carries a `T` at position `I` of its queue's element types; shared
-/// by every queue that has `T` there.
+/// Descriptor of the node that carries a `T`, delivered as the element type at position `I`;
+/// shared by every queue that has `T` there.
 template < typename T, std::size_t I >
 inline constexpr _queue_node_desc _queue_node_desc_of{
     { .payload = std::is_empty_v< T > ? uint16_t( 0 ) : uint16_t( sizeof( T ) ),
       .index   = uint8_t( I ),
-      .kind    = _queue_node_kind::item,
-      .vt      = _queue_vt_of< T >() },
+      .kind    = _queue_node_kind::item },
     sizeof( _queue_node_of< T > ),
     alignof( _queue_node_of< T > ),
-    uint8_t( ( sizeof( _queue_node ) + alignof( T ) - 1 ) & ~( alignof( T ) - 1 ) ) };
+    uint8_t( ( sizeof( _queue_node ) + alignof( T ) - 1 ) & ~( alignof( T ) - 1 ) ),
+    _queue_vt_of< T >() };
 
 /// Descriptor of the call node that carries a `T` at position `I`: the node is the producer's
 /// operation state and holds the element's address, so only the head exists.
@@ -6472,8 +6529,7 @@ template < typename T, std::size_t I >
 inline constexpr _queue_desc_head _queue_call_desc_of{
     .payload = std::is_empty_v< T > ? uint16_t( 0 ) : uint16_t( sizeof( T ) ),
     .index   = uint8_t( I ),
-    .kind    = _queue_node_kind::call,
-    .vt      = _queue_vt_of< T >() };
+    .kind    = _queue_node_kind::call };
 
 /// Lifecycle of a queue. Monotonic: a queue only ever moves forward through these states.
 enum class _queue_state : uint8_t
@@ -6691,6 +6747,17 @@ struct _queue_core : _queue_core_base< Closeable >
                 ecor::deallocate( _mem, &n, d.size, d.align );
         }
 
+        /// Release the item `n`, which a consumer kept after taking it. With `Serve`, retry the
+        /// producers waiting for its memory.
+        template < bool Serve >
+        void _release_kept( _queue_node& n )
+        {
+                ECOR_ASSERT( n._desc->kind == _queue_node_kind::item );
+                _release_node( n );
+                if constexpr ( Serve )
+                        this->_service();
+        }
+
         Mem& _mem;
 };
 
@@ -6751,12 +6818,12 @@ struct _queue_cancel_base< Op, false >
 /// Cancellation applies to a parked consumer when the configuration allows it *and* the
 /// receiver carries a triggerable stop token.
 template < typename Q, typename R >
-inline constexpr bool _queue_consumer_stoppable =
+concept _queue_consumer_stoppable =
     Q::config_type::pop_api == async_queue_api::cancellable && _queue_stoppable< R >;
 
 /// The same, for a parked producer.
 template < typename Q, typename R >
-inline constexpr bool _queue_producer_stoppable =
+concept _queue_producer_stoppable =
     Q::config_type::push_api == async_queue_api::cancellable && _queue_stoppable< R >;
 
 /// Everything of `async_queue::push()`'s operation state but the element: parking, retrying
@@ -6933,7 +7000,7 @@ template < typename R, typename Sigs >
 inline constexpr _queue_call_vtable_t< Sigs > _queue_call_vtable_of{ _tag< R >{} };
 
 template < typename Q, typename R >
-inline constexpr bool _queue_call_stoppable =
+concept _queue_call_stoppable =
     _sigs_contains_set_stopped< typename Q::_call_sigs_t > && _queue_stoppable< R >;
 
 /// Everything of `async_queue::push_and_wait()`'s operation state but the receiver; it is the
@@ -7332,13 +7399,45 @@ struct _queue_pop_sender
         }
 };
 
+/// Gives an `async_queue` its `value_type`, the type `try_pop()` returns, unless it has
+/// `derived_elements`.
+template < bool Has, typename V >
+struct _queue_value_type_base
+{
+        using value_type = V;
+};
+
+template < typename V >
+struct _queue_value_type_base< false, V >
+{
+};
+
+/// The queue `Q` delivers `U` as one of its element types: `U` is one, or with `derived_elements`
+/// derives from exactly one.
+template < typename Q, typename U >
+concept _queue_accepts = !std::is_void_v< typename Q::template _slot_t< U > >;
+
+/// `U` can be pushed by value into the queue `Q`: it is accepted, nothrow move constructible and
+/// admitted by `trivially_copyable_only`, its node fits the descriptor, and for a derived `U` its
+/// element type lies at its start and `U` has a vtable whenever every element type has one.
+template < typename Q, typename U >
+concept _queue_pushable = _queue_accepts< Q, U > && std::is_nothrow_move_constructible_v< U > &&
+                          _queue_admits< typename Q::config_type, U > &&
+                          sizeof( _queue_node_of< U > ) <= std::numeric_limits< uint16_t >::max() &&
+                          alignof( _queue_node_of< U > ) <= std::numeric_limits< uint8_t >::max() &&
+                          ( std::same_as< U, typename Q::template _slot_t< U > > ||
+                            ( _base_at_start< typename Q::template _slot_t< U >, U > &&
+                              (!Q::_all_vtables || _queue_needs_vtable< U >) ) );
+
 /// Asynchronous queue holding values of any of the types `Ts...` in a single FIFO order.
 /// `CFG` is a compile-time configuration satisfying `queue_config`; see `queue_default_cfg`.
 ///
 /// Nodes are allocated from the memory resource, so the depth of the queue is bounded by it
 /// rather than by a fixed count, and elements of very different sizes each cost only what they
-/// need. A `circular_buffer_memory` is the natural choice: the queue allocates at the tail and
-/// frees at the head, which is the access order that resource handles without fragmenting.
+/// need. A `circular_buffer_memory` suits a queue drained by `pop()` or by one pump: the queue
+/// allocates at the tail and frees at the head, the order that resource reclaims without
+/// fragmenting. Several pumps free the nodes they hold as each handler finishes, and the ring
+/// reclaims space only up to the oldest node still held.
 /// Configuring `task_memory_resource` as `mem_type` collapses every queue in the program onto
 /// one instantiation of the internals.
 ///
@@ -7356,19 +7455,26 @@ struct _queue_pop_sender
 /// Not thread-safe, and not usable from an interrupt: completing a parked waiter runs receiver
 /// code inside `push()`.
 ///
-/// A handler draining a queue must not `co_await push()` on that same queue — it is the
-/// consumer, so it would wait for space that only it can free. Use `try_push()` there.
+/// A handler draining a queue holds its event's node, so it must not wait for memory from the
+/// queue's memory resource: `co_await push()` on that queue, or on another one over the same
+/// resource, may wait for space that only the handler itself frees. Use `try_push()` there.
 ///
 template < queue_config CFG, typename... Ts >
 struct async_queue
+  : _queue_value_type_base< !_queue_cfg_derived_elements< CFG >, inplace_variant< Ts... > >
 {
         static_assert( sizeof...( Ts ) > 0, "async_queue requires at least one element type" );
         static_assert(
             _all_distinct< Ts... >::value,
             "async_queue element types must be pairwise distinct" );
         static_assert(
-            ( std::is_nothrow_move_constructible_v< Ts > && ... ),
+            ( ( _queue_cfg_derived_elements< CFG > ||
+                std::is_nothrow_move_constructible_v< Ts > ) &&
+              ... ),
             "async_queue element types must be nothrow move constructible" );
+        static_assert(
+            !_queue_cfg_derived_elements< CFG > || _none_derived_from_another< Ts... >,
+            "with derived_elements no async_queue element type may derive from another" );
         static_assert(
             _queue_admits< CFG, Ts... >,
             "async_queue element types must be trivially copyable; set "
@@ -7379,18 +7485,17 @@ struct async_queue
             sizeof...( Ts ) <= std::numeric_limits< uint8_t >::max(),
             "every async_queue element type's index must be below the uint8_t maximum" );
         static_assert(
-            ( ( sizeof( _queue_node_of< Ts > ) <= std::numeric_limits< uint16_t >::max() ) && ... ),
+            ( _queue_node_size_fits< CFG, Ts > && ... ),
             "async_queue element types must be smaller than 64 KiB" );
         static_assert(
-            ( ( alignof( _queue_node_of< Ts > ) <= std::numeric_limits< uint8_t >::max() ) && ... ),
+            ( _queue_node_align_fits< CFG, Ts > && ... ),
             "async_queue element types must have an alignment of 255 or less" );
 
         /// Configuration this queue was instantiated with.
         using config_type = CFG;
         /// Memory resource that queue nodes are allocated from.
-        using mem_type = typename CFG::mem_type;
-        /// Type returned by `try_pop()`.
-        using value_type = inplace_variant< Ts... >;
+        using mem_type   = typename CFG::mem_type;
+        using _variant_t = inplace_variant< Ts... >;
 
         using _call_sigs_t = typename CFG::push_and_wait_signatures;
 
@@ -7419,21 +7524,31 @@ struct async_queue
 
         using _core_t = _queue_core< mem_type, CFG::is_closeable >;
 
-        /// True when no element type has a vtable: all are trivially copyable.
-        static constexpr bool _plain = ( !_queue_needs_vtable< Ts > && ... );
+        static constexpr bool _derived = _queue_cfg_derived_elements< CFG >;
+
+        /// True when no pushed type has a vtable: every element type is trivially copyable and
+        /// the queue admits no derived types.
+        static constexpr bool _plain = !_derived && ( !_queue_needs_vtable< Ts > && ... );
 
         /// True when every element type has a vtable: none is trivially copyable.
         static constexpr bool _all_vtables = ( _queue_needs_vtable< Ts > && ... );
 
+        /// Position of the element type that a pushed `U` is delivered as.
+        template < typename U >
+        static constexpr std::size_t _slot_index = _match_index< _derived, U, Ts... >;
+
+        template < typename U >
+        using _slot_t = std::tuple_element_t< _slot_index< U >, std::tuple< Ts..., void > >;
+
         /// Descriptor of the node that carries a `T`.
         template < typename T >
         static constexpr _queue_node_desc const& _desc_of =
-            _queue_node_desc_of< T, _type_index< T, Ts... >::value >;
+            _queue_node_desc_of< T, _slot_index< T > >;
 
         /// Descriptor of the call that carries a `T`.
         template < typename T >
         static constexpr _queue_desc_head const& _call_desc_of =
-            _queue_call_desc_of< T, _type_index< T, Ts... >::value >;
+            _queue_call_desc_of< T, _slot_index< T > >;
 
         [[nodiscard]] ECOR_FORCE_INLINE static void* _payload( _queue_node& n ) noexcept
         {
@@ -7460,21 +7575,23 @@ struct async_queue
                         return _pop_rows_values< Op >;
         }
 
-        /// Move the payload of the detached node `n` into `dst`, which must be empty:
-        /// through its vtable's `take` when it has one, byte-wise otherwise. Decided at compile
+        static constexpr bool _typed_at[] = { _queue_needs_vtable< Ts >... };
+
+        /// Move the payload of the detached node `n` into `dst`, which must be empty: moved by
+        /// its type when that is not trivially copyable, byte-wise otherwise. Decided at compile
         /// time unless the queue mixes both kinds of element type.
-        ///
-        ECOR_FORCE_INLINE static void _take( _queue_node& n, value_type& dst )
+        ECOR_FORCE_INLINE static void _take( _queue_node& n, _variant_t& dst )
+                requires( !_derived )
         {
                 _queue_desc_head const& d   = *n._desc;
                 void*                   src = _payload( n );
                 if constexpr ( _plain )
                         dst._emplace_bytes( d.index, src, d.payload );
-                else if constexpr ( _all_vtables ) {
-                        d.vt->take( src, dst._data() );
-                        dst._mark( d.index );
-                } else if ( auto const* vt = d.vt ) {
-                        vt->take( src, dst._data() );
+                else if ( _all_vtables || _typed_at[d.index] ) {
+                        _variant_t::_visit_at( d.index, src, [&]< typename T >( T& e ) {
+                                if constexpr ( _queue_needs_vtable< T > )
+                                        ::new ( dst._data() ) T( std::move( e ) );
+                        } );
                         dst._mark( d.index );
                 } else
                         dst._emplace_bytes( d.index, src, d.payload );
@@ -7483,6 +7600,13 @@ struct async_queue
         void _release( _queue_node& n )
         {
                 _queue_release< _call_sigs_t >( _core, n );
+        }
+
+        /// Release the item `n`, kept out of the queue by a consumer, and serve the producers
+        /// waiting for its memory.
+        void _release_kept( _queue_node& n )
+        {
+                _core.template _release_kept< CFG::push_api != async_queue_api::try_only >( n );
         }
 
         /// `set_stopped()` is reachable when the waiter kind can be cancelled, or when
@@ -7533,7 +7657,7 @@ struct async_queue
         /// Enqueue `val` without waiting. Returns false when the queue is closed or the memory
         /// resource has no room for the node.
         template < typename T >
-                requires( _contains_type< T, Ts... >::value )
+                requires( _queue_pushable< async_queue, T > )
         [[nodiscard]] bool try_push( T val )
         {
                 return try_push( push_bundle( std::move( val ) ) );
@@ -7570,7 +7694,7 @@ struct async_queue
         {
                 /// An lvalue deduces `T` as a reference, which is not an element type.
                 template < typename T >
-                        requires( _contains_type< T, Ts... >::value )
+                        requires( _queue_pushable< async_queue, T > )
                 push_bundle( T&& val ) noexcept
                   : _desc( &async_queue::template _desc_of< T > )
                   , _src( std::addressof( val ) )
@@ -7597,7 +7721,7 @@ struct async_queue
         /// Completes with `set_value()` once the value has been accepted, or `set_stopped()` if
         /// the queue is closed first.
         template < typename T >
-                requires( _contains_type< T, Ts... >::value )
+                requires( _queue_pushable< async_queue, T > )
         [[nodiscard]] _queue_push_sender< async_queue, T >
         push( T val ) noexcept( std::is_nothrow_move_constructible_v< T > )
                 requires( CFG::push_api != async_queue_api::try_only )
@@ -7615,8 +7739,9 @@ struct async_queue
         /// has taken the call, the operation state is not destroyed before it completes; the queue
         /// outlives a call that is still queued.
         template < typename T >
-                requires( _contains_type< T, Ts... >::value )
-        [[nodiscard]] _queue_call_sender< async_queue, T > push_and_wait( T& ev ) noexcept
+                requires( _queue_accepts< async_queue, T > )
+        [[nodiscard]] _queue_call_sender< async_queue, _slot_t< T > >
+        push_and_wait( T& ev ) noexcept
                 requires( _call )
         {
                 return { this, std::addressof( ev ) };
@@ -7626,10 +7751,10 @@ struct async_queue
         /// empty. The node is released before the value is returned, so holding the result
         /// across a suspension point does not pin the memory resource. A `push_and_wait()` call
         /// taken this way completes with `set_value()` before this returns.
-        [[nodiscard]] value_type try_pop()
-                requires( !_call || _queue_call_sigs< _call_sigs_t >::nullary )
+        [[nodiscard]] _variant_t try_pop()
+                requires( !_derived && ( !_call || _queue_call_sigs< _call_sigs_t >::nullary ) )
         {
-                value_type v;
+                _variant_t v;
                 if ( _core._items.empty() )
                         return v;
                 auto& n = _core._items.take_front();
@@ -7655,7 +7780,7 @@ struct async_queue
         /// As `pop()`, but the receiver takes ownership of the item: `set_value(T)`.
         [[nodiscard]] _queue_pop_sender< async_queue, true > pop_value() noexcept
                 requires(
-                    CFG::pop_api != async_queue_api::try_only &&
+                    !_derived && CFG::pop_api != async_queue_api::try_only &&
                     ( !_call || _queue_call_sigs< _call_sigs_t >::nullary ) )
         {
                 return { this };
@@ -7852,17 +7977,15 @@ struct _queue_call_accepts< VT, completion_signatures< S... >, Nullary >
 
 /// True when a pump over `Queue` may run a handler whose sender completes with `HandlerSigs`:
 /// every signature has a row in the queue's call vtable, or the queue has no calls.
-template < typename Queue, typename HandlerSigs, bool Call = Queue::_call >
-inline constexpr bool _pump_answers_calls = _queue_call_accepts<
-    _queue_call_vtable_t< typename Queue::_call_sigs_t >,
-    HandlerSigs,
-    _queue_call_sigs< typename Queue::_call_sigs_t >::nullary >::value;
-
 template < typename Queue, typename HandlerSigs >
-inline constexpr bool _pump_answers_calls< Queue, HandlerSigs, false > = true;
+concept _pump_answers_calls =
+    !Queue::_call || _queue_call_accepts<
+                         _queue_call_vtable_t< typename Queue::_call_sigs_t >,
+                         HandlerSigs,
+                         _queue_call_sigs< typename Queue::_call_sigs_t >::nullary >::value;
 
-/// The `schedulable` base of an `event_pump`. With `Call` it also holds a taken
-/// `push_and_wait()` call and completes it with the handler's completion.
+/// The `schedulable` base of an `event_pump`, holding the node of the item or call being handled.
+/// With `Call` it completes a call with its handler's completion.
 template < typename Sigs, bool Call >
 struct _pump_call_base;
 
@@ -7875,49 +7998,36 @@ struct _pump_call_base< Sigs, true > : _reschedulable
 
         static constexpr bool _nullary = _queue_call_sigs< Sigs >::nullary;
 
-        /// A handler run finished with `Tag( args... )`: complete the held call, if any, and
-        /// come back through the scheduler.
+        /// A handler run finished with `Tag( args... )`: complete the call it handled, if it was
+        /// one, and come back through the scheduler. An item stays in `_kept`, for the pump to
+        /// release once the handler's operation state is gone.
         template < typename Tag, typename... Args >
         void _finish( Tag /*tag*/, Args&&... args )
         {
-                _complete_held( Tag{}, (Args&&) args... );
+                if ( _kept->_desc->kind == _queue_node_kind::call ) {
+                        auto&       c  = static_cast< _queue_call_node& >( *_kept );
+                        auto const* vt = static_cast< _vtable_t const* >( c._vt );
+                        _kept          = nullptr;
+                        if constexpr ( std::same_as< Tag, set_value_t > && _nullary )
+                                vt->invoke( Tag{}, c._recv );
+                        else
+                                vt->invoke( Tag{}, c._recv, (Args&&) args... );
+                }
                 this->_reschedule();
         }
 
-        /// Keep the call `n` as the event to handle next; its handler's completion completes it.
-        /// Precondition: no call is held.
-        void _hold( _queue_node& n ) noexcept
+        /// Complete the kept call, which no handler ran for, stopped when the set has a stopped
+        /// row. Precondition: `_kept` is a call.
+        void _abandon()
         {
-                ECOR_ASSERT( !_held );
-                _held = &static_cast< _queue_call_node& >( n );
+                auto& c = static_cast< _queue_call_node& >( *std::exchange( _kept, nullptr ) );
+                if constexpr ( _queue_call_sigs< Sigs >::stopped != 0 )
+                        static_cast< _vtable_t const* >( c._vt )->invoke(
+                            set_stopped_t{}, c._recv );
         }
 
-        /// Null when no call is held.
-        [[nodiscard]] void* _held_src() const noexcept
-        {
-                return _held ? _held->_src : nullptr;
-        }
-
-        /// Precondition: a call is held.
-        [[nodiscard]] std::size_t _held_index() const noexcept
-        {
-                return _held->_desc->index;
-        }
-
-        template < typename Tag, typename... Args >
-        void _complete_held( Tag /*tag*/, Args&&... args )
-        {
-                auto* h = std::exchange( _held, nullptr );
-                if ( !h )
-                        return;
-                auto const* vt = static_cast< _vtable_t const* >( h->_vt );
-                if constexpr ( std::same_as< Tag, set_value_t > && _nullary )
-                        vt->invoke( Tag{}, h->_recv );
-                else
-                        vt->invoke( Tag{}, h->_recv, (Args&&) args... );
-        }
-
-        _queue_call_node* _held = nullptr;
+        /// Null when nothing is being handled.
+        _queue_node* _kept = nullptr;
 };
 
 template < typename Sigs >
@@ -7931,15 +8041,8 @@ struct _pump_call_base< Sigs, false > : _reschedulable
                 this->_reschedule();
         }
 
-        [[nodiscard]] static void* _held_src() noexcept
-        {
-                return nullptr;
-        }
-
-        [[nodiscard]] static std::size_t _held_index() noexcept
-        {
-                return 0;
-        }
+        /// Null when nothing is being handled.
+        _queue_node* _kept = nullptr;
 };
 
 /// Everything a pump's handler receiver reaches: the call half and the stop source.
@@ -8015,14 +8118,16 @@ struct _pump_has_hooks< H, completion_signatures< S... > >
 /// `ecor::handle` CPO, and the resulting sender runs to completion before the next event is
 /// taken — exactly one handler at a time.
 ///
-/// A running handler pins no queue memory, and receives its event by reference. Several pumps
-/// may share one queue.
+/// A running handler receives its event by reference: an item in its queue node, which stays
+/// allocated until the handler finishes, a `push_and_wait()` call as the caller's own object.
+/// Several pumps may share one queue.
 ///
 /// The pump keeps its own `Handler`; with a reference type, `Driver&`, it refers to the caller's
 /// object instead.
 ///
-/// Preconditions: the context, the queue and a referred handler outlive the pump, and the sender
-/// returned by `stop()` completes before the pump is destroyed.
+/// Preconditions: the context, the queue and a referred handler outlive the pump, so do the
+/// operation states of the `push_and_wait()` calls it may hold, and the sender returned by
+/// `stop()` completes before the pump is destroyed.
 template < pump_config CFG, typename Queue, typename Handler >
 struct event_pump : _pump_core< typename Queue::_call_sigs_t, Queue::_call, CFG::is_stoppable >,
                     _queue_waiter,
@@ -8033,8 +8138,6 @@ struct event_pump : _pump_core< typename Queue::_call_sigs_t, Queue::_call, CFG:
         using config_type = CFG;
         using ctx_type    = typename CFG::ctx_type;
         using sender_type = typename CFG::sender_type;
-        /// Storage for the event currently being handled.
-        using event_type = typename Queue::value_type;
 
         static constexpr bool is_stoppable = CFG::is_stoppable;
 
@@ -8056,10 +8159,22 @@ struct event_pump : _pump_core< typename Queue::_call_sigs_t, Queue::_call, CFG:
         /// A running handler's operation state lives inside the pump, so destroying the pump
         /// would destroy that handler's coroutine at an arbitrary suspension point, without it
         /// ever seeing its stop token. Being parked on the queue is fine: the waiter list
-        /// entry unlinks itself.
+        /// entry unlinks itself. An item taken but not yet handled is destroyed and its node
+        /// returned through the queue; a taken `push_and_wait()` call completes with
+        /// `set_stopped()` through its operation state, or never when the queue's
+        /// `push_and_wait_signatures` has no stopped row.
         ~event_pump()
         {
                 ECOR_ASSERT( !_op );
+                _op.reset();
+                if ( auto* n = this->_kept ) {
+                        if constexpr ( Queue::_call )
+                                if ( n->_desc->kind == _queue_node_kind::call ) {
+                                        this->_abandon();
+                                        return;
+                                }
+                        _q._release_kept( *n );
+                }
         }
 
         /// Begin draining. The pump does not touch the queue until the next `task_core` tick.
@@ -8072,7 +8187,10 @@ private:
         friend _pump_stop_base< event_pump, true >;
 
         using _stop_base = _pump_stop_base< event_pump, CFG::is_stoppable >;
-        using _env       = typename _call_base::env_type;
+        using _event_t   = typename Queue::_variant_t;
+
+        static constexpr bool _closeable = Queue::config_type::is_closeable;
+        using _env                       = typename _call_base::env_type;
 
         static_assert(
             _pump_answers_calls< Queue, _sender_completions_t< sender_type, _env > >,
@@ -8108,7 +8226,7 @@ private:
         friend schedulable;
 
         /// Drives one step. Reached from `start()`, from a delivered event and from a handler
-        /// completion; which of those it was is read off `_op`, the held call and `_slot`.
+        /// completion; which of those it was is read off `_op` and `_kept`.
         ///
         /// An event already taken is handled even once the pump is stopping: its handler sees
         /// the stop request through its environment.
@@ -8116,59 +8234,58 @@ private:
         {
                 // Whatever was in flight has completed by the time the pump is scheduled
                 // again; a handler that finished also releases the event it was given.
-                if ( _op )
-                        _slot.reset();
-                _op.reset();
-
-                void*       ev    = this->_held_src();
-                std::size_t index = 0;
-                if ( ev )
-                        index = this->_held_index();
-                else if ( _slot ) {
-                        ev    = _slot._data();
-                        index = _slot.index();
+                if ( _op ) {
+                        _op.reset();
+                        if ( this->_kept )
+                                _q._release_kept( *std::exchange( this->_kept, nullptr ) );
                 }
-                if ( ev ) {
-                        event_type::_visit_at( index, ev, [&]( auto& e ) {
-                                _op.emplace_from( [&] {
-                                        return ecor::handle( _ctx, _h, e )
-                                            .connect( _handler_recv{ this } );
-                                } );
-                        } );
+
+                if ( _queue_node* n = this->_kept ) {
+                        _event_t::_visit_at(
+                            n->_desc->index, Queue::_payload( *n ), [&]( auto& e ) {
+                                    _op.emplace_from( [&] {
+                                            return ecor::handle( _ctx, _h, e )
+                                                .connect( _handler_recv{ this } );
+                                    } );
+                            } );
                         _op->start();
                         return;
                 }
 
-                if ( this->_stopping( _queue_done ) )
+                if ( this->_stopping( _queue_closed() ) )
                         return;
 
-                // Park directly on the queue rather than through `pop()`: the pump supplies
-                // its own storage, so it has no use for the typed sender.
+                // Park directly on the queue rather than through `pop()`: the pump keeps the node
+                // it receives, which a pop releases.
                 if ( !_q._park_consumer( *this ) )
-                        _queue_done = true;
+                        if constexpr ( _closeable )
+                                _queue_done = true;
         }
 
-        /// Keep a call where it is, or move an item into the pump's own slot — the storage that
-        /// keeps it alive for the handler — and return to the scheduler, so handler code never
+        [[nodiscard]] bool _queue_closed() const noexcept
+        {
+                if constexpr ( _closeable )
+                        return _queue_done;
+                else
+                        return false;
+        }
+
+        /// Keep the item or call where it is and return to the scheduler, so handler code never
         /// runs inside a producer's `push()`.
         void _on_receive( _queue_node& n )
         {
-                if constexpr ( Queue::_call )
-                        if ( n._desc->kind == _queue_node_kind::call ) {
-                                this->_hold( n );
-                                _reschedule();
-                                return;
-                        }
-                Queue::_take( n, _slot );
-                _q._release( n );
+                ECOR_ASSERT( !this->_kept );
+                this->_kept = &n;
                 _reschedule();
         }
 
         /// The queue is closing and has finished with this consumer.
         bool _on_advance()
         {
-                _queue_done = true;
-                _reschedule();
+                if constexpr ( _closeable ) {
+                        _queue_done = true;
+                        _reschedule();
+                }
                 return true;
         }
 
@@ -8202,9 +8319,10 @@ private:
         Queue&                         _q;
         ECOR_NO_UNIQUE_ADDRESS Handler _h;
 
-        event_type                      _slot;
         _bare_optional< _handler_op_t > _op;
-        bool                            _queue_done = false;
+        /// The queue closed under the pump; only a closeable queue does.
+        ECOR_NO_UNIQUE_ADDRESS std::conditional_t< _closeable, bool, _absent< bool > >
+                               _queue_done{};
 };
 
 /// Convenience wrapper around `ll_source<unit, S...>` that exposes `set_value`, `set_error`,

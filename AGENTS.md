@@ -157,7 +157,8 @@ pitfalls from the work; the size lessons are in the code-size skill:
   shared by queues of any element types and signature set, so its `_release_node()` only destroys
   and deallocates an item node. A waiter's `_receive()` owns the node it took and passes it to the
   queue's `_release()`, which knows the set and completes a call through the nullary value row;
-  only a pump holding a call keeps the node instead.
+  only a pump keeps the node instead, an item until its handler's operation state is gone and a
+  call until the handler's completion completes it.
 - **A receiver may destroy its operation state in any completion**, including the stopped one
   that a stop requested before `start()` fires from inside the stop callback's registration.
   Save in locals whatever the code still needs before completing, and check `stop_requested()`
@@ -240,12 +241,14 @@ measured alternatives are in the code-size skill:
   node after the row returns, so the moved-from element dies with its node, and a
   `push_and_wait()` caller's object is left moved-from.
 - **The shared part reaches the receiver through a row table the queue builds.**
-  `async_queue::_pop_rows< Op >` holds the receiver's `set_stopped()` first, null where stopping
-  is unreachable, then one `set_value()` per element type, indexed by the node's descriptor. A
+  `async_queue::_pop_rows< Op >` holds the receiver's `set_stopped()` first, left out where
+  stopping is unreachable, then one `set_value()` per element type, indexed by the node's
+  descriptor. A
   stop known in `start()` is handed back to the per-receiver `start()`, which calls the receiver
   directly; only the stop callback and the `close()` nudge use the stopped row.
 - **A receiver written for `pop()` may not fit `pop_value()`.** One that takes `T&` cannot bind
-  the rvalue; a receiver taking `T` or `T&&` serves both senders.
+  the rvalue; a receiver taking `T` or `T&&` serves both senders, except on a `derived_elements`
+  queue, which has no `pop_value()` and where a `pop()` receiver taking `T` slices.
 
 ### Feature Implementation Reference: `when_any`
 
@@ -280,6 +283,60 @@ receiver completes once every operand has completed. Patterns and pitfalls from 
   suspended task destroys a started `when_any`, so the operation must know whether the callback
   is still registered. One path serves every token type; `wa_other_token` in the tests is a
   minimal stoppable token that is not an `inplace_stop_token`.
+
+### Feature Implementation Reference: `derived_elements`
+
+`derived_elements` lets `async_queue< CFG, T >` take any type derived from exactly one element
+type. The node holds the whole object and consumers receive it as `T&`. Patterns and pitfalls
+from the work:
+
+- **A flag that is false unless set is a concept**, `requires { requires CFG::member; }`. The
+  optional task flags and `derived_elements` follow that form. A flag must be a `bool`: an `int`
+  flag is a hard error in a concept's atomic constraint.
+- **Checks the class makes of `Ts...` must be made again of each pushed type.** `T` may be
+  abstract, so under the flag nothing may instantiate per-`T` code that builds or moves a `T`:
+  `_queue_node_of< T >`, its vtable thunks, a call descriptor's `vt`. The `_queue_pushable`
+  concept, the constraint of every by-value push, repeats the class-level checks on `U`. A call
+  is converted to `T*` before it is erased and is read in place, so `push_and_wait()` is
+  constrained by `_queue_accepts` alone, and no call descriptor has a vtable.
+- **Check a pushed type in the push's constraint, not in a `static_assert` in its body.** The
+  compiler then names the atomic constraint that failed, and `requires { q.try_push( u ); }`
+  answers truthfully, which the tests use. Every type pushed by value, of every queue, is
+  checked, so a check added for derived types breaks plain queues when it breaks; an `||`
+  keeps the derived-only checks from being evaluated for an element type itself.
+  `_base_at_start` takes the address through `std::addressof`, because a derived type may
+  overload unary `operator&`, and tests that the base converts back to the derived type before
+  it evaluates anything: GCC rejects the conversion to a virtual base in a constant expression.
+- **Keep a compile-time dispatch an `if constexpr` chain.** clang-tidy's
+  `readability-avoid-nested-conditional-operator` is an error in CI.
+
+### Feature Implementation Reference: the pump handles events in place
+
+`event_pump` keeps the node of the item or call it handles until the handler finishes; it once
+moved items out into an `inplace_variant` of its own. Patterns and pitfalls from the work:
+
+- **One kept node, finished by its kind.** `_pump_call_base::_kept` holds an item or a call. A
+  call completes inside `_finish()`, the only place its reply arguments exist; an item is
+  released in `_resume()` after `_op.reset()`, since the handler's operation state may still
+  refer to it.
+- **What a consumer keeps out of the queue it must release on every way out**, its destructor
+  included; a pump destroyed while it holds a `push_and_wait()` call it has not handled completes
+  it stopped, or never when the set has no stopped row.
+  `_queue_core::_release_kept()` releases a kept item and serves the producers waiting for memory
+  only when `push()` can park. `close()` completes once every item has been handed to a
+  consumer, so a kept node can outlive it.
+- **A kept node takes memory from the handler's own allocations.** A handler's `push()` on its
+  queue or on another queue over the same resource may wait for its own event's node, and a
+  coroutine frame from that resource may fail to allocate, which drops the event with
+  `task_allocation_failure`. The README states the sizing rule; nothing checks it.
+- **Several pumps free nodes out of order**, and test every corner of `circular_buffer_memory`.
+  Its tests in `base_utest.cpp` pin three bugs, two of them reachable by plain FIFO use: an
+  exact-fit wrap that handed out a block over the oldest live one, an index computed in the
+  index type that truncated past the buffer's end, and `used_bytes()` underflowing once the
+  newest block of a wrapped ring goes first.
+- **The node vtable has no `take`.** `pop_value()` moves an element out in its typed row, and
+  `try_pop()`'s `_take()` dispatches by the node's `index` over `value_type`, instantiated only
+  where `try_pop()` is used. Call descriptors carry no vtable at all.
 
 ## Source comments
 
