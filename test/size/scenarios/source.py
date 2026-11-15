@@ -5,14 +5,16 @@ signatures cycling through nullary, `int`, `uint8_t` and `uint32_t` values and, 
 key types through `uint32_t`, `uint64_t` and `uint16_t`. Every source gets one operation state
 connected to a receiver type of its own and started (`await=0`), or is awaited once from a
 single `task< void >` (`await=1`), and is then drained: `broadcast()` with a lambda completing
-each entry, or one `query_next()` completing the front entry. With `stopcheck=1` the signature
-set carries `get_stopped_t()` and the receivers a live stop token, so draining polls it.
+each entry, one `query_next()` completing the front entry, or `drain_stopped()` followed by that
+`query_next()`. With `stopcheck=1` the signature set carries `get_stopped_t()` and the receivers
+a live stop token, so draining polls it.
 
 Dimensions:
   kind       ll | seq
   n          1 | 2 | 4 | 8 | 12 | 50 sources
   stopcheck  0 | 1
-  drain      broadcast | next   (seq sources and stop-polling sets drain with next only)
+  drain      broadcast | next | stopped   (broadcast for ll without stop polling only, stopped
+             for stop-polling sets only)
   await      0 plain receivers | 1 one coroutine awaiting every source
 """
 from .common import Probe, TASK_RECV, cell, flash_of, key_of
@@ -42,6 +44,8 @@ def probes(tier):
         # get_stopped_t().
         if kw['drain'] == 'broadcast' and (kw['kind'] == 'seq' or kw['stopcheck']):
             return
+        if kw['drain'] == 'stopped' and not kw['stopcheck']:
+            return
         k = key(**kw)
         out.setdefault(k, Probe(NAME, k, lambda kw=kw: source(**kw)))
 
@@ -52,11 +56,13 @@ def probes(tier):
                 add(kind=kind, n=n, await_=1)
         add(n=12, drain='broadcast')
         add(n=12, stopcheck=1)
+        for kind in ('ll', 'seq'):
+            add(kind=kind, n=12, stopcheck=1, drain='stopped')
     else:
         for kind in ('ll', 'seq'):
             for n in (1, 2, 4, 8, 12, 50):
                 for stopcheck in (0, 1):
-                    for drain in ('broadcast', 'next'):
+                    for drain in ('broadcast', 'next', 'stopped'):
                         for await_ in (0, 1):
                             add(kind=kind, n=n, stopcheck=stopcheck, drain=drain, await_=await_)
     return list(out.values())
@@ -154,6 +160,8 @@ def source(kind, n, stopcheck, drain, await_):
         if drain == 'broadcast':
             w(f'        broadcast( S.s{k}, []( auto& e ) {{ e.set_value( {val} ); }} );')
         else:
+            if drain == 'stopped':
+                w(f'        sink_i( int( S.s{k}.drain_stopped() ) );')
             w(f'        if ( auto* e = S.s{k}.query_next() )')
             w(f'                e->set_value( {val} );')
         w(f'        sink_b( S.s{k}.empty() );')
@@ -183,7 +191,7 @@ def report(results, headers, w):
     w('|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|')
     for kind in ('ll', 'seq'):
         for stopcheck in (0, 1):
-            for drain in ('broadcast', 'next'):
+            for drain in ('broadcast', 'next', 'stopped'):
                 if kind == 'seq' and drain == 'broadcast':
                     continue
                 for await_ in (0, 1):

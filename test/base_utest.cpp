@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <semaphore>
 #include <stop_token>
@@ -4860,6 +4861,352 @@ TEST_CASE( "seq_source - query_next returns nullptr when all entries are stopped
         CHECK( stopped_1 == 1 );
         CHECK( stopped_2 == 1 );
         CHECK( source.empty() );
+}
+
+namespace
+{
+        /// Logs its completions; `on_stopped`, when set, runs after `set_stopped()` is logged.
+        struct drain_recv
+        {
+                using receiver_concept = receiver_t;
+
+                std::vector< std::string >* log;
+                int                         id;
+                inplace_stop_source*        stop;
+                std::function< void() >*    on_stopped = nullptr;
+
+                void set_value( auto v ) noexcept
+                {
+                        log->push_back( "value:" + std::to_string( v ) );
+                }
+
+                void set_error( auto&& ) noexcept
+                {
+                }
+
+                void set_stopped() noexcept
+                {
+                        log->push_back( "stopped:" + std::to_string( id ) );
+                        if ( on_stopped && *on_stopped )
+                                ( *on_stopped )();
+                }
+
+                [[nodiscard]] auto get_env() const noexcept
+                {
+                        return stop_token_env{ stop->get_token() };
+                }
+        };
+
+        using drain_seq_t =
+            seq_source< uint32_t, unit, set_value_t( uint32_t ), set_stopped_t(), get_stopped_t() >;
+        using drain_ll_t = ll_source< unit, set_value_t( int ), set_stopped_t(), get_stopped_t() >;
+
+        template < typename Src >
+        concept _has_drain_stopped = requires( Src& s ) { s.drain_stopped(); };
+
+        void dequeue_all( drain_seq_t& src )
+        {
+                while ( auto* e = src.query_next() )
+                        e->set_value( e->key );
+        }
+
+        void dequeue_all( drain_ll_t& src, int value )
+        {
+                while ( auto* e = src.query_next() )
+                        e->set_value( value++ );
+        }
+}  // namespace
+
+TEST_CASE( "ll_source and seq_source - drain_stopped exists only with get_stopped_t()" )
+{
+        static_assert( _has_drain_stopped< drain_seq_t > );
+        static_assert(
+            !_has_drain_stopped< seq_source< uint32_t, unit, set_value_t( uint32_t ) > > );
+        static_assert( _has_drain_stopped< drain_ll_t > );
+        static_assert( !_has_drain_stopped< ll_source< unit, set_value_t( int ) > > );
+}
+
+TEST_CASE( "seq_source - drain_stopped completes a stopped entry under a live top" )
+{
+        drain_seq_t                src;
+        std::vector< std::string > log;
+        inplace_stop_source        stop[3];
+        auto o1 = src.schedule( 1 ).connect( drain_recv{ &log, 1, &stop[0] } );
+        auto o5 = src.schedule( 5 ).connect( drain_recv{ &log, 5, &stop[1] } );
+        auto o3 = src.schedule( 3 ).connect( drain_recv{ &log, 3, &stop[2] } );
+        o1.start();
+        o5.start();
+        o3.start();
+        stop[1].request_stop();
+
+        CHECK( src.drain_stopped() == 1 );
+        CHECK( log == std::vector< std::string >{ "stopped:5" } );
+        CHECK( src.front().key == 1 );
+
+        dequeue_all( src );
+        CHECK( log == std::vector< std::string >{ "stopped:5", "value:1", "value:3" } );
+}
+
+TEST_CASE( "seq_source - drain_stopped completes stopped entries at any depth" )
+{
+        drain_seq_t                                                                            src;
+        std::vector< std::string >                                                             log;
+        std::array< inplace_stop_source, 20 >                                                  stop;
+        std::vector< std::unique_ptr< connect_type< drain_seq_t::sender_type, drain_recv > > > ops;
+        for ( uint32_t i = 0; i < 20; ++i ) {
+                uint32_t const key = ( i * 7 ) % 20 + 1;
+                ops.emplace_back( new auto( src.schedule( key ).connect(
+                    drain_recv{ &log, static_cast< int >( key ), &stop[key - 1] } ) ) );
+                ops.back()->start();
+        }
+        std::vector< std::string > want_stopped, want_values;
+        for ( uint32_t key = 1; key <= 20; ++key ) {
+                if ( key % 3 == 0 || key == 1 ) {
+                        stop[key - 1].request_stop();
+                        want_stopped.push_back( "stopped:" + std::to_string( key ) );
+                } else {
+                        want_values.push_back( "value:" + std::to_string( key ) );
+                }
+        }
+
+        CHECK( src.drain_stopped() == want_stopped.size() );
+        std::ranges::sort( log );
+        std::ranges::sort( want_stopped );
+        CHECK( log == want_stopped );
+
+        log.clear();
+        dequeue_all( src );
+        CHECK( log == want_values );
+}
+
+TEST_CASE( "seq_source - an entry a drained completion starts stays pending" )
+{
+        drain_seq_t                                                             src;
+        std::vector< std::string >                                              log;
+        inplace_stop_source                                                     stop[3];
+        std::function< void() >                                                 restart;
+        std::unique_ptr< connect_type< drain_seq_t::sender_type, drain_recv > > extra;
+        restart = [&] {
+                extra.reset(
+                    new auto( src.schedule( 2 ).connect( drain_recv{ &log, 2, &stop[2] } ) ) );
+                extra->start();
+        };
+        auto o1 = src.schedule( 1 ).connect( drain_recv{ &log, 1, &stop[0] } );
+        auto o4 = src.schedule( 4 ).connect( drain_recv{ &log, 4, &stop[1], &restart } );
+        o1.start();
+        o4.start();
+        stop[1].request_stop();
+
+        CHECK( src.drain_stopped() == 1 );
+        CHECK( log == std::vector< std::string >{ "stopped:4" } );
+        CHECK( src.drain_stopped() == 0 );
+
+        dequeue_all( src );
+        CHECK( log == std::vector< std::string >{ "stopped:4", "value:1", "value:2" } );
+}
+
+TEST_CASE( "seq_source - a stop a drained completion requests waits for the next call" )
+{
+        drain_seq_t                src;
+        std::vector< std::string > log;
+        inplace_stop_source        stop[3];
+        std::function< void() >    stop_next = [&] {
+                stop[2].request_stop();
+        };
+        auto o1 = src.schedule( 1 ).connect( drain_recv{ &log, 1, &stop[0] } );
+        auto o6 = src.schedule( 6 ).connect( drain_recv{ &log, 6, &stop[1], &stop_next } );
+        auto o9 = src.schedule( 9 ).connect( drain_recv{ &log, 9, &stop[2] } );
+        o1.start();
+        o6.start();
+        o9.start();
+        stop[1].request_stop();
+
+        CHECK( src.drain_stopped() == 1 );
+        CHECK( log == std::vector< std::string >{ "stopped:6" } );
+        CHECK( src.drain_stopped() == 1 );
+        CHECK( log == std::vector< std::string >{ "stopped:6", "stopped:9" } );
+        CHECK( src.drain_stopped() == 0 );
+
+        dequeue_all( src );
+        CHECK( log.back() == "value:1" );
+        CHECK( src.empty() );
+}
+
+TEST_CASE( "seq_source - drain_stopped on an empty heap, and on one without stopped entries" )
+{
+        drain_seq_t                src;
+        std::vector< std::string > log;
+        inplace_stop_source        stop[3];
+        CHECK( src.drain_stopped() == 0 );
+
+        auto o3 = src.schedule( 3 ).connect( drain_recv{ &log, 3, &stop[0] } );
+        auto o1 = src.schedule( 1 ).connect( drain_recv{ &log, 1, &stop[1] } );
+        auto o2 = src.schedule( 2 ).connect( drain_recv{ &log, 2, &stop[2] } );
+        o3.start();
+        o1.start();
+        o2.start();
+        CHECK( src.drain_stopped() == 0 );
+        CHECK( log.empty() );
+
+        dequeue_all( src );
+        CHECK( log == std::vector< std::string >{ "value:1", "value:2", "value:3" } );
+}
+
+TEST_CASE( "seq_source - a drained completion may destroy its own entry or one not yet completed" )
+{
+        drain_seq_t                src;
+        std::vector< std::string > log;
+        inplace_stop_source        stop[3];
+        op_slot                    self, a, b;
+        // `a` and `b` each destroy the other if it is still alive, so whichever completes first
+        // destroys one the call has unlinked but not completed yet.
+        std::function< void() > destroy_b = [&] {
+                if ( b.destroy_op )
+                        b.destroy();
+        };
+        std::function< void() > destroy_a = [&] {
+                if ( a.destroy_op )
+                        a.destroy();
+        };
+        self.emplace_from( [&] {
+                    return src.schedule( 4 ).connect(
+                        self_destroying_recv{ &log, &self, stop[0].get_token() } );
+            } )
+            .start();
+        a.emplace_from( [&] {
+                 return src.schedule( 1 ).connect( drain_recv{ &log, 1, &stop[1], &destroy_b } );
+         } ).start();
+        b.emplace_from( [&] {
+                 return src.schedule( 2 ).connect( drain_recv{ &log, 2, &stop[2], &destroy_a } );
+         } ).start();
+        for ( auto& s : stop )
+                s.request_stop();
+
+        CHECK( src.drain_stopped() == 2 );
+        CHECK( log.size() == 2 );
+        CHECK( std::ranges::count( log, "stopped" ) == 1 );
+        CHECK( self.untouched() );
+        CHECK( a.untouched() != b.untouched() );
+        CHECK( src.empty() );
+        if ( a.destroy_op )
+                a.destroy();
+        if ( b.destroy_op )
+                b.destroy();
+}
+
+TEST_CASE( "ll_source - a drained completion may destroy its own entry or one not yet completed" )
+{
+        drain_ll_t                 src;
+        std::vector< std::string > log;
+        inplace_stop_source        stop[3];
+        op_slot                    self, other;
+        std::function< void() >    destroy_other = [&] {
+                other.destroy();
+        };
+        auto oa = src.schedule().connect( drain_recv{ &log, 0, &stop[0], &destroy_other } );
+        oa.start();
+        other
+            .emplace_from( [&] {
+                    return src.schedule().connect(
+                        self_destroying_recv{ &log, &other, stop[1].get_token() } );
+            } )
+            .start();
+        self.emplace_from( [&] {
+                    return src.schedule().connect(
+                        self_destroying_recv{ &log, &self, stop[2].get_token() } );
+            } )
+            .start();
+        for ( auto& s : stop )
+                s.request_stop();
+
+        // FIFO order: 0 completes and destroys the next, which is skipped; the last destroys
+        // itself.
+        CHECK( src.drain_stopped() == 2 );
+        CHECK( log == std::vector< std::string >{ "stopped:0", "stopped" } );
+        CHECK( self.untouched() );
+        CHECK( other.untouched() );
+        CHECK( src.empty() );
+}
+
+TEST_CASE( "ll_source - drain_stopped completes stopped entries anywhere, live ones keep order" )
+{
+        drain_ll_t                 src;
+        std::vector< std::string > log;
+        inplace_stop_source        stop[5];
+        auto                       oa = src.schedule().connect( drain_recv{ &log, 0, &stop[0] } );
+        auto                       ob = src.schedule().connect( drain_recv{ &log, 1, &stop[1] } );
+        auto                       oc = src.schedule().connect( drain_recv{ &log, 2, &stop[2] } );
+        auto                       od = src.schedule().connect( drain_recv{ &log, 3, &stop[3] } );
+        auto                       oe = src.schedule().connect( drain_recv{ &log, 4, &stop[4] } );
+        oa.start();
+        ob.start();
+        oc.start();
+        od.start();
+        oe.start();
+        stop[0].request_stop();
+        stop[2].request_stop();
+        stop[4].request_stop();
+
+        CHECK( src.drain_stopped() == 3 );
+        CHECK( log == std::vector< std::string >{ "stopped:0", "stopped:2", "stopped:4" } );
+        CHECK(
+            &src.front() ==
+            &static_cast< ll_entry< unit, set_value_t( int ), set_stopped_t(), get_stopped_t() >& >(
+                ob ) );
+
+        log.clear();
+        dequeue_all( src, 10 );
+        CHECK( log == std::vector< std::string >{ "value:10", "value:11" } );
+        CHECK( src.empty() );
+}
+
+TEST_CASE( "ll_source - drain_stopped leaves entries its completions start or stop for later" )
+{
+        drain_ll_t                                                             src;
+        std::vector< std::string >                                             log;
+        inplace_stop_source                                                    stop[4];
+        std::unique_ptr< connect_type< drain_ll_t::sender_type, drain_recv > > extra;
+        std::function< void() >                                                on_b = [&] {
+                stop[2].request_stop();
+                extra.reset(
+                    new auto( src.schedule().connect( drain_recv{ &log, 3, &stop[3] } ) ) );
+                extra->start();
+        };
+        auto oa = src.schedule().connect( drain_recv{ &log, 0, &stop[0] } );
+        auto ob = src.schedule().connect( drain_recv{ &log, 1, &stop[1], &on_b } );
+        auto oc = src.schedule().connect( drain_recv{ &log, 2, &stop[2] } );
+        oa.start();
+        ob.start();
+        oc.start();
+        stop[1].request_stop();
+
+        CHECK( src.drain_stopped() == 1 );
+        CHECK( log == std::vector< std::string >{ "stopped:1" } );
+        CHECK( src.drain_stopped() == 1 );
+        CHECK( log == std::vector< std::string >{ "stopped:1", "stopped:2" } );
+        CHECK( src.drain_stopped() == 0 );
+
+        log.clear();
+        dequeue_all( src, 10 );
+        CHECK( log == std::vector< std::string >{ "value:10", "value:11" } );
+}
+
+TEST_CASE( "ll_source - drain_stopped on an empty list, and on one without stopped entries" )
+{
+        drain_ll_t                 src;
+        std::vector< std::string > log;
+        inplace_stop_source        stop[2];
+        CHECK( src.drain_stopped() == 0 );
+
+        auto oa = src.schedule().connect( drain_recv{ &log, 0, &stop[0] } );
+        auto ob = src.schedule().connect( drain_recv{ &log, 1, &stop[1] } );
+        oa.start();
+        ob.start();
+        CHECK( src.drain_stopped() == 0 );
+        CHECK( log.empty() );
+
+        dequeue_all( src, 10 );
+        CHECK( log == std::vector< std::string >{ "value:10", "value:11" } );
 }
 
 namespace

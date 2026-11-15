@@ -24,6 +24,7 @@
 #include "doctest.h"
 #include "ecor/ecor.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>

@@ -204,35 +204,35 @@
    0
   ],
   "co_await/kind=seq_source,awaits=16": [
-   1776,
+   1762,
    0
   ],
   "co_await/kind=seq_source,awaits=16,cfg=owning": [
-   1658,
+   1644,
    0
   ],
   "co_await/kind=seq_source,awaits=8": [
-   1276,
+   1262,
    0
   ],
   "co_await/kind=seq_source,awaits=8,cfg=owning": [
-   1294,
+   1280,
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=16": [
-   2250,
+   2246,
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=16,cfg=owning": [
-   2108,
+   2104,
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=8": [
-   1546,
+   1542,
    0
   ],
   "co_await/kind=seq_source_payload_value,awaits=8,cfg=owning": [
-   1520,
+   1516,
    0
   ],
   "co_await/kind=suspend,awaits=16": [
@@ -380,35 +380,35 @@
    0
   ],
   "coroutine/value=int,awaiting=mixed,coros=1": [
-   1390,
+   1376,
    0
   ],
   "coroutine/value=int,awaiting=mixed,coros=1,cfg=owning": [
-   1456,
+   1442,
    0
   ],
   "coroutine/value=int,awaiting=mixed,coros=1,params=distinct": [
-   1398,
+   1384,
    0
   ],
   "coroutine/value=int,awaiting=mixed,coros=1,params=distinct,cfg=owning": [
-   1472,
+   1458,
    0
   ],
   "coroutine/value=int,awaiting=mixed,coros=16": [
-   8862,
+   8848,
    0
   ],
   "coroutine/value=int,awaiting=mixed,coros=16,cfg=owning": [
-   8288,
+   8274,
    0
   ],
   "coroutine/value=int,awaiting=mixed,coros=16,params=distinct": [
-   8910,
+   8896,
    0
   ],
   "coroutine/value=int,awaiting=mixed,coros=16,params=distinct,cfg=owning": [
-   8336,
+   8322,
    0
   ],
   "coroutine/value=int,awaiting=none,coros=1": [
@@ -572,35 +572,35 @@
    0
   ],
   "coroutine/value=void,awaiting=mixed,coros=1": [
-   1386,
+   1372,
    0
   ],
   "coroutine/value=void,awaiting=mixed,coros=1,cfg=owning": [
-   1452,
+   1438,
    0
   ],
   "coroutine/value=void,awaiting=mixed,coros=1,params=distinct": [
-   1394,
+   1380,
    0
   ],
   "coroutine/value=void,awaiting=mixed,coros=1,params=distinct,cfg=owning": [
-   1468,
+   1454,
    0
   ],
   "coroutine/value=void,awaiting=mixed,coros=16": [
-   8830,
+   8816,
    0
   ],
   "coroutine/value=void,awaiting=mixed,coros=16,cfg=owning": [
-   8288,
+   8274,
    0
   ],
   "coroutine/value=void,awaiting=mixed,coros=16,params=distinct": [
-   8878,
+   8864,
    0
   ],
   "coroutine/value=void,awaiting=mixed,coros=16,params=distinct,cfg=owning": [
-   8336,
+   8322,
    0
   ],
   "coroutine/value=void,awaiting=none,coros=1": [
@@ -968,11 +968,11 @@
    0
   ],
   "or/kind=mixed,operands=1,at=task,uses=4": [
-   1392,
+   1378,
    0
   ],
   "or/kind=mixed,operands=1,at=task,uses=4,cfg=owning": [
-   1468,
+   1454,
    0
   ],
   "or/kind=mixed,operands=2,at=recv": [
@@ -988,71 +988,71 @@
    0
   ],
   "or/kind=mixed,operands=2,at=task,uses=4": [
-   2400,
+   2386,
    0
   ],
   "or/kind=mixed,operands=2,at=task,uses=4,cfg=owning": [
-   2432,
+   2418,
    0
   ],
   "or/kind=mixed,operands=3,at=recv": [
-   722,
+   708,
    0
   ],
   "or/kind=mixed,operands=3,at=task,uses=1": [
-   1516,
+   1502,
    0
   ],
   "or/kind=mixed,operands=3,at=task,uses=1,cfg=owning": [
-   1558,
+   1544,
    0
   ],
   "or/kind=mixed,operands=3,at=task,uses=4": [
-   3644,
+   3630,
    0
   ],
   "or/kind=mixed,operands=3,at=task,uses=4,cfg=owning": [
-   3676,
+   3662,
    0
   ],
   "or/kind=mixed,operands=4,at=recv": [
-   1084,
+   1070,
    0
   ],
   "or/kind=mixed,operands=4,at=task,uses=1": [
-   1930,
+   1916,
    0
   ],
   "or/kind=mixed,operands=4,at=task,uses=1,cfg=owning": [
-   2008,
+   1994,
    0
   ],
   "or/kind=mixed,operands=4,at=task,uses=4": [
-   2616,
+   2602,
    0
   ],
   "or/kind=mixed,operands=4,at=task,uses=4,cfg=owning": [
-   2626,
+   2612,
    0
   ],
   "or/kind=mixed,operands=8,at=recv": [
-   1780,
+   1766,
    0
   ],
   "or/kind=mixed,operands=8,at=task,uses=1": [
-   2808,
+   2794,
    0
   ],
   "or/kind=mixed,operands=8,at=task,uses=1,cfg=owning": [
-   2882,
+   2868,
    0
   ],
   "or/kind=mixed,operands=8,at=task,uses=4": [
-   4250,
+   4236,
    0
   ],
   "or/kind=mixed,operands=8,at=task,uses=4,cfg=owning": [
-   4266,
+   4252,
    0
   ],
   "or/kind=same,operands=1,at=recv": [
@@ -1156,51 +1156,51 @@
    0
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0": [
-   131148,
+   131112,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=0,cfg=owning": [
-   110576,
+   110544,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1": [
-   124856,
+   124848,
    49292
   ],
   "program/coros=100,types=5,holders=10,queues=1,qtypes=4,ll=5,seq=2,lto=1,cfg=owning": [
-   103104,
+   103092,
    49292
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0": [
-   1455704,
+   1455640,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=0,cfg=owning": [
-   1216836,
+   1216772,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1": [
-   1412424,
+   1412400,
    49828
   ],
   "program/coros=1000,types=20,holders=100,queues=5,qtypes=8,ll=50,seq=10,lto=1,cfg=owning": [
-   1186860,
+   1186836,
    49828
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0": [
-   419556,
+   419492,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=0,cfg=owning": [
-   352236,
+   352172,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1": [
-   406696,
+   406668,
    49420
   ],
   "program/coros=300,types=10,holders=30,queues=2,qtypes=6,ll=15,seq=5,lto=1,cfg=owning": [
-   336592,
+   336548,
    49420
   ],
   "pump/pumps=1,stoppable=0,handler=hooks,types=4,qcfg=call": [
@@ -2487,6 +2487,14 @@
    826,
    0
   ],
+  "source/kind=ll,n=1,stopcheck=1,drain=stopped,await=0": [
+   396,
+   0
+  ],
+  "source/kind=ll,n=1,stopcheck=1,drain=stopped,await=1": [
+   926,
+   0
+  ],
   "source/kind=ll,n=12,stopcheck=0,drain=broadcast,await=0": [
    1694,
    0
@@ -2509,6 +2517,14 @@
   ],
   "source/kind=ll,n=12,stopcheck=1,drain=next,await=1": [
    3602,
+   0
+  ],
+  "source/kind=ll,n=12,stopcheck=1,drain=stopped,await=0": [
+   3336,
+   0
+  ],
+  "source/kind=ll,n=12,stopcheck=1,drain=stopped,await=1": [
+   4708,
    0
   ],
   "source/kind=ll,n=2,stopcheck=0,drain=broadcast,await=0": [
@@ -2535,6 +2551,14 @@
    1076,
    0
   ],
+  "source/kind=ll,n=2,stopcheck=1,drain=stopped,await=0": [
+   668,
+   0
+  ],
+  "source/kind=ll,n=2,stopcheck=1,drain=stopped,await=1": [
+   1256,
+   0
+  ],
   "source/kind=ll,n=4,stopcheck=0,drain=broadcast,await=0": [
    728,
    0
@@ -2557,6 +2581,14 @@
   ],
   "source/kind=ll,n=4,stopcheck=1,drain=next,await=1": [
    1658,
+   0
+  ],
+  "source/kind=ll,n=4,stopcheck=1,drain=stopped,await=0": [
+   1250,
+   0
+  ],
+  "source/kind=ll,n=4,stopcheck=1,drain=stopped,await=1": [
+   2036,
    0
   ],
   "source/kind=ll,n=50,stopcheck=0,drain=broadcast,await=0": [
@@ -2583,6 +2615,14 @@
    12354,
    0
   ],
+  "source/kind=ll,n=50,stopcheck=1,drain=stopped,await=0": [
+   12916,
+   0
+  ],
+  "source/kind=ll,n=50,stopcheck=1,drain=stopped,await=1": [
+   16792,
+   0
+  ],
   "source/kind=ll,n=8,stopcheck=0,drain=broadcast,await=0": [
    1206,
    0
@@ -2607,116 +2647,172 @@
    2688,
    0
   ],
+  "source/kind=ll,n=8,stopcheck=1,drain=stopped,await=0": [
+   2372,
+   0
+  ],
+  "source/kind=ll,n=8,stopcheck=1,drain=stopped,await=1": [
+   3446,
+   0
+  ],
   "source/kind=seq,n=1,stopcheck=0,drain=next,await=0": [
-   314,
+   300,
    0
   ],
   "source/kind=seq,n=1,stopcheck=0,drain=next,await=1": [
-   926,
+   912,
    0
   ],
   "source/kind=seq,n=1,stopcheck=1,drain=next,await=0": [
-   392,
+   378,
    0
   ],
   "source/kind=seq,n=1,stopcheck=1,drain=next,await=1": [
-   1014,
+   1000,
+   0
+  ],
+  "source/kind=seq,n=1,stopcheck=1,drain=stopped,await=0": [
+   584,
+   0
+  ],
+  "source/kind=seq,n=1,stopcheck=1,drain=stopped,await=1": [
+   1196,
    0
   ],
   "source/kind=seq,n=12,stopcheck=0,drain=next,await=0": [
-   2024,
+   1992,
    0
   ],
   "source/kind=seq,n=12,stopcheck=0,drain=next,await=1": [
-   3550,
+   3518,
    0
   ],
   "source/kind=seq,n=12,stopcheck=1,drain=next,await=0": [
-   2832,
+   2800,
    0
   ],
   "source/kind=seq,n=12,stopcheck=1,drain=next,await=1": [
-   4374,
+   4342,
+   0
+  ],
+  "source/kind=seq,n=12,stopcheck=1,drain=stopped,await=0": [
+   4050,
+   0
+  ],
+  "source/kind=seq,n=12,stopcheck=1,drain=stopped,await=1": [
+   5660,
    0
   ],
   "source/kind=seq,n=2,stopcheck=0,drain=next,await=0": [
-   618,
+   600,
    0
   ],
   "source/kind=seq,n=2,stopcheck=0,drain=next,await=1": [
-   1316,
+   1298,
    0
   ],
   "source/kind=seq,n=2,stopcheck=1,drain=next,await=0": [
-   770,
+   752,
    0
   ],
   "source/kind=seq,n=2,stopcheck=1,drain=next,await=1": [
-   1492,
+   1474,
+   0
+  ],
+  "source/kind=seq,n=2,stopcheck=1,drain=stopped,await=0": [
+   1160,
+   0
+  ],
+  "source/kind=seq,n=2,stopcheck=1,drain=stopped,await=1": [
+   1850,
    0
   ],
   "source/kind=seq,n=4,stopcheck=0,drain=next,await=0": [
-   1072,
+   1040,
    0
   ],
   "source/kind=seq,n=4,stopcheck=0,drain=next,await=1": [
-   1944,
+   1912,
    0
   ],
   "source/kind=seq,n=4,stopcheck=1,drain=next,await=0": [
-   1336,
+   1304,
    0
   ],
   "source/kind=seq,n=4,stopcheck=1,drain=next,await=1": [
-   2240,
+   2208,
+   0
+  ],
+  "source/kind=seq,n=4,stopcheck=1,drain=stopped,await=0": [
+   2010,
+   0
+  ],
+  "source/kind=seq,n=4,stopcheck=1,drain=stopped,await=1": [
+   2846,
    0
   ],
   "source/kind=seq,n=50,stopcheck=0,drain=next,await=0": [
-   5886,
+   5854,
    0
   ],
   "source/kind=seq,n=50,stopcheck=0,drain=next,await=1": [
-   10802,
+   10770,
    0
   ],
   "source/kind=seq,n=50,stopcheck=1,drain=next,await=0": [
-   8178,
+   8146,
    0
   ],
   "source/kind=seq,n=50,stopcheck=1,drain=next,await=1": [
-   12786,
+   12754,
+   0
+  ],
+  "source/kind=seq,n=50,stopcheck=1,drain=stopped,await=0": [
+   11622,
+   0
+  ],
+  "source/kind=seq,n=50,stopcheck=1,drain=stopped,await=1": [
+   16222,
    0
   ],
   "source/kind=seq,n=8,stopcheck=0,drain=next,await=0": [
-   1594,
+   1562,
    0
   ],
   "source/kind=seq,n=8,stopcheck=0,drain=next,await=1": [
-   2794,
+   2762,
    0
   ],
   "source/kind=seq,n=8,stopcheck=1,drain=next,await=0": [
-   2132,
+   2100,
    0
   ],
   "source/kind=seq,n=8,stopcheck=1,drain=next,await=1": [
-   3328,
+   3296,
+   0
+  ],
+  "source/kind=seq,n=8,stopcheck=1,drain=stopped,await=0": [
+   3078,
+   0
+  ],
+  "source/kind=seq,n=8,stopcheck=1,drain=stopped,await=1": [
+   4322,
    0
   ],
   "task/cfg=convert,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   6516,
+   6502,
    0
   ],
   "task/cfg=convert,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   7050,
+   7036,
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=1,kinds=core4,shared=0,stop=0": [
-   1650,
+   1636,
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=1,kinds=core4,shared=1,stop=0": [
-   1654,
+   1640,
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=1,kinds=none,shared=1,stop=0": [
@@ -2724,11 +2820,11 @@
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=32,kinds=core4,shared=0,stop=0": [
-   11440,
+   11426,
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=32,kinds=core4,shared=1,stop=0": [
-   11690,
+   11676,
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=32,kinds=none,shared=1,stop=0": [
@@ -2736,11 +2832,11 @@
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=4,kinds=core4,shared=0,stop=0": [
-   2568,
+   2554,
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=4,kinds=core4,shared=1,stop=0": [
-   2588,
+   2574,
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=4,kinds=none,shared=1,stop=0": [
@@ -2748,11 +2844,11 @@
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=8,kinds=core4,shared=0,stop=0": [
-   3580,
+   3566,
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=8,kinds=core4,shared=1,stop=0": [
-   3624,
+   3610,
    0
   ],
   "task/cfg=default,types=1,coros=1,awaits=8,kinds=none,shared=1,stop=0": [
@@ -2760,11 +2856,11 @@
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=1,kinds=core4,shared=0,stop=0": [
-   10132,
+   10118,
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=1,kinds=core4,shared=1,stop=0": [
-   9004,
+   8990,
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=1,kinds=none,shared=1,stop=0": [
@@ -2772,11 +2868,11 @@
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=32,kinds=core4,shared=0,stop=0": [
-   166740,
+   166726,
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=32,kinds=core4,shared=1,stop=0": [
-   168172,
+   168158,
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=32,kinds=none,shared=1,stop=0": [
@@ -2784,11 +2880,11 @@
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=4,kinds=core4,shared=0,stop=0": [
-   25076,
+   25062,
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=4,kinds=core4,shared=1,stop=0": [
-   21996,
+   21982,
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=4,kinds=none,shared=1,stop=0": [
@@ -2796,11 +2892,11 @@
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=8,kinds=core4,shared=0,stop=0": [
-   41012,
+   40998,
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=8,kinds=core4,shared=1,stop=0": [
-   39052,
+   39038,
    0
   ],
   "task/cfg=default,types=1,coros=16,awaits=8,kinds=none,shared=1,stop=0": [
@@ -2808,11 +2904,11 @@
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=1,kinds=core4,shared=0,stop=0": [
-   3404,
+   3390,
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=1,kinds=core4,shared=1,stop=0": [
-   3240,
+   3226,
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=1,kinds=none,shared=1,stop=0": [
@@ -2820,11 +2916,11 @@
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=32,kinds=core4,shared=0,stop=0": [
-   42556,
+   42542,
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=32,kinds=core4,shared=1,stop=0": [
-   43028,
+   43014,
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=32,kinds=none,shared=1,stop=0": [
@@ -2832,19 +2928,19 @@
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=4,kinds=all7,shared=1,stop=0": [
-   7941,
+   7927,
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=4,kinds=core4,shared=0,stop=0": [
-   7140,
+   7126,
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   6484,
+   6470,
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=1": [
-   6516,
+   6502,
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=4,kinds=ll,shared=1,stop=0": [
@@ -2856,11 +2952,11 @@
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=8,kinds=core4,shared=0,stop=0": [
-   11124,
+   11110,
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=8,kinds=core4,shared=1,stop=0": [
-   10748,
+   10734,
    0
   ],
   "task/cfg=default,types=1,coros=4,awaits=8,kinds=none,shared=1,stop=0": [
@@ -2868,7 +2964,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=1,awaits=1,kinds=core4,shared=1,stop=0": [
-   1654,
+   1640,
    0
   ],
   "task/cfg=default,types=4,coros=1,awaits=1,kinds=none,shared=1,stop=0": [
@@ -2876,7 +2972,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=1,awaits=32,kinds=core4,shared=1,stop=0": [
-   11690,
+   11676,
    0
   ],
   "task/cfg=default,types=4,coros=1,awaits=32,kinds=none,shared=1,stop=0": [
@@ -2884,7 +2980,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=1,awaits=4,kinds=core4,shared=1,stop=0": [
-   2588,
+   2574,
    0
   ],
   "task/cfg=default,types=4,coros=1,awaits=4,kinds=none,shared=1,stop=0": [
@@ -2892,7 +2988,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=1,awaits=8,kinds=core4,shared=1,stop=0": [
-   3624,
+   3610,
    0
   ],
   "task/cfg=default,types=4,coros=1,awaits=8,kinds=none,shared=1,stop=0": [
@@ -2900,7 +2996,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=16,awaits=1,kinds=core4,shared=1,stop=0": [
-   9616,
+   9602,
    0
   ],
   "task/cfg=default,types=4,coros=16,awaits=1,kinds=none,shared=1,stop=0": [
@@ -2908,7 +3004,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=16,awaits=32,kinds=core4,shared=1,stop=0": [
-   168820,
+   168806,
    0
   ],
   "task/cfg=default,types=4,coros=16,awaits=32,kinds=none,shared=1,stop=0": [
@@ -2916,7 +3012,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=16,awaits=4,kinds=core4,shared=1,stop=0": [
-   22644,
+   22630,
    0
   ],
   "task/cfg=default,types=4,coros=16,awaits=4,kinds=none,shared=1,stop=0": [
@@ -2924,7 +3020,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=16,awaits=8,kinds=core4,shared=1,stop=0": [
-   39700,
+   39686,
    0
   ],
   "task/cfg=default,types=4,coros=16,awaits=8,kinds=none,shared=1,stop=0": [
@@ -2932,7 +3028,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=4,awaits=1,kinds=core4,shared=1,stop=0": [
-   3484,
+   3470,
    0
   ],
   "task/cfg=default,types=4,coros=4,awaits=1,kinds=none,shared=1,stop=0": [
@@ -2940,7 +3036,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=4,awaits=32,kinds=core4,shared=1,stop=0": [
-   43434,
+   43420,
    0
   ],
   "task/cfg=default,types=4,coros=4,awaits=32,kinds=none,shared=1,stop=0": [
@@ -2948,15 +3044,15 @@
    0
   ],
   "task/cfg=default,types=4,coros=4,awaits=4,kinds=all7,shared=1,stop=0": [
-   8709,
+   8695,
    0
   ],
   "task/cfg=default,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   6994,
+   6980,
    0
   ],
   "task/cfg=default,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=1": [
-   7050,
+   7036,
    0
   ],
   "task/cfg=default,types=4,coros=4,awaits=4,kinds=ll,shared=1,stop=0": [
@@ -2968,7 +3064,7 @@
    0
   ],
   "task/cfg=default,types=4,coros=4,awaits=8,kinds=core4,shared=1,stop=0": [
-   11154,
+   11140,
    0
   ],
   "task/cfg=default,types=4,coros=4,awaits=8,kinds=none,shared=1,stop=0": [
@@ -2976,7 +3072,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=1,awaits=1,kinds=core4,shared=1,stop=0": [
-   1654,
+   1640,
    0
   ],
   "task/cfg=default,types=8,coros=1,awaits=1,kinds=none,shared=1,stop=0": [
@@ -2984,7 +3080,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=1,awaits=32,kinds=core4,shared=1,stop=0": [
-   11690,
+   11676,
    0
   ],
   "task/cfg=default,types=8,coros=1,awaits=32,kinds=none,shared=1,stop=0": [
@@ -2992,7 +3088,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=1,awaits=4,kinds=core4,shared=1,stop=0": [
-   2588,
+   2574,
    0
   ],
   "task/cfg=default,types=8,coros=1,awaits=4,kinds=none,shared=1,stop=0": [
@@ -3000,7 +3096,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=1,awaits=8,kinds=core4,shared=1,stop=0": [
-   3624,
+   3610,
    0
   ],
   "task/cfg=default,types=8,coros=1,awaits=8,kinds=none,shared=1,stop=0": [
@@ -3008,7 +3104,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=16,awaits=1,kinds=core4,shared=1,stop=0": [
-   9976,
+   9962,
    0
   ],
   "task/cfg=default,types=8,coros=16,awaits=1,kinds=none,shared=1,stop=0": [
@@ -3016,7 +3112,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=16,awaits=32,kinds=core4,shared=1,stop=0": [
-   169400,
+   169386,
    0
   ],
   "task/cfg=default,types=8,coros=16,awaits=32,kinds=none,shared=1,stop=0": [
@@ -3024,7 +3120,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=16,awaits=4,kinds=core4,shared=1,stop=0": [
-   23224,
+   23210,
    0
   ],
   "task/cfg=default,types=8,coros=16,awaits=4,kinds=none,shared=1,stop=0": [
@@ -3032,7 +3128,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=16,awaits=8,kinds=core4,shared=1,stop=0": [
-   40280,
+   40266,
    0
   ],
   "task/cfg=default,types=8,coros=16,awaits=8,kinds=none,shared=1,stop=0": [
@@ -3040,7 +3136,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=4,awaits=1,kinds=core4,shared=1,stop=0": [
-   3484,
+   3470,
    0
   ],
   "task/cfg=default,types=8,coros=4,awaits=1,kinds=none,shared=1,stop=0": [
@@ -3048,7 +3144,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=4,awaits=32,kinds=core4,shared=1,stop=0": [
-   43434,
+   43420,
    0
   ],
   "task/cfg=default,types=8,coros=4,awaits=32,kinds=none,shared=1,stop=0": [
@@ -3056,7 +3152,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   6994,
+   6980,
    0
   ],
   "task/cfg=default,types=8,coros=4,awaits=4,kinds=none,shared=1,stop=0": [
@@ -3064,7 +3160,7 @@
    0
   ],
   "task/cfg=default,types=8,coros=4,awaits=8,kinds=core4,shared=1,stop=0": [
-   11154,
+   11140,
    0
   ],
   "task/cfg=default,types=8,coros=4,awaits=8,kinds=none,shared=1,stop=0": [
@@ -3072,43 +3168,43 @@
    0
   ],
   "task/cfg=err2,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   6516,
+   6502,
    0
   ],
   "task/cfg=err2,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   7050,
+   7036,
    0
   ],
   "task/cfg=err3,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   6548,
+   6534,
    0
   ],
   "task/cfg=err3,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   7106,
+   7092,
    0
   ],
   "task/cfg=owning_shared,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   5836,
+   5822,
    0
   ],
   "task/cfg=owning_shared,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   6186,
+   6172,
    0
   ],
   "task/cfg=shared,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   6514,
+   6500,
    0
   ],
   "task/cfg=shared,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   6812,
+   6798,
    0
   ],
   "task/cfg=trace,types=1,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   6574,
+   6560,
    0
   ],
   "task/cfg=trace,types=4,coros=4,awaits=4,kinds=core4,shared=1,stop=0": [
-   7202,
+   7188,
    0
   ]
  }

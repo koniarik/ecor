@@ -471,6 +471,34 @@ ecor::ll_source<timed_event>            ll;  // front entry checked on each quer
 ecor::seq_source<uint64_t, timed_event> sq;  // top (min-key) entry checked on each query_next()
 ```
 
+#### Stopped entries anywhere — `drain_stopped()`
+
+`src.drain_stopped()` completes every stopped entry with `set_stopped()`, wherever it sits, and
+returns how many it completed; live entries keep their place. It exists when `get_stopped_t()`
+is among the source's signatures. An event-loop driver calls it after each iteration, so a
+stopped timer wait completes now rather than when its key comes due:
+
+```cpp
+using timer_source = ecor::seq_source<
+    uint64_t, ecor::unit,
+    ecor::set_value_t(uint64_t), ecor::set_stopped_t(), ecor::get_stopped_t()>;
+
+void loop_step(timer_source& timers, uint64_t now)
+{
+    while (timers.drain_stopped() != 0) { }
+    while (!timers.empty() && timers.front().key <= now)
+        timers.query_next_unchecked()->set_value(now);
+}
+```
+
+> Every stopped entry is taken out before the first one completes, so a completion may start a new
+> wait or stop another one; those are left for the next call, which is why the loop repeats until
+> it gets 0. It allocates nothing and registers no stop callbacks. Each call asks every pending
+> entry once whether it was stopped, so it costs time linear in the number of waits, plus for a
+> `seq_source` one heap merge, amortized O(log n), per stopped entry. The due loop uses
+> `query_next_unchecked()`: a completion may stop the next due entry, and `query_next()` would
+> then complete it and return the following one, due or not.
+
 ### ISR Pipeline — `pipeline_buffer`
 
 `pipeline_buffer` is a 4-cursor ring buffer for managing `ll_source` entries that cross an
@@ -889,8 +917,8 @@ ecor::task<void> first_press(ecor::task_ctx& ctx, button_events& left, button_ev
 ```
 
 > An `ll_source` or `seq_source` entry sees the stop request only when its driver's
-> `query_next()` reaches it, so `when_any` completes once the drivers of the other sources have
-> polled.
+> `query_next()` reaches it or its driver calls `drain_stopped()`, so `when_any` completes once
+> the drivers of the other sources have polled.
 
 ### as_variant - Handle Multiple Completions
 

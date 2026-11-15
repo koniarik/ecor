@@ -2406,7 +2406,8 @@ struct ll_source
         /// When `get_stopped_t()` is in `S...`, consecutive stopped entries are drained from the
         /// front: each front entry whose stop token is triggered is completed with `set_stopped()`
         /// and removed, until the front entry is live or the queue is empty. Only entries that
-        /// surface at the front are examined. Use `query_next_unchecked()` to bypass this.
+        /// surface at the front are examined; `drain_stopped()` reaches the others. Use
+        /// `query_next_unchecked()` to bypass this.
         [[nodiscard]] ll_entry< T, S... >* query_next()
         {
                 if constexpr ( has_get_stopped )
@@ -2424,6 +2425,29 @@ struct ll_source
                 if ( _ll.empty() )
                         return nullptr;
                 return &_ll.take_front();
+        }
+
+        /// Complete with `set_stopped()` every entry whose stop token is triggered, wherever it
+        /// sits, in FIFO order, and return how many it completed. Live entries keep their order.
+        /// Every stopped entry is unlinked before the first completes, so a completion may start
+        /// a new entry on this source, which waits for a later call, request a stop on a pending
+        /// one, which the next call completes, or destroy an entry this call has not completed
+        /// yet, which it then skips.
+        std::size_t drain_stopped()
+                requires( has_get_stopped )
+        {
+                _ll_entry_list< ll_entry< T, S... > > stopped;
+                auto&                                 links = _ll.links();
+                for ( auto it = links.begin(); it != links.end(); ) {
+                        auto& e = static_cast< ll_entry< T, S... >& >( *it );
+                        ++it;
+                        if ( e._get_stopped() )
+                                stopped.link_back( e );
+                }
+                std::size_t n = 0;
+                for ( ; !stopped.empty(); ++n )
+                        stopped.take_front()._set_stopped();
+                return n;
         }
 
 private:
@@ -2533,7 +2557,8 @@ struct seq_source
         /// descriptor's `completion_signatures`), consecutive stopped entries are drained from
         /// the top: each top (min-key) entry whose stop token is triggered is completed with
         /// `set_stopped()` and removed, until the top entry is live or the heap is empty. Only
-        /// entries that surface at the top are examined. Use `query_next_unchecked()` to bypass.
+        /// entries that surface at the top are examined; `drain_stopped()` reaches the others.
+        /// Use `query_next_unchecked()` to bypass.
         [[nodiscard]] seq_entry< K, T, S... >* query_next()
         {
                 if constexpr ( has_get_stopped )
@@ -2551,6 +2576,24 @@ struct seq_source
                 if ( _sh.empty() )
                         return nullptr;
                 return &_entry( _sh.take() );
+        }
+
+        /// Complete with `set_stopped()` every entry whose stop token is triggered, wherever it
+        /// sits in the heap, in no particular order, and return how many it completed. Live entries
+        /// stay. Every stopped entry is unlinked before the first completes, so a completion may
+        /// start a new entry on this source, which waits for a later call, request a stop on a
+        /// pending one, which the next call completes, or destroy an entry this call has not
+        /// completed yet, which it then skips.
+        std::size_t drain_stopped()
+                requires( has_get_stopped )
+        {
+                auto        stopped = _sh.extract_if( []( _sh_link< K >& l ) {
+                        return _entry( l )._get_stopped();
+                } );
+                std::size_t n       = 0;
+                for ( ; !stopped.empty(); ++n )
+                        _entry( stopped.take() )._set_stopped();
+                return n;
         }
 
 private:

@@ -117,14 +117,25 @@ def generate(probes, hdrs, build):
     return manifest
 
 
+def local_zll_dir():
+    """The zll a local build uses: the checkout one points FETCHCONTENT_SOURCE_DIR_ZLL at, else
+    a copy one has fetched; None when there is neither and CMake fetches the pinned tag."""
+    for cache in sorted(REPO.glob('_build/*/CMakeCache.txt')):
+        m = re.search(r'^FETCHCONTENT_SOURCE_DIR_ZLL:PATH=(.+)$', cache.read_text(), re.M)
+        if m and (Path(m.group(1)) / 'include' / 'zll.hpp').exists():
+            return Path(m.group(1))
+    fetched = sorted(REPO.glob('_build/*/_deps/zll-src/include/zll.hpp'))
+    return fetched[0].parent.parent if fetched else None
+
+
 def build_all(build, args):
     cmd = ['cmake', '-S', HERE, '-B', build, '-G', 'Ninja',
            '--toolchain', HERE / 'arm-none-eabi.cmake',
            f'-DMATRIX={(build / "matrix.cmake").as_posix()}',
            f'-DECOR_SIZE_EXTRA_FLAGS={args.extra_flags or ""}']
-    local_zll = sorted(REPO.glob('_build/*/_deps/zll-src/include/zll.hpp'))
-    if local_zll:
-        cmd.append(f'-DFETCHCONTENT_SOURCE_DIR_ZLL={local_zll[0].parent.parent}')
+    zll_dir = local_zll_dir()
+    if zll_dir:
+        cmd.append(f'-DFETCHCONTENT_SOURCE_DIR_ZLL={zll_dir}')
     run(cmd)
     return build_targets(build)
 

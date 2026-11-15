@@ -265,11 +265,11 @@ receiver completes once every operand has completed. Patterns and pitfalls from 
   receiver's stop token can stop, and the operands' completions are taken with the environment
   they see, `_when_any_env`. Storage is sized from those signatures, so the store
   static_asserts that an operand's completion is among them.
-- **ecor's sources see a stop request only when polled.** An `ll_source` or `seq_source` entry
-  with `get_stopped_t()` completes stopped when its driver's `query_next()` reaches it, so a
-  `when_any` over such an operand waits for that driver: the sources register no stop
-  callback, since only the driver knows whether a linked entry is in use. Tests drive the losers
-  to completion with `query_next()`, which drains stopped entries.
+- **ecor's sources see a stop request only when polled.** An `ll_source` or `seq_source` entry with
+  `get_stopped_t()` completes stopped when its driver's `query_next()` reaches it or its driver
+  calls `drain_stopped()`, so a `when_any` over such an operand waits for that driver: the sources
+  register no stop callback, since only the driver knows whether a linked entry is in use. Tests
+  drive the losers to completion with `query_next()`, which drains stopped entries.
 - **Test the stop loops with operands that complete inside a stop callback.** An `ll_source`
   entry never does, so it cannot reach the invariant above; `async_queue::pop_value()` with a
   cancellable `pop_api` completes stopped from its callback. Such an operation state needs the
